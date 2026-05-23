@@ -23,6 +23,7 @@
     "@googlemaps/js-api-loader": "^1.16.2",
     "xlsx": "^0.18.5",
     "html2canvas": "^1.4.1",
+    "pdfjs-dist": "^4.10.38",
     "serve": "^14.2.0"
   }
 }
