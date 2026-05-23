@@ -5,25 +5,28 @@
 // ============================================
 
 import portalToolsMeta from '../data/portal-tools.json';
-import ViabilidadeAlares from './ViabilidadeAlares.svelte';
-import AnaliseCobertura from './AnaliseCobertura.svelte';
-import CalculadoraOrcamento from './CalculadoraOrcamento.svelte';
-import MapaConsulta from './MapaConsulta.svelte';
-import DashboardCensup from './DashboardCensup.svelte';
-import FormularioEngenharia from './FormularioEngenharia.svelte';
 
-const TOOL_COMPONENTS = {
-  'viabilidade-alares': ViabilidadeAlares,
-  'analise-cobertura': AnaliseCobertura,
-  'calculadora-orcamento': CalculadoraOrcamento,
-  'mapa-consulta': MapaConsulta,
-  'dashboard-censup': DashboardCensup,
-  'formulario-engenharia': FormularioEngenharia
+/** Carrega apenas arquivos .svelte presentes no build (evita falha se um componente não foi enviado). */
+const toolSvelteModules = import.meta.glob('./*.svelte', { eager: true });
+
+const TOOL_COMPONENT_FILES = {
+  'viabilidade-alares': './ViabilidadeAlares.svelte',
+  'analise-cobertura': './AnaliseCobertura.svelte',
+  'calculadora-orcamento': './CalculadoraOrcamento.svelte',
+  'mapa-consulta': './MapaConsulta.svelte',
+  'dashboard-censup': './DashboardCensup.svelte',
+  'formulario-engenharia': './FormularioEngenharia.svelte'
 };
 
 const FAVICON_BY_TOOL = {
   'viabilidade-alares': '/favicons/alares.png'
 };
+
+function resolveToolComponent(toolId) {
+  const file = TOOL_COMPONENT_FILES[toolId];
+  if (!file) return null;
+  return toolSvelteModules[file]?.default ?? null;
+}
 
 /**
  * Registry completo (metadados + componente Svelte)
@@ -31,7 +34,7 @@ const FAVICON_BY_TOOL = {
 export const toolsRegistry = portalToolsMeta.map((meta) => ({
   ...meta,
   faviconImage: FAVICON_BY_TOOL[meta.id],
-  component: TOOL_COMPONENTS[meta.id] || null
+  component: resolveToolComponent(meta.id)
 }));
 
 /**
