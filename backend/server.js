@@ -4082,7 +4082,9 @@ async function _ensureVIALABaseInternal() {
         'CIDADE',
         'ENDEREÇO',
         'LATITUDE',
-        'LONGITUDE'
+        'LONGITUDE',
+        'TABULAÇÃO FINAL',
+        'HORA'
       ];
       
       const worksheet = XLSX.utils.aoa_to_sheet([headers]);
@@ -4116,18 +4118,81 @@ async function readVIALABaseFromSupabase() {
     
     console.log('📂 [Supabase] Carregando VI ALAs do Supabase...');
     
-    const { data, error } = await supabase
+    // Primeiro, contar quantos registros existem
+    const { count, error: countError } = await supabase
       .from('vi_ala')
-      .select('vi_ala, ala, data, projetista, cidade, endereco, latitude, longitude, created_at')
-      .order('created_at', { ascending: false });
+      .select('*', { count: 'exact', head: true });
     
-    if (error) {
-      console.error('❌ [Supabase] Erro ao ler VI ALAs:', error);
+    if (countError) {
+      console.error('❌ [Supabase] Erro ao contar VI ALAs:', countError);
       return null; // Fallback para Excel
     }
     
+    console.log(`📊 [Supabase] Total de VI ALAs no banco: ${count || 0}`);
+    
+    if (!count || count === 0) {
+      console.log('⚠️ [Supabase] Nenhum VI ALA encontrado no Supabase (retornando array vazio)');
+      return []; // Retornar array vazio (não null) para indicar que Supabase está funcionando, mas vazio
+    }
+    
+    // Buscar TODOS os registros usando paginação
+    // Supabase tem limite de 1000 registros por query, então precisamos paginar
+    const BATCH_SIZE = 1000; // Tamanho do lote (máximo do Supabase)
+    let allData = [];
+    let offset = 0;
+    let hasMore = true;
+    let batchNumber = 0;
+    
+    console.log(`📥 [Supabase] Buscando ${count} VI ALAs em lotes de ${BATCH_SIZE}...`);
+    
+    while (hasMore) {
+      batchNumber++;
+      console.log(`📥 [Supabase] Buscando lote ${batchNumber} (offset: ${offset}, limite: ${BATCH_SIZE})...`);
+      
+      const { data, error } = await supabase
+        .from('vi_ala')
+        .select('vi_ala, ala, data, hora, projetista, cidade, endereco, latitude, longitude, tabulacao_final, created_at')
+        .order('created_at', { ascending: false })
+        .range(offset, offset + BATCH_SIZE - 1); // range é inclusivo: [offset, offset + BATCH_SIZE - 1]
+      
+      if (error) {
+        console.error(`❌ [Supabase] Erro ao buscar lote ${batchNumber}:`, error);
+        console.error('❌ [Supabase] Código do erro:', error.code);
+        console.error('❌ [Supabase] Mensagem:', error.message);
+        // Se houver erro, retornar o que já foi carregado (se houver) ou null
+        if (allData.length > 0) {
+          console.warn(`⚠️ [Supabase] Erro ao buscar lote ${batchNumber}, retornando ${allData.length} VI ALAs já carregados`);
+          break; // Retornar dados parciais
+        }
+        return null; // Fallback para Excel
+      }
+      
+      if (!data || data.length === 0) {
+        hasMore = false;
+        break;
+      }
+      
+      allData = allData.concat(data);
+      console.log(`✅ [Supabase] Lote ${batchNumber} carregado: ${data.length} VI ALAs (total acumulado: ${allData.length})`);
+      
+      // Se retornou menos que o tamanho do lote, não há mais dados
+      if (data.length < BATCH_SIZE) {
+        hasMore = false;
+        break;
+      }
+      
+      offset += BATCH_SIZE;
+      
+      // Log de progresso a cada 10 lotes
+      if (batchNumber % 10 === 0) {
+        console.log(`📊 [Supabase] Progresso: ${allData.length} / ${count} VI ALAs carregados (${Math.round((allData.length / count) * 100)}%)`);
+      }
+    }
+    
+    console.log(`✅ [Supabase] ${allData.length} VI ALAs carregados do Supabase (de ${count} total)`);
+    
     // Converter para formato compatível com Excel (mesma estrutura)
-    const records = (data || []).map(row => {
+    const records = allData.map(row => {
       // Usar created_at se disponível (tem timestamp completo), senão usar data
       let dataFormatada = '';
       if (row.created_at) {
@@ -4160,7 +4225,14 @@ async function readVIALABaseFromSupabase() {
           // Formato YYYY-MM-DD, converter para DD/MM/YYYY
           const partes = dataStr.split(' ')[0].split('-');
           if (partes.length === 3) {
-            dataFormatada = `${partes[2]}/${partes[1]}/${partes[0]}`;
+            // Combinar data com hora se houver
+            if (row.hora && row.hora.trim() !== '') {
+              // Remover 'h' do final se houver (ex: "20:30h" -> "20:30")
+              const horaFormatada = row.hora.replace(/h$/, '');
+              dataFormatada = `${partes[2]}/${partes[1]}/${partes[0]} ${horaFormatada}`;
+            } else {
+              dataFormatada = `${partes[2]}/${partes[1]}/${partes[0]}`;
+            }
           }
         } else {
           dataFormatada = dataStr;
@@ -4175,7 +4247,9 @@ async function readVIALABaseFromSupabase() {
         'CIDADE': row.cidade || '',
         'ENDEREÇO': row.endereco || '',
         'LATITUDE': row.latitude || '',
-        'LONGITUDE': row.longitude || ''
+        'LONGITUDE': row.longitude || '',
+        'TABULAÇÃO FINAL': row.tabulacao_final || '',
+      'HORA': row.hora || ''
       };
     });
     
@@ -4398,7 +4472,8 @@ async function saveVIALARecordToSupabase(record) {
     }
     
     console.log('💾 [Supabase] Salvando registro VI ALA no Supabase...');
-    console.log('💾 [Supabase] Dados recebidos:', record);
+    console.log('💾 [Supabase] Dados recebidos:', JSON.stringify(record, null, 2));
+    console.log('💾 [Supabase] Tabulação Final recebida:', record['TABULAÇÃO FINAL']);
     
     // Converter data do formato "DD/MM/YYYY HH:MM" para "YYYY-MM-DD" (formato PostgreSQL DATE)
     let dataConvertida = null;
@@ -4434,15 +4509,23 @@ async function saveVIALARecordToSupabase(record) {
     }
     
     // Converter formato Excel para formato Supabase
+    const tabulacaoFinalValue = record['TABULAÇÃO FINAL'];
+    const horaValue = record['HORA'];
+    console.log('💾 [Supabase] Tabulação Final antes de salvar:', tabulacaoFinalValue);
+    console.log('💾 [Supabase] Tipo da tabulação:', typeof tabulacaoFinalValue);
+    console.log('💾 [Supabase] Hora antes de salvar:', horaValue);
+    
     const dataToSave = {
       vi_ala: record['VI ALA'] || '',
       ala: record['ALA'] || null,
       data: dataConvertida, // Data convertida para formato PostgreSQL
+      hora: (horaValue && horaValue.trim() !== '') ? horaValue.trim() : null, // Nova coluna: hora no formato "20:30h"
       projetista: record['PROJETISTA'] || null,
       cidade: record['CIDADE'] || null,
       endereco: record['ENDEREÇO'] || null,
       latitude: record['LATITUDE'] ? parseFloat(record['LATITUDE']) : null,
-      longitude: record['LONGITUDE'] ? parseFloat(record['LONGITUDE']) : null
+      longitude: record['LONGITUDE'] ? parseFloat(record['LONGITUDE']) : null,
+      tabulacao_final: (tabulacaoFinalValue && tabulacaoFinalValue.trim() !== '') ? tabulacaoFinalValue.trim() : null
     };
     
     // Validar campos obrigatórios
@@ -4450,19 +4533,27 @@ async function saveVIALARecordToSupabase(record) {
       throw new Error('VI ALA é obrigatório');
     }
     
-    console.log('💾 [Supabase] Dados formatados para salvar:', dataToSave);
+    console.log('💾 [Supabase] Dados formatados para salvar:', JSON.stringify(dataToSave, null, 2));
+    console.log('💾 [Supabase] Tabulação Final que será salva:', dataToSave.tabulacao_final);
     
     // Inserir no Supabase
-    const { error } = await supabase
+    console.log('💾 [Supabase] Inserindo no Supabase com tabulação_final:', dataToSave.tabulacao_final);
+    const { data: insertedData, error } = await supabase
       .from('vi_ala')
-      .insert([dataToSave]);
+      .insert([dataToSave])
+      .select();
     
     if (error) {
       console.error('❌ [Supabase] Erro ao inserir VI ALA:', error);
+      console.error('❌ [Supabase] Detalhes do erro:', JSON.stringify(error, null, 2));
       return false;
     }
     
     console.log(`✅ [Supabase] Registro VI ALA salvo: ${dataToSave.vi_ala}`);
+    if (insertedData && insertedData.length > 0) {
+      console.log('✅ [Supabase] Dados inseridos retornados:', JSON.stringify(insertedData, null, 2));
+      console.log('✅ [Supabase] Tabulação Final salva:', insertedData[0].tabulacao_final);
+    }
     return true; // Sucesso
   } catch (err) {
     console.error('❌ [Supabase] Erro ao salvar registro VI ALA:', err);
@@ -5320,6 +5411,47 @@ app.put('/api/projetistas/:nome/role', requireAdmin, async (req, res) => {
   }
 });
 
+// IDs das ferramentas — fonte: /shared/portal-tools.json
+let PORTAL_TOOL_IDS = [
+  'viabilidade-alares',
+  'analise-cobertura',
+  'calculadora-orcamento',
+  'mapa-consulta',
+  'dashboard-censup',
+  'formulario-engenharia'
+];
+
+try {
+  const portalToolsPath = path.join(__dirname, 'portal-tools.json');
+  const portalToolsRaw = fs.readFileSync(portalToolsPath, 'utf8');
+  const portalToolsList = JSON.parse(portalToolsRaw);
+  if (Array.isArray(portalToolsList) && portalToolsList.length > 0) {
+    PORTAL_TOOL_IDS = portalToolsList.map((t) => t.id).filter(Boolean);
+    console.log(`✅ [Portal] ${PORTAL_TOOL_IDS.length} ferramentas carregadas de portal-tools.json`);
+  }
+} catch (portalToolsErr) {
+  console.warn('⚠️ [Portal] Usando lista padrão de ferramentas:', portalToolsErr.message);
+}
+
+function mergePortalToolPermissions(permissions = {}) {
+  const merged = { ...(permissions || {}) };
+  PORTAL_TOOL_IDS.forEach((toolId) => {
+    if (merged[toolId] === undefined) {
+      merged[toolId] = true;
+    }
+  });
+  return merged;
+}
+
+function buildPortalPermissionsPayload(permissions = {}) {
+  const merged = mergePortalToolPermissions(permissions);
+  const payload = {};
+  PORTAL_TOOL_IDS.forEach((toolId) => {
+    payload[toolId] = merged[toolId] === true;
+  });
+  return payload;
+}
+
 // Endpoint para obter permissões de ferramentas de um projetista
 // Permite que o usuário veja suas próprias permissões ou admin veja qualquer usuário
 app.get('/api/projetistas/:nome/permissions', async (req, res) => {
@@ -5396,11 +5528,12 @@ app.get('/api/projetistas/:nome/permissions', async (req, res) => {
     }
     
     // Fallback: buscar do Excel (se houver campo de permissões)
-    // Por enquanto, retornar permissões padrão (todas habilitadas)
-    
-    res.json({ 
-      success: true, 
-      permissions: permissions
+    // Mesclar com registry: ferramentas novas habilitadas por padrão
+    permissions = mergePortalToolPermissions(permissions);
+
+    res.json({
+      success: true,
+      permissions
     });
   } catch (err) {
     console.error('❌ Erro ao buscar permissões:', err);
@@ -5422,6 +5555,8 @@ app.put('/api/projetistas/:nome/permissions', requireAdmin, async (req, res) => 
     if (!permissions || typeof permissions !== 'object') {
       return res.status(400).json({ success: false, error: 'Permissões inválidas' });
     }
+
+    const permissionsToSave = buildPortalPermissionsPayload(permissions);
     
     // Garantir headers CORS
     const origin = req.headers.origin;
@@ -5449,7 +5584,7 @@ app.put('/api/projetistas/:nome/permissions', requireAdmin, async (req, res) => 
         // Atualizar permissões (salvar como JSON string)
         const { error } = await supabase
           .from('projetistas')
-          .update({ permissoes_ferramentas: JSON.stringify(permissions) })
+          .update({ permissoes_ferramentas: JSON.stringify(permissionsToSave) })
           .ilike('nome', nomeDecoded);
         
         if (error) {
@@ -5461,7 +5596,7 @@ app.put('/api/projetistas/:nome/permissions', requireAdmin, async (req, res) => 
         return res.json({ 
           success: true, 
           message: 'Permissões de ferramentas atualizadas com sucesso',
-          permissions: permissions
+          permissions: permissionsToSave
         });
       } catch (supabaseErr) {
         console.error('❌ [Supabase] Erro ao salvar permissões, usando fallback:', supabaseErr);
@@ -5475,7 +5610,7 @@ app.put('/api/projetistas/:nome/permissions', requireAdmin, async (req, res) => 
     res.json({ 
       success: true, 
       message: 'Permissões de ferramentas atualizadas com sucesso',
-      permissions: permissions
+      permissions: permissionsToSave
     });
   } catch (err) {
     console.error('❌ Erro ao salvar permissões:', err);
@@ -7961,9 +8096,13 @@ app.post('/api/vi-ala/save', async (req, res) => {
     res.setHeader('Access-Control-Allow-Credentials', 'true');
     
     console.log('📥 [API] Requisição recebida para salvar VI ALA');
-    console.log('📦 [API] Body recebido do frontend:', req.body);
+    console.log('📦 [API] Body recebido do frontend:', JSON.stringify(req.body, null, 2));
     
-    const { viAla, ala, data, projetista, cidade, endereco, latitude, longitude } = req.body;
+    const { viAla, ala, data, hora, projetista, cidade, endereco, latitude, longitude, tabulacaoFinal } = req.body;
+    
+    console.log('📋 [API] Tabulação Final recebida:', tabulacaoFinal);
+    console.log('📋 [API] Tipo da tabulação:', typeof tabulacaoFinal);
+    console.log('📋 [API] Hora recebida:', hora);
     
     if (!viAla || viAla.trim() === '') {
       console.warn('⚠️ [API] VI ALA não fornecido ou vazio');
@@ -7975,14 +8114,17 @@ app.post('/api/vi-ala/save', async (req, res) => {
       'VI ALA': viAla.trim(),
       'ALA': ala || '',
       'DATA': data || '',
+      'HORA': hora || '', // Nova coluna: hora separada
       'PROJETISTA': projetista || '',
       'CIDADE': cidade || '',
       'ENDEREÇO': endereco || '',
       'LATITUDE': latitude || '',
-      'LONGITUDE': longitude || ''
+      'LONGITUDE': longitude || '',
+      'TABULAÇÃO FINAL': tabulacaoFinal || ''
     };
     
-    console.log('💾 [API] Salvando registro:', record);
+    console.log('💾 [API] Salvando registro:', JSON.stringify(record, null, 2));
+    console.log('💾 [API] Tabulação Final no record:', record['TABULAÇÃO FINAL']);
     
     // Salvar (tenta Supabase primeiro, fallback Excel)
     await saveVIALARecord(record);
@@ -8040,7 +8182,9 @@ app.get('/api/vi-ala/list', async (req, res) => {
         endereco: row['ENDEREÇO'] || '',
         data_geracao: row['DATA'] || '',
         latitude: row['LATITUDE'] || '',
-        longitude: row['LONGITUDE'] || ''
+        longitude: row['LONGITUDE'] || '',
+        tabulacao_final: row['TABULAÇÃO FINAL'] || '',
+        hora: row['HORA'] || ''
       };
     });
     
@@ -8059,6 +8203,369 @@ app.get('/api/vi-ala/list', async (req, res) => {
     res.status(500).json({ success: false, error: err.message });
   }
 });
+
+// Função auxiliar para parsear data do formato "DD/MM/YYYY HH:MM" ou "DD/MM/YYYY" ou "YYYY-MM-DD"
+function parseDateFromString(dateStr) {
+  if (!dateStr || typeof dateStr !== 'string') {
+    return null;
+  }
+  
+  try {
+    const trimmed = dateStr.trim();
+    
+    // Tentar formato PostgreSQL DATE primeiro (YYYY-MM-DD) - formato do Supabase
+    if (trimmed.match(/^\d{4}-\d{2}-\d{2}/)) {
+      const dateOnly = trimmed.split(' ')[0]; // Pega só a data, ignora hora se houver
+      const [year, month, day] = dateOnly.split('-');
+      const date = new Date(
+        parseInt(year, 10),
+        parseInt(month, 10) - 1,
+        parseInt(day, 10)
+      );
+      if (!isNaN(date.getTime())) {
+        return date;
+      }
+    }
+    
+    // Formato: "DD/MM/YYYY HH:MM" ou "DD/MM/YYYY"
+    const parts = trimmed.split(' ');
+    const datePart = parts[0]; // "DD/MM/YYYY"
+    const timePart = parts[1] || '00:00'; // "HH:MM" ou "00:00"
+    
+    const [day, month, year] = datePart.split('/');
+    const [hour, minute] = timePart.split(':');
+    
+    if (!day || !month || !year) {
+      return null;
+    }
+    
+    // Criar objeto Date (mês é 0-indexed no JavaScript)
+    const date = new Date(
+      parseInt(year, 10),
+      parseInt(month, 10) - 1,
+      parseInt(day, 10),
+      parseInt(hour || '0', 10),
+      parseInt(minute || '0', 10)
+    );
+    
+    // Verificar se a data é válida
+    if (isNaN(date.getTime())) {
+      return null;
+    }
+    
+    return date;
+  } catch (err) {
+    console.warn('⚠️ [parseDateFromString] Erro ao parsear data:', dateStr, err);
+    return null;
+  }
+}
+
+// Função auxiliar para agrupar por período
+function getPeriodKey(date, period) {
+  if (!date) return null;
+  
+  const year = date.getFullYear();
+  const month = date.getMonth() + 1; // 1-12
+  const day = date.getDate();
+  const hour = date.getHours(); // 0-23
+  const week = getWeekNumber(date);
+  const quarter = Math.floor((month - 1) / 3) + 1;
+  const semester = month <= 6 ? 1 : 2;
+  
+  switch (period.toUpperCase()) {
+    case 'HORA':
+      const minute = date.getMinutes(); // Incluir minutos
+      return `${String(day).padStart(2, '0')}/${String(month).padStart(2, '0')}/${year} ${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+    case 'DIA':
+      return `${String(day).padStart(2, '0')}/${String(month).padStart(2, '0')}/${year}`;
+    case 'SEMANA':
+      return `Sem ${week}/${year}`;
+    case 'MÊS':
+    case 'MES':
+      return `${String(month).padStart(2, '0')}/${year}`;
+    case 'TRIMESTRE':
+      return `T${quarter}/${year}`;
+    case 'SEMESTRE':
+      return `S${semester}/${year}`;
+    case 'ANUAL':
+    case 'ANO':
+      return String(year);
+    default:
+      return null;
+  }
+}
+
+// Função auxiliar para calcular número da semana
+function getWeekNumber(date) {
+  const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  const dayNum = d.getUTCDay() || 7;
+  d.setUTCDate(d.getUTCDate() + 4 - dayNum);
+  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+  return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+}
+
+// Rota para obter estatísticas por tabulação (gráfico de pizza)
+app.get('/api/vi-ala/stats', async (req, res) => {
+  try {
+    // Garantir headers CORS
+    const origin = req.headers.origin;
+    if (origin) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+    } else {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+    }
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    res.setHeader('Content-Type', 'application/json');
+    
+    console.log('📥 [API] Requisição recebida para estatísticas de VI ALAs');
+    
+    // Garantir que a base existe
+    await _ensureVIALABaseInternal();
+    
+    // Ler dados da base
+    const data = await _readVIALABaseInternal();
+    console.log(`📊 [API] Total de registros na base: ${data.length}`);
+    
+    // Agrupar por tabulação
+    const statsByTabulacao = {};
+    let total = 0;
+    
+    for (const row of data) {
+      const tabulacao = row['TABULAÇÃO FINAL'] || 'Não Informado';
+      if (!statsByTabulacao[tabulacao]) {
+        statsByTabulacao[tabulacao] = 0;
+      }
+      statsByTabulacao[tabulacao]++;
+      total++;
+    }
+    
+    // Converter para formato de array para gráfico de pizza
+    const stats = Object.entries(statsByTabulacao).map(([tabulacao, count]) => ({
+      label: tabulacao,
+      value: count,
+      percentage: total > 0 ? ((count / total) * 100).toFixed(2) : '0.00'
+    }));
+    
+    // Ordenar por quantidade (maior primeiro)
+    stats.sort((a, b) => b.value - a.value);
+    
+    console.log(`✅ [API] Retornando estatísticas de ${stats.length} tabulações (total: ${total} registros)`);
+    
+    res.json({
+      success: true,
+      stats: stats,
+      total: total
+    });
+  } catch (err) {
+    console.error('❌ [API] Erro ao obter estatísticas:', err);
+    console.error('❌ [API] Stack:', err.stack);
+    
+    // Garantir headers CORS mesmo em erro
+    const origin = req.headers.origin;
+    if (origin) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+    } else {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+    }
+    
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Rota para obter timeline de VI ALAs (gráfico de linha)
+app.get('/api/vi-ala/timeline', async (req, res) => {
+  try {
+    // Garantir headers CORS
+    const origin = req.headers.origin;
+    if (origin) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+    } else {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+    }
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    res.setHeader('Content-Type', 'application/json');
+    
+    const { period = 'DIA' } = req.query; // DIA, SEMANA, MÊS, TRIMESTRE, SEMESTRE, ANUAL
+    
+    console.log(`📥 [API] Requisição recebida para timeline de VI ALAs (período: ${period})`);
+    
+    // Validar período
+    const validPeriods = ['HORA', 'DIA', 'SEMANA', 'MÊS', 'MES', 'TRIMESTRE', 'SEMESTRE', 'ANUAL', 'ANO'];
+    if (!validPeriods.includes(period.toUpperCase())) {
+      return res.status(400).json({
+        success: false,
+        error: `Período inválido. Use: ${validPeriods.join(', ')}`
+      });
+    }
+    
+    // Garantir que a base existe
+    await _ensureVIALABaseInternal();
+    
+    // Ler dados da base
+    const data = await _readVIALABaseInternal();
+    console.log(`📊 [API] Total de registros na base: ${data.length}`);
+    
+    // Obter filtros de data (opcional)
+    const startDateFilter = req.query.startDate;
+    const endDateFilter = req.query.endDate;
+    
+    // Agrupar por período
+    const timelineByPeriod = {};
+    
+    console.log(`📊 [API] Filtros de data: startDate=${startDateFilter || 'N/A'}, endDate=${endDateFilter || 'N/A'}`);
+    
+    for (const row of data) {
+      const dateStr = row['DATA'] || '';
+      if (!dateStr) {
+        console.log('⚠️ [API] Registro sem data:', row['VI ALA']);
+        continue;
+      }
+      
+      console.log(`📅 [API] Processando registro ${row['VI ALA']} com data: "${dateStr}"`);
+      
+      const date = parseDateFromString(dateStr);
+      if (!date) {
+        console.warn(`⚠️ [API] Não foi possível parsear data: "${dateStr}" do registro ${row['VI ALA']}`);
+        continue;
+      }
+      
+      // Aplicar filtros de data se fornecidos
+      if (startDateFilter) {
+        const startDate = new Date(startDateFilter + 'T00:00:00');
+        // Comparar apenas dia, mês e ano (ignorar hora)
+        const dateOnly = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+        const startDateOnly = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate());
+        if (dateOnly < startDateOnly) {
+          console.log(`⏭️ [API] Registro ${row['VI ALA']} antes da data inicial: ${dateOnly.toISOString().split('T')[0]} < ${startDateOnly.toISOString().split('T')[0]}`);
+          continue;
+        }
+      }
+      
+      if (endDateFilter) {
+        const endDate = new Date(endDateFilter + 'T23:59:59');
+        // Comparar apenas dia, mês e ano (ignorar hora)
+        const dateOnly = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+        const endDateOnly = new Date(endDate.getFullYear(), endDate.getMonth(), endDate.getDate());
+        if (dateOnly > endDateOnly) {
+          console.log(`⏭️ [API] Registro ${row['VI ALA']} depois da data final: ${dateOnly.toISOString().split('T')[0]} > ${endDateOnly.toISOString().split('T')[0]}`);
+          continue;
+        }
+      }
+      
+      console.log(`✅ [API] Registro ${row['VI ALA']} passou no filtro de data`);
+      
+      const periodKey = getPeriodKey(date, period);
+      if (!periodKey) continue;
+      
+      if (!timelineByPeriod[periodKey]) {
+        timelineByPeriod[periodKey] = 0;
+      }
+      timelineByPeriod[periodKey]++;
+    }
+    
+    // Converter para array e ordenar por período
+    const timeline = Object.entries(timelineByPeriod).map(([periodKey, count]) => ({
+      period: periodKey,
+      count: count
+    }));
+    
+    // Ordenar por período (cronologicamente)
+    timeline.sort((a, b) => {
+      // Converter período para data para ordenação
+      const dateA = parsePeriodToDate(a.period, period);
+      const dateB = parsePeriodToDate(b.period, period);
+      if (!dateA || !dateB) return 0;
+      return dateA.getTime() - dateB.getTime();
+    });
+    
+    console.log(`✅ [API] Retornando timeline com ${timeline.length} períodos`);
+    
+    res.json({
+      success: true,
+      period: period.toUpperCase(),
+      timeline: timeline,
+      total: timeline.reduce((sum, item) => sum + item.count, 0)
+    });
+  } catch (err) {
+    console.error('❌ [API] Erro ao obter timeline:', err);
+    console.error('❌ [API] Stack:', err.stack);
+    
+    // Garantir headers CORS mesmo em erro
+    const origin = req.headers.origin;
+    if (origin) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+    } else {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+    }
+    
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Função auxiliar para converter período de volta para data (para ordenação)
+function parsePeriodToDate(periodKey, periodType) {
+  try {
+    switch (periodType.toUpperCase()) {
+      case 'HORA':
+        // Formato: "DD/MM/YYYY HH:MM"
+        const horaMatch = periodKey.match(/(\d{2})\/(\d{2})\/(\d{4}) (\d{2}):(\d{2})/);
+        if (horaMatch) {
+          const [, day, month, year, hour, minute] = horaMatch;
+          return new Date(parseInt(year, 10), parseInt(month, 10) - 1, parseInt(day, 10), parseInt(hour, 10), parseInt(minute, 10));
+        }
+        return null;
+      case 'DIA':
+        // Formato: "DD/MM/YYYY"
+        const [day, month, year] = periodKey.split('/');
+        return new Date(parseInt(year, 10), parseInt(month, 10) - 1, parseInt(day, 10));
+      case 'SEMANA':
+        // Formato: "Sem W/YYYY"
+        const weekMatch = periodKey.match(/Sem (\d+)\/(\d+)/);
+        if (weekMatch) {
+          const week = parseInt(weekMatch[1], 10);
+          const year = parseInt(weekMatch[2], 10);
+          // Aproximação: primeira semana começa em 1 de janeiro
+          const date = new Date(year, 0, 1);
+          date.setDate(date.getDate() + (week - 1) * 7);
+          return date;
+        }
+        return null;
+      case 'MÊS':
+      case 'MES':
+        // Formato: "MM/YYYY"
+        const [monthMes, yearMes] = periodKey.split('/');
+        return new Date(parseInt(yearMes, 10), parseInt(monthMes, 10) - 1, 1);
+      case 'TRIMESTRE':
+        // Formato: "TQ/YYYY"
+        const trimMatch = periodKey.match(/T(\d+)\/(\d+)/);
+        if (trimMatch) {
+          const quarter = parseInt(trimMatch[1], 10);
+          const yearTrim = parseInt(trimMatch[2], 10);
+          const monthTrim = (quarter - 1) * 3;
+          return new Date(yearTrim, monthTrim, 1);
+        }
+        return null;
+      case 'SEMESTRE':
+        // Formato: "SS/YYYY"
+        const semMatch = periodKey.match(/S(\d+)\/(\d+)/);
+        if (semMatch) {
+          const semester = parseInt(semMatch[1], 10);
+          const yearSem = parseInt(semMatch[2], 10);
+          const monthSem = (semester - 1) * 6;
+          return new Date(yearSem, monthSem, 1);
+        }
+        return null;
+      case 'ANUAL':
+      case 'ANO':
+        // Formato: "YYYY"
+        return new Date(parseInt(periodKey, 10), 0, 1);
+      default:
+        return null;
+    }
+  } catch (err) {
+    return null;
+  }
+}
 
 // Rota para baixar o arquivo base_VI ALA.xlsx completo
 app.get('/api/vi-ala.xlsx', async (req, res) => {
@@ -8109,6 +8616,205 @@ app.get('/api/vi-ala.xlsx', async (req, res) => {
     if (!res.headersSent) {
       res.status(500).json({ error: 'Erro ao gerar arquivo base_VI ALA.xlsx' });
     }
+  }
+});
+
+// Rota para upload da base VI ALA
+app.post('/api/vi-ala/upload-base', upload.single('file'), async (req, res) => {
+  // Garantir headers CORS
+  const origin = req.headers.origin;
+  if (origin) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+  } else {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+  }
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  
+  try {
+    if (!req.file) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Nenhum arquivo foi enviado' 
+      });
+    }
+
+    // Verificar se é um arquivo Excel
+    const allowedMimes = [
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'application/vnd.ms-excel',
+      'application/octet-stream'
+    ];
+    
+    if (!allowedMimes.includes(req.file.mimetype) && !req.file.originalname.match(/\.(xlsx|xls)$/i)) {
+      // Limpar arquivo temporário
+      if (fs.existsSync(req.file.path)) {
+        fs.unlinkSync(req.file.path);
+      }
+      return res.status(400).json({
+        success: false,
+        error: 'Formato de arquivo inválido. Apenas arquivos Excel (.xlsx ou .xls) são aceitos.'
+      });
+    }
+
+    console.log(`📤 [Upload VI ALA] Arquivo recebido: ${req.file.originalname} (${req.file.size} bytes)`);
+    
+    // Ler dados do arquivo Excel
+    const fileBuffer = await fsPromises.readFile(req.file.path);
+    const workbook = XLSX.read(fileBuffer, { type: 'buffer' });
+    const sheetName = workbook.SheetNames[0];
+    const worksheet = workbook.Sheets[sheetName];
+    
+    // Ler cabeçalho diretamente da planilha para garantir que detectamos todas as colunas
+    // Usar range para pegar a primeira linha completa
+    const range = XLSX.utils.decode_range(worksheet['!ref'] || 'A1');
+    const headerRow = [];
+    for (let col = range.s.c; col <= range.e.c; col++) {
+      const cellAddress = XLSX.utils.encode_cell({ r: 0, c: col });
+      const cell = worksheet[cellAddress];
+      const headerValue = cell ? String(cell.v || '').trim() : '';
+      if (headerValue) {
+        headerRow.push(headerValue);
+      }
+    }
+    const headers = headerRow;
+    
+    // Ler dados (usar defval para garantir que células vazias sejam tratadas)
+    const data = XLSX.utils.sheet_to_json(worksheet, { defval: '' });
+    
+    // Limpar arquivo temporário
+    if (fs.existsSync(req.file.path)) {
+      fs.unlinkSync(req.file.path);
+    }
+    
+    if (!data || data.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'O arquivo Excel está vazio ou não contém dados válidos.'
+      });
+    }
+    
+    // Validar colunas esperadas (verificar no cabeçalho, não nos dados)
+    // HORA é opcional (para compatibilidade com arquivos antigos)
+    const requiredColumns = ['VI ALA', 'ALA', 'DATA', 'PROJETISTA', 'CIDADE', 'ENDEREÇO', 'LATITUDE', 'LONGITUDE', 'TABULAÇÃO FINAL'];
+    const expectedColumns = [...requiredColumns, 'HORA'];
+    // Verificar apenas colunas obrigatórias (HORA é opcional)
+    const hasAllRequiredColumns = requiredColumns.every(col => headers.includes(col));
+    
+    if (!hasAllRequiredColumns) {
+      const missingColumns = requiredColumns.filter(col => !headers.includes(col));
+      return res.status(400).json({
+        success: false,
+        error: `O arquivo não contém todas as colunas necessárias. Colunas faltando: ${missingColumns.join(', ')}`
+      });
+    }
+    
+    // Normalizar dados: garantir que todos os campos existam, mesmo que vazios
+    // Se VI ALA estiver vazio, usar ALA como identificação padrão
+    const normalizedData = data.map(row => {
+      const normalized = {};
+      expectedColumns.forEach(col => {
+        // Aceitar valores vazios, null, undefined - converter tudo para string vazia se necessário
+        const value = row[col];
+        normalized[col] = (value === null || value === undefined || value === '') ? '' : String(value);
+      });
+      
+      // Se HORA não existir no arquivo (compatibilidade com arquivos antigos), deixar vazio
+      if (!normalized['HORA']) {
+        normalized['HORA'] = '';
+      }
+      
+      // Se VI ALA estiver vazio mas ALA tiver valor, usar ALA como VI ALA
+      if (!normalized['VI ALA'] || normalized['VI ALA'].trim() === '') {
+        if (normalized['ALA'] && normalized['ALA'].trim() !== '') {
+          normalized['VI ALA'] = normalized['ALA'];
+        }
+      }
+      
+      return normalized;
+    });
+    
+    console.log(`📊 [Upload VI ALA] Processando ${data.length} registros...`);
+    
+    // Salvar dados no Supabase (se disponível) ou Excel (fallback)
+    let savedCount = 0;
+    let errors = [];
+    
+    // Se Supabase estiver disponível, salvar lá
+    if (supabase && isSupabaseAvailable()) {
+      console.log('💾 [Upload VI ALA] Salvando no Supabase...');
+      
+      // Processar dados normalizados (aceita valores vazios)
+      // Usar os dados já normalizados que garantem que todos os campos existem
+      const recordsToInsert = normalizedData.map(row => ({
+        vi_ala: row['VI ALA'],
+        ala: row['ALA'],
+        data: row['DATA'],
+        hora: row['HORA'] || null,
+        projetista: row['PROJETISTA'],
+        cidade: row['CIDADE'],
+        endereco: row['ENDEREÇO'],
+        latitude: row['LATITUDE'],
+        longitude: row['LONGITUDE'],
+        tabulacao_final: row['TABULAÇÃO FINAL']
+      }));
+      
+      // Inserir em lotes para evitar timeout
+      const batchSize = 100;
+      for (let i = 0; i < recordsToInsert.length; i += batchSize) {
+        const batch = recordsToInsert.slice(i, i + batchSize);
+        const { error: insertError } = await supabase
+          .from('vi_ala')
+          .insert(batch);
+        
+        if (insertError) {
+          console.error(`❌ [Upload VI ALA] Erro ao inserir lote ${i / batchSize + 1}:`, insertError);
+          errors.push(`Erro no lote ${i / batchSize + 1}: ${insertError.message}`);
+        } else {
+          savedCount += batch.length;
+        }
+      }
+      
+      console.log(`✅ [Upload VI ALA] ${savedCount} registros salvos no Supabase`);
+    } else {
+      // Fallback: salvar no Excel (usar dados já normalizados)
+      console.log('💾 [Upload VI ALA] Salvando no Excel (fallback)...');
+      
+      // Salvar no Excel usando lock
+      await withLock('vi_ala', async () => {
+        const worksheet = XLSX.utils.json_to_sheet(normalizedData);
+        const workbook = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(workbook, worksheet, 'VI ALA');
+        XLSX.writeFile(workbook, BASE_VI_ALA_FILE);
+      });
+      
+      savedCount = normalizedData.length;
+      console.log(`✅ [Upload VI ALA] ${savedCount} registros salvos no Excel`);
+    }
+    
+    return res.json({
+      success: true,
+      message: `Base de dados atualizada com sucesso! ${savedCount} registros processados.`,
+      recordsProcessed: savedCount,
+      errors: errors.length > 0 ? errors : undefined
+    });
+    
+  } catch (err) {
+    console.error('❌ [Upload VI ALA] Erro ao processar upload:', err);
+    console.error('❌ [Upload VI ALA] Stack:', err.stack);
+    
+    // Limpar arquivo temporário em caso de erro
+    if (req.file && fs.existsSync(req.file.path)) {
+      try {
+        fs.unlinkSync(req.file.path);
+      } catch (unlinkErr) {
+        console.error('❌ [Upload VI ALA] Erro ao limpar arquivo temporário:', unlinkErr);
+      }
+    }
+    
+    return res.status(500).json({
+      success: false,
+      error: err.message || 'Erro ao processar upload do arquivo'
+    });
   }
 });
 
