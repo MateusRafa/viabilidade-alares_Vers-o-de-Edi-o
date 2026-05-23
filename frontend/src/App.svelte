@@ -904,7 +904,7 @@
         onBackToDashboard={handleBackToDashboard}
         onOpenSettings={handleOpenSettings}
         onSettingsHover={handleSettingsHover}
-        showSettingsButton={toolSettingsHandler !== null && tool.id !== 'analise-cobertura' && tool.id !== 'viabilidade-alares'}
+        showSettingsButton={toolSettingsHandler !== null && tool.id !== 'analise-cobertura' && tool.id !== 'viabilidade-alares' && tool.id !== 'formulario-engenharia'}
       >
         <svelte:component this={tool.component} 
           currentUser={currentUser}
