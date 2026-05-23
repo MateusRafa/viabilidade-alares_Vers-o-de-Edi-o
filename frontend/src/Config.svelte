@@ -1,7 +1,12 @@
 <script>
   import { onMount } from 'svelte';
   import { getApiUrl } from './config';
-  import { toolsRegistry } from './tools/toolsRegistry.js';
+  import {
+    toolsRegistry,
+    mergePermissionsWithRegistry,
+    buildPermissionsPayload,
+    getToolsForPermissions
+  } from './tools/toolsRegistry.js';
 
   // Props
   export let onClose = () => {};
@@ -1437,10 +1442,7 @@
     loadingChangeRole = true; // Iniciar carregamento
     
     // Inicializar permissões de ferramentas (todas marcadas por padrão)
-    toolPermissions = {};
-    toolsRegistry.forEach(tool => {
-      toolPermissions[tool.id] = true; // Por padrão, todas as ferramentas estão disponíveis
-    });
+    toolPermissions = mergePermissionsWithRegistry({});
     
     // Abrir modal imediatamente para melhorar a experiência do usuário
     showChangeRoleModal = true;
@@ -1494,15 +1496,8 @@
       
       if (response.ok) {
         const data = await response.json();
-        if (data.success && data.permissions) {
-          // Atualizar permissões com dados do backend
-          toolsRegistry.forEach(tool => {
-            // Se a ferramenta está nas permissões do backend, usar esse valor
-            // Caso contrário, manter true (padrão)
-            toolPermissions[tool.id] = data.permissions[tool.id] !== undefined 
-              ? data.permissions[tool.id] 
-              : true;
-          });
+        if (data.success) {
+          toolPermissions = mergePermissionsWithRegistry(data.permissions || {});
         }
       }
     } catch (err) {
@@ -1569,7 +1564,7 @@
           'X-Usuario': currentUser || '',
         },
         body: JSON.stringify({
-          permissions: toolPermissions,
+          permissions: buildPermissionsPayload(toolPermissions),
           usuario: currentUser || ''
         }),
       });
@@ -2756,7 +2751,7 @@
             <div class="form-group">
               <label for="toolsPermissions">Permissões de Ferramentas</label>
               <div class="tools-permissions-grid">
-                {#each toolsRegistry as tool}
+                {#each getToolsForPermissions() as tool (tool.id)}
                   <div class="tool-permission-card" class:active={toolPermissions[tool.id] === true}>
                     <label class="tool-permission-label">
                       <input 
