@@ -22,8 +22,7 @@ export const BRAND = {
   /** Nome abaixo da linha de assinatura na Lista de Material */
   assinaturaCoordenadorNome: 'Adônis Pimentel de Araújo',
   /** Cargo abaixo do nome (negrito) na Lista de Material */
-  assinaturaCoordenadorCargo:
-    'Coordenador de Planejamento e Projetos de Engenharia - Alares',
+  assinaturaCoordenadorCargo: 'Coordenador de Planejamento e Projetos - Engenharia Alares',
   /** Nome padrão do campo Coordenador de Projetos (Informações do projeto) */
   coordenadorProjetosNomePadrao: 'Adônis Pimentel de Araújo',
   cores: {
