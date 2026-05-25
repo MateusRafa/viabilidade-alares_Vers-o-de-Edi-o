@@ -2193,7 +2193,8 @@ export function buildPdfBodyHtml(formData, meta = {}, options = {}) {
   let pageNum = 2;
   let passosHtml = '';
   passos.forEach((passo, index) => {
-    const built = buildPassoPagesHtml(passo, index + 1, index, pageNum + 1, buildOpts);
+    // pageNum = última página já usada; o primeiro chunk do passo faz +1 internamente
+    const built = buildPassoPagesHtml(passo, index + 1, index, pageNum, buildOpts);
     passosHtml += built.html;
     pageNum = built.nextPageNum;
   });
