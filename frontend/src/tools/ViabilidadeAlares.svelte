@@ -6076,66 +6076,65 @@
     error = null;
 
     try {
-      // Obter próximo VI ALA (não bloqueia geração do PDF se falhar)
-      console.log('Obtendo próximo VI ALA...');
-      currentVIALA = ''; // Resetar antes de tentar obter
-      
-      // Usar Promise.race para adicionar timeout de 10 segundos (aumentado)
+      if (!mapPreviewImage) {
+        error = 'Erro: Mapa não foi capturado. Por favor, feche e abra o modal novamente.';
+        generatingPDF = false;
+        return;
+      }
+
+      const now = new Date();
+      const dateStr = now.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' });
+      const timeStr = now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+      const horaFormatada = `${timeStr}h`;
+      const dataHoraLegivel = `${dateStr} ${timeStr}`;
+
+      currentVIALA = '';
+
+      const viAlaRecord = {
+        ala: reportForm.numeroALA || '',
+        data: dataHoraLegivel,
+        hora: horaFormatada,
+        projetista: reportForm.projetista || '',
+        cidade: reportForm.cidade || '',
+        endereco: reportForm.enderecoCompleto || '',
+        latitude: clientCoords ? clientCoords.lat.toFixed(6) : '',
+        longitude: clientCoords ? clientCoords.lng.toFixed(6) : '',
+        tabulacaoFinal: reportForm.tabulacaoFinal || ''
+      };
+
+      console.log('💾 [Frontend] Registrando VI ALA no Supabase...', viAlaRecord);
+
+      const registerController = new AbortController();
+      const registerTimeoutId = setTimeout(() => registerController.abort(), 15000);
+
+      let registerResponse;
       try {
-        const apiUrl = getApiUrl('/api/vi-ala/next');
-        console.log('🔗 [VI ALA] URL da requisição:', apiUrl);
-        console.log('⏱️ [VI ALA] Iniciando requisição...');
-        
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 segundos
-        
-        const fetchPromise = fetch(apiUrl, {
-          method: 'GET',
+        registerResponse = await fetch(getApiUrl('/api/vi-ala/register'), {
+          method: 'POST',
           headers: {
             'Content-Type': 'application/json'
           },
-          signal: controller.signal
+          body: JSON.stringify(viAlaRecord),
+          signal: registerController.signal
         });
-        
-        const viAlaResponse = await fetchPromise;
-        clearTimeout(timeoutId);
-        
-        console.log('📡 [VI ALA] Resposta recebida, status:', viAlaResponse.status);
-        
-        if (viAlaResponse.ok) {
-          const viAlaData = await viAlaResponse.json();
-          console.log('📦 [VI ALA] Dados recebidos:', viAlaData);
-          
-          if (viAlaData.success && viAlaData.viAla) {
-            currentVIALA = viAlaData.viAla;
-            console.log('✅ [VI ALA] Obtido com sucesso:', currentVIALA);
-          } else {
-            console.warn('⚠️ [VI ALA] Resposta não contém VI ALA válido. Dados:', viAlaData);
-          }
-        } else {
-          const errorText = await viAlaResponse.text();
-          console.error('❌ [VI ALA] Erro HTTP. Status:', viAlaResponse.status);
-          console.error('❌ [VI ALA] Resposta:', errorText);
-          console.warn('⚠️ [VI ALA] Continuando sem VI ALA...');
-        }
-      } catch (viAlaErr) {
-        if (viAlaErr.name === 'AbortError') {
-          console.error('❌ [VI ALA] Timeout na requisição (10s)');
-        } else {
-          console.error('❌ [VI ALA] Erro:', viAlaErr);
-          console.error('❌ [VI ALA] Tipo:', viAlaErr.name);
-          console.error('❌ [VI ALA] Mensagem:', viAlaErr.message);
-        }
-        console.warn('⚠️ [VI ALA] Continuando sem VI ALA (não bloqueia geração do PDF)');
-        // Não bloquear geração do PDF se houver erro ao obter VI ALA
-      }
-      
-      // Se não conseguiu obter VI ALA, usar um valor padrão temporário para não quebrar o HTML
-      if (!currentVIALA) {
-        console.warn('⚠️ VI ALA não foi obtido, continuando sem ele no título do PDF');
+      } finally {
+        clearTimeout(registerTimeoutId);
       }
 
-      // Usar a imagem já capturada (deve estar disponível)
+      if (!registerResponse.ok) {
+        const errorText = await registerResponse.text();
+        throw new Error(`HTTP ${registerResponse.status}: ${errorText}`);
+      }
+
+      const registerData = await registerResponse.json();
+
+      if (!registerData.success || !registerData.viAla) {
+        throw new Error(registerData.error || 'Não foi possível registrar o VI ALA na base');
+      }
+
+      currentVIALA = registerData.viAla;
+      console.log(`✅ [Frontend] VI ALA registrado: ${currentVIALA} (${registerData.storage || 'supabase'})`);
+
       const mapImageData = mapPreviewImage;
       
       console.log('Iniciando geração de PDF...', { 
@@ -6143,12 +6142,6 @@
         tamanhoImagem: mapImageData ? mapImageData.length : 0,
         viAla: currentVIALA
       });
-      
-      if (!mapImageData) {
-        error = 'Erro: Mapa não foi capturado. Por favor, feche e abra o modal novamente.';
-        generatingPDF = false;
-        return;
-      }
 
       // Buscar data de atualização da base (opcional, não bloqueia)
       let baseLastModifiedText = '';
@@ -6164,7 +6157,6 @@
         }
       } catch (err) {}
       
-      // Buscar atualização em background (não bloqueia)
       fetch(getApiUrl('/api/base-last-modified'))
         .then(res => res.json())
         .then(data => {
@@ -6175,60 +6167,6 @@
         .catch(() => {});
       
       console.log('Dados preparados, criando HTML do PDF...');
-
-      // Obter data e hora atual
-      const now = new Date();
-      const dateStr = now.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' });
-      const timeStr = now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
-      // Salvar data e hora juntas no formato legível DD/MM/YYYY HH:MM
-      const dataHoraLegivel = `${dateStr} ${timeStr}`;
-      
-      // Salvar registro na base_VI_ALA apenas se o VI ALA foi obtido com sucesso
-      if (currentVIALA && currentVIALA.trim() !== '') {
-        const viAlaRecord = {
-          viAla: currentVIALA,
-          ala: reportForm.numeroALA || '',
-          data: dataHoraLegivel, // Salvar data e hora juntas no formato legível
-          projetista: reportForm.projetista || '',
-          cidade: reportForm.cidade || '',
-          endereco: reportForm.enderecoCompleto || '',
-          latitude: clientCoords ? clientCoords.lat.toFixed(6) : '',
-          longitude: clientCoords ? clientCoords.lng.toFixed(6) : ''
-        };
-        
-        console.log('💾 [Frontend] Salvando registro VI ALA na base...', viAlaRecord);
-        
-        // Salvar registro na base_VI_ALA (aguardar para garantir que seja salvo)
-        try {
-          const saveResponse = await fetch(getApiUrl('/api/vi-ala/save'), {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify(viAlaRecord)
-          });
-          
-          if (!saveResponse.ok) {
-            const errorText = await saveResponse.text();
-            throw new Error(`HTTP ${saveResponse.status}: ${errorText}`);
-          }
-          
-          const saveData = await saveResponse.json();
-          
-          if (saveData.success) {
-            console.log('✅ [Frontend] Registro VI ALA salvo com sucesso no Supabase');
-          } else {
-            console.warn('⚠️ [Frontend] Aviso: Não foi possível salvar registro VI ALA:', saveData.error);
-          }
-        } catch (saveErr) {
-          console.error('❌ [Frontend] Erro ao salvar registro VI ALA:', saveErr);
-          console.error('❌ [Frontend] Mensagem:', saveErr.message);
-          console.error('❌ [Frontend] Stack:', saveErr.stack);
-          // Não bloquear geração do PDF se o salvamento falhar, mas logar o erro
-        }
-      } else {
-        console.warn('⚠️ [Frontend] VI ALA não foi obtido, não será salvo na base');
-      }
 
       // Criar nome do arquivo PDF com VI ALA no formato: "VI ALA - XXXXXXX - ALA-15002 - Engenharia.pdf"
       let pdfFileName = '';
@@ -7107,7 +7045,15 @@
     } catch (err) {
       console.error('Erro na geração de PDF:', err);
       generatingPDF = false;
-      error = 'Erro ao exportar PDF: ' + err.message;
+      currentVIALA = '';
+
+      if (err.name === 'AbortError') {
+        error = 'Tempo esgotado ao registrar o VI ALA no Supabase. Tente novamente.';
+      } else if (err.message && err.message.includes('HTTP 500')) {
+        error = 'Não foi possível salvar o VI ALA no Supabase. O PDF não foi gerado para evitar número duplicado.';
+      } else {
+        error = 'Erro ao registrar VI ALA / exportar PDF: ' + err.message;
+      }
     }
   }
 
