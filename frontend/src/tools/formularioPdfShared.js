@@ -781,9 +781,80 @@ export async function loadCapaOndasDataUrl(baseUrl = '') {
   return loadAssetDataUrl([BRAND.capaOndasPath, '/images/capa-ondas.svg'], baseUrl);
 }
 
-/** Assinatura do supervisor na Lista de Material */
+/**
+ * Remove fundo branco/cinza de scans de assinatura (deixa só o traço na página).
+ * Funciona no navegador ao carregar o asset; em ambiente sem DOM devolve o original.
+ */
+export function stripSignatureLightBackground(dataUrl, options = {}) {
+  if (!dataUrl || typeof document === 'undefined') return Promise.resolve(dataUrl || '');
+
+  const threshold = options.threshold ?? BRAND.assinaturaFundoClaroLimite ?? 238;
+  const featherStart = Math.max(0, threshold - 42);
+
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const w = img.naturalWidth || img.width;
+        const h = img.naturalHeight || img.height;
+        if (!w || !h) {
+          resolve(dataUrl);
+          return;
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        if (!ctx) {
+          resolve(dataUrl);
+          return;
+        }
+        ctx.drawImage(img, 0, 0, w, h);
+        const imageData = ctx.getImageData(0, 0, w, h);
+        const px = imageData.data;
+        let hasTransparency = false;
+        for (let a = 3; a < px.length; a += 4) {
+          if (px[a] < 252) {
+            hasTransparency = true;
+            break;
+          }
+        }
+        if (hasTransparency) {
+          resolve(dataUrl);
+          return;
+        }
+        for (let i = 0; i < px.length; i += 4) {
+          const r = px[i];
+          const g = px[i + 1];
+          const b = px[i + 2];
+          const min = Math.min(r, g, b);
+          if (min >= threshold) {
+            px[i + 3] = 0;
+          } else if (min >= featherStart) {
+            const t = (min - featherStart) / (threshold - featherStart);
+            px[i + 3] = Math.round(255 * (1 - t));
+          }
+        }
+        ctx.putImageData(imageData, 0, 0);
+        resolve(canvas.toDataURL('image/png'));
+      } catch {
+        resolve(dataUrl);
+      }
+    };
+    img.onerror = () => resolve(dataUrl);
+    img.src = dataUrl;
+  });
+}
+
+/** Assinatura na Lista de Material — carrega e remove fundo claro para integrar ao PDF */
 export async function loadAssinaturaSupervisorDataUrl(baseUrl = '') {
-  return loadAssetDataUrl([BRAND.assinaturaSupervisorPath], baseUrl);
+  const paths = BRAND.assinaturaSupervisorPaths || [
+    '/images/assinatura-supervisor.png',
+    '/images/assinatura-supervisor.svg'
+  ];
+  const raw = await loadAssetDataUrl(paths, baseUrl);
+  if (!raw) return '';
+  return stripSignatureLightBackground(raw);
 }
 
 function getLogoUrl(options = {}) {
@@ -798,7 +869,13 @@ function getCapaOndasUrl(options = {}) {
 
 function getAssinaturaSupervisorUrl(options = {}) {
   if (options.assinaturaSupervisorDataUrl) return options.assinaturaSupervisorDataUrl;
-  return resolveAssetUrl(BRAND.assinaturaSupervisorPath, options.baseUrl || '');
+  const paths = BRAND.assinaturaSupervisorPaths || ['/images/assinatura-supervisor.png'];
+  const baseUrl = options.baseUrl || '';
+  for (const path of paths) {
+    const url = resolveAssetUrl(path, baseUrl);
+    if (url) return url;
+  }
+  return '';
 }
 
 function getClientLabel(formData) {
@@ -807,6 +884,81 @@ function getClientLabel(formData) {
     formData.cabecalho?.cliente?.trim() ||
     ''
   );
+}
+
+/** Remove caracteres inválidos em nomes de arquivo. */
+export function sanitizePdfFileNameBase(name) {
+  const cleaned = (name ?? '')
+    .replace(/[\\/:*?"<>|]/g, '-')
+    .replace(/[\u0000-\u001f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/\.+$/, '')
+    .slice(0, 180);
+  return cleaned || 'Formulario';
+}
+
+/** Nome do PDF ao gerar — usa o texto de Cliente / Projeto (capa) quando preenchido. */
+export function getEngineeringPdfFileName(formData) {
+  const capaCliente = formData?.capa?.clienteProjeto?.trim();
+  if (capaCliente) {
+    return `${sanitizePdfFileNameBase(capaCliente)}.pdf`;
+  }
+  const fallback =
+    formData?.cabecalho?.ordemJira?.trim() ||
+    formData?.cabecalho?.contrato?.trim() ||
+    formData?.cabecalho?.cliente?.trim();
+  if (fallback) {
+    return `${sanitizePdfFileNameBase(fallback)} - Engenharia.pdf`;
+  }
+  return 'Formulario.pdf';
+}
+
+/** Título do HTML / diálogo de impressão (sem .pdf). */
+export function getEngineeringPdfDocumentTitle(formData) {
+  return getEngineeringPdfFileName(formData).replace(/\.pdf$/i, '');
+}
+
+/** Define título do documento impresso (Chrome/Edge usam isso em "Salvar como PDF"). */
+function applyPrintDocumentTitle(doc, title) {
+  if (!doc || !title) return;
+  doc.title = title;
+  const titleEl = doc.querySelector('title');
+  if (titleEl) titleEl.textContent = title;
+}
+
+/** Enquanto impressão ativa, App.svelte não sobrescreve document.title da aba. */
+let lockedBrowserTabTitle = null;
+
+export function getLockedBrowserTabTitle() {
+  return lockedBrowserTabTitle;
+}
+
+function setLockedBrowserTabTitle(title) {
+  lockedBrowserTabTitle = (title || '').trim() || null;
+}
+
+function clearLockedBrowserTabTitle() {
+  lockedBrowserTabTitle = null;
+}
+
+/** Chrome/Edge no Windows usam o título da aba principal, não do iframe. */
+function applyParentTabPrintTitle(title) {
+  if (typeof document === 'undefined' || !title) return () => {};
+  const parentDoc = window.top?.document || document;
+  const saved = parentDoc.title;
+  setLockedBrowserTabTitle(title);
+  parentDoc.title = title;
+  let restored = false;
+  const restore = () => {
+    if (restored) return;
+    restored = true;
+    clearLockedBrowserTabTitle();
+    parentDoc.title = saved;
+  };
+  window.addEventListener('afterprint', restore, { once: true });
+  setTimeout(restore, 120000);
+  return restore;
 }
 
 function buildBrandLayers(logoUrl, variant = 'inner') {
@@ -1284,15 +1436,34 @@ export const FORMULARIO_PDF_STYLES = `
     text-align: center;
     width: 100%;
   }
+  .lista-material-assinatura-graphic {
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+    min-height: 18mm;
+    margin: 0 auto 0.5mm;
+    padding: 0;
+    line-height: 0;
+    background: transparent;
+  }
   .lista-material-assinatura-img {
     display: block;
-    max-width: 60mm;
-    max-height: 24mm;
+    max-width: 52mm;
+    max-height: 20mm;
     width: auto;
     height: auto;
     object-fit: contain;
     object-position: center bottom;
-    margin: 0 auto 2mm;
+    margin: 0;
+    padding: 0;
+    border: none;
+    background: transparent;
+    box-shadow: none;
+    /* Fallback se o PNG processado não carregar: “some” com fundo branco do papel */
+    mix-blend-mode: multiply;
+  }
+  .lista-material-assinatura-img--processed {
+    mix-blend-mode: normal;
   }
   .lista-material-assinatura-linha {
     width: 72mm;
@@ -1939,12 +2110,15 @@ function buildPassoPagesHtml(passo, passoNumero, passoIndex, startPageNum, optio
 function buildSupervisorAssinaturaHtml(options = {}) {
   const assinaturaUrl = getAssinaturaSupervisorUrl(options);
   const cargo = (BRAND.supervisorCargo || '').trim();
+  const processed = !!options.assinaturaSupervisorDataUrl;
   const imgHtml = assinaturaUrl
-    ? `<img class="lista-material-assinatura-img" src="${attrUrl(assinaturaUrl)}" alt="" aria-hidden="true" />`
+    ? `<div class="lista-material-assinatura-graphic">
+        <img class="lista-material-assinatura-img${processed ? ' lista-material-assinatura-img--processed' : ''}" src="${attrUrl(assinaturaUrl)}" alt="" aria-hidden="true" />
+      </div>`
     : '';
   if (!imgHtml && !cargo) return '';
   return `
-    <div class="lista-material-assinatura" role="group" aria-label="Assinatura do supervisor">
+    <div class="lista-material-assinatura" role="group" aria-label="Assinatura do coordenador">
       ${imgHtml}
       <div class="lista-material-assinatura-linha" aria-hidden="true"></div>
       ${cargo ? `<p class="lista-material-assinatura-cargo">${escapeHtml(cargo)}</p>` : ''}
@@ -2038,12 +2212,7 @@ export function buildPdfBodyHtml(formData, meta = {}, options = {}) {
 
 export function buildFullPdfHtml(formData, meta = {}, options = {}) {
   const measureNonce = options.measureNonce ?? '';
-  const fileBase =
-    formData.cabecalho.ordemJira?.trim() ||
-    formData.cabecalho.contrato?.trim() ||
-    formData.cabecalho.cliente?.trim() ||
-    'Formulario-Engenharia';
-  const title = `${fileBase} - Engenharia`;
+  const title = getEngineeringPdfDocumentTitle(formData);
   const baseUrl = options.baseUrl || '';
   const baseTag = baseUrl
     ? `<base href="${escapeHtml(baseUrl.replace(/\/$/, '') + '/')}">`
@@ -2125,10 +2294,12 @@ export function printPdfHtml(html, options = {}) {
           finish({ success: false, error: 'iframe_failed' });
           return;
         }
-        if (options.title) doc.title = options.title;
+        applyPrintDocumentTitle(doc, options.title);
         await waitForPrintImages(doc);
+        const restoreParent = applyParentTabPrintTitle(options.title);
         win.focus();
         win.print();
+        doc.defaultView?.addEventListener('afterprint', restoreParent, { once: true });
         finish({ success: true, printHint: PDF_PRINT_HINT });
       } catch (err) {
         console.error('Erro ao imprimir PDF:', err);
@@ -2142,13 +2313,82 @@ export function printPdfHtml(html, options = {}) {
   });
 }
 
+/**
+ * Imprime com nome de arquivo correto no "Salvar como PDF".
+ * Abre janela dedicada (título = Cliente/Projeto) — necessário no Chrome/Windows.
+ */
+export async function printPdfHtmlNamed(html, options = {}) {
+  const title = (options.title || '').trim() || 'Formulario';
+
+  const printWindow = typeof window !== 'undefined' ? window.open('about:blank', '_blank') : null;
+  if (!printWindow) {
+    const fallback = await printPdfHtml(html, options);
+    return fallback.success ? fallback : { success: false, error: 'popup_blocked' };
+  }
+  if (printWindow.document) {
+    try {
+      printWindow.document.open();
+      printWindow.document.write(html);
+      printWindow.document.close();
+      applyPrintDocumentTitle(printWindow.document, title);
+      printWindow.document.title = title;
+
+      await new Promise((resolve) => {
+        const run = async () => {
+          try {
+            await waitForPrintImages(printWindow.document);
+            printWindow.document.title = title;
+            printWindow.focus();
+            const closeLater = () => {
+              setTimeout(() => {
+                try {
+                  if (!printWindow.closed) printWindow.close();
+                } catch {
+                  /* ignore */
+                }
+              }, 400);
+            };
+            printWindow.onafterprint = closeLater;
+            printWindow.print();
+            setTimeout(closeLater, 90000);
+            resolve();
+          } catch (err) {
+            console.error('Erro ao imprimir na janela dedicada:', err);
+            resolve();
+          }
+        };
+        if (printWindow.document.readyState === 'complete') {
+          setTimeout(run, 350);
+        } else {
+          printWindow.onload = () => setTimeout(run, 350);
+        }
+      });
+
+      return { success: true, printHint: PDF_PRINT_HINT };
+    } catch (err) {
+      console.warn('Janela de impressão falhou, tentando iframe:', err);
+      try {
+        if (!printWindow.closed) printWindow.close();
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  return printPdfHtml(html, options);
+}
+
 /** Imprime a partir do iframe de prévia (WYSIWYG) ou replica o HTML em iframe oculto. */
 export async function printEngineeringPdf(previewIframe, html, options = {}) {
   if (previewIframe?.contentWindow?.document?.body) {
     try {
-      await waitForPrintImages(previewIframe.contentDocument);
+      const doc = previewIframe.contentDocument;
+      applyPrintDocumentTitle(doc, options.title);
+      await waitForPrintImages(doc);
+      const restoreParent = applyParentTabPrintTitle(options.title);
       previewIframe.contentWindow.focus();
       previewIframe.contentWindow.print();
+      doc.defaultView?.addEventListener('afterprint', restoreParent, { once: true });
       return { success: true, printHint: PDF_PRINT_HINT };
     } catch (err) {
       console.warn('Impressão pela prévia falhou, usando cópia do HTML:', err);
@@ -2156,7 +2396,7 @@ export async function printEngineeringPdf(previewIframe, html, options = {}) {
   }
 
   if (html) {
-    return printPdfHtml(html, options);
+    return printPdfHtmlNamed(html, options);
   }
 
   return { success: false, error: 'no_html' };
@@ -2174,17 +2414,16 @@ export async function openPdfPrintWindow(formData, options = {}) {
       capaOndasDataUrl: options.capaOndasDataUrl,
       assinaturaSupervisorDataUrl: options.assinaturaSupervisorDataUrl
     });
-  const fileName =
-    options.fileName ||
-    `${formData.cabecalho.ordemJira?.trim() || formData.cabecalho.contrato?.trim() || formData.cabecalho.cliente?.trim() || 'Formulario'} - Engenharia.pdf`;
+  const fileName = options.fileName || getEngineeringPdfFileName(formData);
+  const docTitle = fileName.replace(/\.pdf$/i, '');
 
   const previewResult = await printEngineeringPdf(options.previewIframe, html, {
-    title: fileName.replace('.pdf', '')
+    title: docTitle
   });
   if (previewResult.success) return previewResult;
 
   const iframeResult = await printPdfHtml(html, {
-    title: fileName.replace('.pdf', '')
+    title: docTitle
   });
   if (iframeResult.success) return iframeResult;
 
@@ -2196,7 +2435,7 @@ export async function openPdfPrintWindow(formData, options = {}) {
   printWindow.document.open();
   printWindow.document.write(html);
   printWindow.document.close();
-  printWindow.document.title = fileName.replace('.pdf', '');
+  printWindow.document.title = docTitle;
 
   const runPrint = async () => {
     if (printWindow.closed) return;
