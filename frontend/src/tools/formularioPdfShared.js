@@ -1194,6 +1194,9 @@ export const FORMULARIO_PDF_STYLES = `
     margin-top: 0;
     padding-top: 0;
   }
+  .pdf-page-lista-material .artwork-page-footer .capa-rodape {
+    display: none;
+  }
   .artwork-page-num {
     position: absolute;
     right: 0;
