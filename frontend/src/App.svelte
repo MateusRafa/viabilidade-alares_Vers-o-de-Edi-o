@@ -5,6 +5,7 @@
   import Dashboard from './Dashboard.svelte';
   import ToolWrapper from './components/ToolWrapper.svelte';
   import { getToolById } from './tools/toolsRegistry.js';
+  import { getLockedBrowserTabTitle } from './tools/formularioPdfShared.js';
 
   // Helper para URL da API (suporta desenvolvimento e produção)
   const API_URL = import.meta.env.VITE_API_URL || '';
@@ -220,7 +221,10 @@
 
   // Atualizar título e favicon da aba do navegador dinamicamente
   $: if (typeof document !== 'undefined') {
-    if (currentView === 'tool' && currentTool) {
+    const printTabTitle = getLockedBrowserTabTitle();
+    if (printTabTitle) {
+      document.title = printTabTitle;
+    } else if (currentView === 'tool' && currentTool) {
       const tool = getToolById(currentTool);
       if (tool) {
         document.title = tool.title;
