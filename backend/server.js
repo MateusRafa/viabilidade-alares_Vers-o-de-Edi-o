@@ -4151,7 +4151,7 @@ async function readVIALABaseFromSupabase() {
       
       const { data, error } = await supabase
         .from('vi_ala')
-        .select('vi_ala, ala, data, projetista, cidade, endereco, latitude, longitude, tabulacao_final, created_at')
+        .select('*')
         .order('created_at', { ascending: false })
         .range(offset, offset + BATCH_SIZE - 1); // range é inclusivo: [offset, offset + BATCH_SIZE - 1]
       
@@ -4248,8 +4248,8 @@ async function readVIALABaseFromSupabase() {
         'ENDEREÇO': row.endereco || '',
         'LATITUDE': row.latitude || '',
         'LONGITUDE': row.longitude || '',
-        'TABULAÇÃO FINAL': row.tabulacao_final || '',
-      'HORA': row.hora || ''
+        'TABULAÇÃO FINAL': row.tabulacao_final || row['tabulacao final'] || '',
+        'HORA': row.hora || ''
       };
     });
     
@@ -4503,6 +4503,84 @@ function parseVIALARecordCoordinate(value) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function getMissingSupabaseColumn(errorMessage) {
+  if (!errorMessage) return null;
+  const match = String(errorMessage).match(/Could not find the '([^']+)' column/i);
+  return match ? match[1] : null;
+}
+
+async function insertVIALAIntoSupabase(dataToSave) {
+  const payload = { ...dataToSave };
+  const maxAttempts = 12;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const { error } = await supabase
+      .from('vi_ala')
+      .insert([payload]);
+
+    if (!error) {
+      return { success: true, payload };
+    }
+
+    const missingColumn = getMissingSupabaseColumn(error.message);
+    if (missingColumn && Object.prototype.hasOwnProperty.call(payload, missingColumn)) {
+      console.warn(`⚠️ [Supabase] Coluna '${missingColumn}' não existe em vi_ala, removendo do insert (tentativa ${attempt})...`);
+      delete payload[missingColumn];
+      continue;
+    }
+
+    return {
+      success: false,
+      error: error.message || 'Erro ao inserir VI ALA no Supabase',
+      code: error.code || null
+    };
+  }
+
+  return {
+    success: false,
+    error: 'Não foi possível inserir VI ALA após remover colunas inexistentes'
+  };
+}
+
+async function insertVIALABatchIntoSupabase(records) {
+  if (!records.length) {
+    return { success: true, count: 0 };
+  }
+
+  const payload = records.map((record) => ({ ...record }));
+  const maxAttempts = 12;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const { error } = await supabase
+      .from('vi_ala')
+      .insert(payload);
+
+    if (!error) {
+      return { success: true, count: payload.length };
+    }
+
+    const missingColumn = getMissingSupabaseColumn(error.message);
+    if (missingColumn && payload.some((record) => Object.prototype.hasOwnProperty.call(record, missingColumn))) {
+      console.warn(`⚠️ [Supabase] Coluna '${missingColumn}' não existe em vi_ala, removendo do lote (tentativa ${attempt})...`);
+      for (const record of payload) {
+        delete record[missingColumn];
+      }
+      continue;
+    }
+
+    return {
+      success: false,
+      error: error.message || 'Erro ao inserir lote de VI ALAs no Supabase',
+      code: error.code || null
+    };
+  }
+
+  return {
+    success: false,
+    error: 'Não foi possível inserir lote de VI ALAs após remover colunas inexistentes'
+  };
+}
+
 function buildVIALARecordForSupabase(record) {
   const tabulacaoFinalValue = record['TABULAÇÃO FINAL'];
 
@@ -4566,22 +4644,22 @@ async function saveVIALARecordToSupabase(record) {
 
     console.log('💾 [Supabase] Dados formatados para salvar:', JSON.stringify(dataToSave, null, 2));
 
-    const { error } = await supabase
-      .from('vi_ala')
-      .insert([dataToSave]);
+    const insertResult = await insertVIALAIntoSupabase(dataToSave);
 
-    if (error) {
-      console.error('❌ [Supabase] Erro ao inserir VI ALA:', error);
-      console.error('❌ [Supabase] Detalhes do erro:', JSON.stringify(error, null, 2));
+    if (!insertResult.success) {
+      console.error('❌ [Supabase] Erro ao inserir VI ALA:', insertResult.error);
       return {
         success: false,
-        error: error.message || 'Erro ao inserir VI ALA no Supabase',
-        code: error.code || null,
+        error: insertResult.error,
+        code: insertResult.code || null,
         useFallback: false
       };
     }
 
     console.log(`✅ [Supabase] Registro VI ALA salvo: ${dataToSave.vi_ala}`);
+    if (insertResult.payload) {
+      console.log('✅ [Supabase] Colunas efetivamente salvas:', Object.keys(insertResult.payload).join(', '));
+    }
     return { success: true, storage: 'supabase' };
   } catch (err) {
     console.error('❌ [Supabase] Erro ao salvar registro VI ALA:', err);
@@ -8877,15 +8955,13 @@ app.post('/api/vi-ala/upload-base', upload.single('file'), async (req, res) => {
       const batchSize = 100;
       for (let i = 0; i < recordsToInsert.length; i += batchSize) {
         const batch = recordsToInsert.slice(i, i + batchSize);
-        const { error: insertError } = await supabase
-          .from('vi_ala')
-          .insert(batch);
-        
-        if (insertError) {
-          console.error(`❌ [Upload VI ALA] Erro ao inserir lote ${i / batchSize + 1}:`, insertError);
-          errors.push(`Erro no lote ${i / batchSize + 1}: ${insertError.message}`);
+        const batchResult = await insertVIALABatchIntoSupabase(batch);
+
+        if (!batchResult.success) {
+          console.error(`❌ [Upload VI ALA] Erro ao inserir lote ${i / batchSize + 1}:`, batchResult.error);
+          errors.push(`Erro no lote ${i / batchSize + 1}: ${batchResult.error}`);
         } else {
-          savedCount += batch.length;
+          savedCount += batchResult.count || batch.length;
         }
       }
       
