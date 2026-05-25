@@ -778,6 +778,11 @@ export async function loadCapaOndasDataUrl(baseUrl = '') {
   return loadAssetDataUrl([BRAND.capaOndasPath, '/images/capa-ondas.svg'], baseUrl);
 }
 
+/** Assinatura do supervisor na Lista de Material */
+export async function loadAssinaturaSupervisorDataUrl(baseUrl = '') {
+  return loadAssetDataUrl([BRAND.assinaturaSupervisorPath], baseUrl);
+}
+
 function getLogoUrl(options = {}) {
   if (options.logoDataUrl) return options.logoDataUrl;
   return resolveAssetUrl(BRAND.logoPath, options.baseUrl || '');
@@ -786,6 +791,11 @@ function getLogoUrl(options = {}) {
 function getCapaOndasUrl(options = {}) {
   if (options.capaOndasDataUrl) return options.capaOndasDataUrl;
   return resolveAssetUrl(BRAND.capaOndasPath, options.baseUrl || '');
+}
+
+function getAssinaturaSupervisorUrl(options = {}) {
+  if (options.assinaturaSupervisorDataUrl) return options.assinaturaSupervisorDataUrl;
+  return resolveAssetUrl(BRAND.assinaturaSupervisorPath, options.baseUrl || '');
 }
 
 function getClientLabel(formData) {
@@ -1245,13 +1255,56 @@ export const FORMULARIO_PDF_STYLES = `
     white-space: pre-wrap;
   }
 
+  .pdf-page-lista-material .page-content-lista-material {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
   .pdf-page-lista-material .lista-material-body {
+    flex: 1;
+    min-height: 0;
     margin-top: 2mm;
+    overflow: hidden;
   }
   .pdf-page-lista-material .lista-material-conteudo {
     font-size: 12px;
     line-height: 1.5;
     color: #333;
+  }
+  .lista-material-assinatura {
+    flex-shrink: 0;
+    margin-top: auto;
+    padding-top: 10mm;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    width: 100%;
+  }
+  .lista-material-assinatura-img {
+    display: block;
+    max-width: 60mm;
+    max-height: 24mm;
+    width: auto;
+    height: auto;
+    object-fit: contain;
+    object-position: center bottom;
+    margin: 0 auto 2mm;
+  }
+  .lista-material-assinatura-linha {
+    width: 72mm;
+    max-width: 85%;
+    border-bottom: 1px solid #1f2937;
+    margin: 0 0 2.5mm;
+  }
+  .lista-material-assinatura-cargo {
+    margin: 0;
+    padding: 0 4mm;
+    font-size: 10px;
+    font-weight: 600;
+    line-height: 1.35;
+    color: #374151;
+    letter-spacing: 0.02em;
   }
 
   .pdf-page-anexo .page-content-anexo {
@@ -1880,6 +1933,22 @@ function buildPassoPagesHtml(passo, passoNumero, passoIndex, startPageNum, optio
   return { html, nextPageNum: pageNum };
 }
 
+function buildSupervisorAssinaturaHtml(options = {}) {
+  const assinaturaUrl = getAssinaturaSupervisorUrl(options);
+  const cargo = (BRAND.supervisorCargo || '').trim();
+  const imgHtml = assinaturaUrl
+    ? `<img class="lista-material-assinatura-img" src="${attrUrl(assinaturaUrl)}" alt="" aria-hidden="true" />`
+    : '';
+  if (!imgHtml && !cargo) return '';
+  return `
+    <div class="lista-material-assinatura" role="group" aria-label="Assinatura do supervisor">
+      ${imgHtml}
+      <div class="lista-material-assinatura-linha" aria-hidden="true"></div>
+      ${cargo ? `<p class="lista-material-assinatura-cargo">${escapeHtml(cargo)}</p>` : ''}
+    </div>
+  `;
+}
+
 function buildListaMaterialConteudoHtml(material) {
   const valueHtml = displayDescricaoValue(material.descricao);
   const isEmpty = valueHtml.includes('empty-value');
@@ -1907,10 +1976,11 @@ function buildPageListaMaterial(formData, pageNum, options = {}) {
         </div>
         <div class="page-body-inner page-body-artwork">
           <h2 class="page-title">Lista de Material</h2>
-          <div class="page-content">
+          <div class="page-content page-content-lista-material">
             <div class="lista-material-body">
               ${buildListaMaterialConteudoHtml(material)}
             </div>
+            ${buildSupervisorAssinaturaHtml(options)}
           </div>
         </div>
         ${buildArtworkPageFooter(pageNum, options.totalPages)}
@@ -2098,7 +2168,8 @@ export async function openPdfPrintWindow(formData, options = {}) {
     buildFullPdfHtml(formData, {}, {
       baseUrl,
       logoDataUrl: options.logoDataUrl,
-      capaOndasDataUrl: options.capaOndasDataUrl
+      capaOndasDataUrl: options.capaOndasDataUrl,
+      assinaturaSupervisorDataUrl: options.assinaturaSupervisorDataUrl
     });
   const fileName =
     options.fileName ||
