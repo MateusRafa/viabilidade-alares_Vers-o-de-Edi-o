@@ -1469,16 +1469,25 @@ export const FORMULARIO_PDF_STYLES = `
     width: 72mm;
     max-width: 85%;
     border-bottom: 1px solid #1f2937;
-    margin: 0 0 2.5mm;
+    margin: 0 0 3mm;
+  }
+  .lista-material-assinatura-nome {
+    margin: 0 0 1.5mm;
+    padding: 0 4mm;
+    font-size: 10px;
+    font-weight: 500;
+    line-height: 1.35;
+    color: #1f2937;
   }
   .lista-material-assinatura-cargo {
     margin: 0;
     padding: 0 4mm;
-    font-size: 10px;
-    font-weight: 600;
-    line-height: 1.35;
-    color: #374151;
-    letter-spacing: 0.02em;
+    max-width: 95mm;
+    font-size: 9px;
+    font-weight: 700;
+    line-height: 1.4;
+    color: #1f2937;
+    letter-spacing: 0.01em;
   }
 
   .pdf-page-anexo .page-content-anexo {
@@ -2109,19 +2118,27 @@ function buildPassoPagesHtml(passo, passoNumero, passoIndex, startPageNum, optio
 
 function buildSupervisorAssinaturaHtml(options = {}) {
   const assinaturaUrl = getAssinaturaSupervisorUrl(options);
-  const cargo = (BRAND.supervisorCargo || '').trim();
+  const nome = (BRAND.assinaturaCoordenadorNome || '').trim();
+  const cargo = (BRAND.assinaturaCoordenadorCargo || BRAND.supervisorCargo || '').trim();
   const processed = !!options.assinaturaSupervisorDataUrl;
   const imgHtml = assinaturaUrl
     ? `<div class="lista-material-assinatura-graphic">
         <img class="lista-material-assinatura-img${processed ? ' lista-material-assinatura-img--processed' : ''}" src="${attrUrl(assinaturaUrl)}" alt="" aria-hidden="true" />
       </div>`
     : '';
-  if (!imgHtml && !cargo) return '';
+  if (!imgHtml && !nome && !cargo) return '';
+  const nomeHtml = nome
+    ? `<p class="lista-material-assinatura-nome">${escapeHtml(nome)}</p>`
+    : '';
+  const cargoHtml = cargo
+    ? `<p class="lista-material-assinatura-cargo">${escapeHtml(cargo)}</p>`
+    : '';
   return `
     <div class="lista-material-assinatura" role="group" aria-label="Assinatura do coordenador">
       ${imgHtml}
       <div class="lista-material-assinatura-linha" aria-hidden="true"></div>
-      ${cargo ? `<p class="lista-material-assinatura-cargo">${escapeHtml(cargo)}</p>` : ''}
+      ${nomeHtml}
+      ${cargoHtml}
     </div>
   `;
 }
