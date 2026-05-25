@@ -9,8 +9,16 @@ export const BRAND = {
   logoPath: '/images/Imagem1.svg',
   logoPathPngFallback: '/images/alares-logo.png',
   capaOndasPath: '/images/Imagem2.svg',
-  /** SVG da assinatura digitalizada — substitua o arquivo em public/images/ */
-  assinaturaSupervisorPath: '/images/assinatura-supervisor.svg',
+  /**
+   * Assinatura na Lista de Material — tenta PNG (fundo transparente) e depois SVG.
+   * Coloque o arquivo em: frontend/public/images/assinatura-supervisor.png
+   */
+  assinaturaSupervisorPaths: [
+    '/images/assinatura-supervisor.png',
+    '/images/assinatura-supervisor.svg'
+  ],
+  /** Pixels RGB acima deste valor viram transparentes (0–255; maior = remove mais cinza) */
+  assinaturaFundoClaroLimite: 238,
   /** Texto exibido abaixo da linha de assinatura na Lista de Material */
   supervisorCargo: 'Coordenador de Projetos',
   /** Nome padrão do campo Coordenador de Projetos (Informações do projeto) */
