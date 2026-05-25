@@ -9,7 +9,8 @@
     getPassoLayoutWarnings,
     CABECALHO_FIELDS,
     buildFullPdfHtml,
-    printEngineeringPdf,
+    getEngineeringPdfDocumentTitle,
+    printPdfHtmlNamed,
     loadLogoDataUrl,
     loadCapaOndasDataUrl,
     loadAssinaturaSupervisorDataUrl,
@@ -767,16 +768,14 @@
     generatingPDF = true;
     pdfError = '';
     await flushPreviewRefresh();
-    const fileName = `${formData.cabecalho.ordemJira?.trim() || formData.cabecalho.contrato?.trim() || formData.cabecalho.cliente?.trim() || 'Formulario'} - Engenharia.pdf`;
+    const docTitle = getEngineeringPdfDocumentTitle(formData);
     const printHtml = buildFullPdfHtml(formData, {}, buildPreviewHtmlOptions());
-    const result = await printEngineeringPdf(previewIframeEl, printHtml, {
-      title: fileName.replace('.pdf', '')
-    });
+    const result = await printPdfHtmlNamed(printHtml, { title: docTitle });
     generatingPDF = false;
     if (!result.success) {
       pdfError =
         result.error === 'popup_blocked'
-          ? 'Não foi possível abrir a impressão. Verifique se o bloqueador de pop-ups está desativado.'
+          ? 'Não foi possível abrir a impressão. Permita pop-ups para este site e tente de novo.'
           : 'Não foi possível abrir a impressão. Tente novamente.';
     }
   }
