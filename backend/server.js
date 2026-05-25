@@ -4464,100 +4464,134 @@ async function getNextVIALA() {
   return await getNextVIALAFromExcel();
 }
 
+function parseVIALARecordDate(record) {
+  let dataConvertida = null;
+  if (record['DATA']) {
+    const dataStr = String(record['DATA']).trim();
+    if (dataStr.includes('/')) {
+      const partes = dataStr.split(' ')[0].split('/');
+      if (partes.length === 3) {
+        const dia = partes[0].padStart(2, '0');
+        const mes = partes[1].padStart(2, '0');
+        const ano = partes[2];
+        dataConvertida = `${ano}-${mes}-${dia}`;
+      }
+    } else if (dataStr.match(/^\d{4}-\d{2}-\d{2}/)) {
+      dataConvertida = dataStr.split(' ')[0];
+    }
+
+    if (!dataConvertida) {
+      const dateObj = new Date(dataStr);
+      if (!isNaN(dateObj.getTime())) {
+        dataConvertida = dateObj.toISOString().split('T')[0];
+      }
+    }
+  }
+
+  if (!dataConvertida) {
+    dataConvertida = new Date().toISOString().split('T')[0];
+  }
+
+  return dataConvertida;
+}
+
+function parseVIALARecordCoordinate(value) {
+  if (value === null || value === undefined || value === '') {
+    return null;
+  }
+  const parsed = parseFloat(String(value).replace(',', '.'));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function buildVIALARecordForSupabase(record) {
+  const tabulacaoFinalValue = record['TABULAÇÃO FINAL'];
+  const horaValue = record['HORA'];
+
+  return {
+    vi_ala: record['VI ALA'] || '',
+    ala: record['ALA'] || null,
+    data: parseVIALARecordDate(record),
+    hora: (horaValue && String(horaValue).trim() !== '') ? String(horaValue).trim() : null,
+    projetista: record['PROJETISTA'] || null,
+    cidade: record['CIDADE'] || null,
+    endereco: record['ENDEREÇO'] || null,
+    latitude: parseVIALARecordCoordinate(record['LATITUDE']),
+    longitude: parseVIALARecordCoordinate(record['LONGITUDE']),
+    tabulacao_final: (tabulacaoFinalValue && String(tabulacaoFinalValue).trim() !== '')
+      ? String(tabulacaoFinalValue).trim()
+      : null
+  };
+}
+
+function buildVIALARecordFromRequest(body, viAla) {
+  const {
+    ala,
+    data,
+    hora,
+    projetista,
+    cidade,
+    endereco,
+    latitude,
+    longitude,
+    tabulacaoFinal
+  } = body;
+
+  return {
+    'VI ALA': viAla.trim(),
+    'ALA': ala || '',
+    'DATA': data || '',
+    'HORA': hora || '',
+    'PROJETISTA': projetista || '',
+    'CIDADE': cidade || '',
+    'ENDEREÇO': endereco || '',
+    'LATITUDE': latitude || '',
+    'LONGITUDE': longitude || '',
+    'TABULAÇÃO FINAL': tabulacaoFinal || ''
+  };
+}
+
 // Função para salvar registro VI ALA no Supabase (nova versão)
 async function saveVIALARecordToSupabase(record) {
   try {
     if (!supabase || !isSupabaseAvailable()) {
-      return false; // Indica que deve usar fallback
+      return { success: false, error: 'Supabase não disponível', useFallback: true };
     }
-    
+
     console.log('💾 [Supabase] Salvando registro VI ALA no Supabase...');
     console.log('💾 [Supabase] Dados recebidos:', JSON.stringify(record, null, 2));
-    console.log('💾 [Supabase] Tabulação Final recebida:', record['TABULAÇÃO FINAL']);
-    
-    // Converter data do formato "DD/MM/YYYY HH:MM" para "YYYY-MM-DD" (formato PostgreSQL DATE)
-    let dataConvertida = null;
-    if (record['DATA']) {
-      const dataStr = String(record['DATA']).trim();
-      // Tentar vários formatos de data
-      if (dataStr.includes('/')) {
-        // Formato DD/MM/YYYY ou DD/MM/YYYY HH:MM
-        const partes = dataStr.split(' ')[0].split('/'); // Pega só a data, ignora hora
-        if (partes.length === 3) {
-          const dia = partes[0].padStart(2, '0');
-          const mes = partes[1].padStart(2, '0');
-          const ano = partes[2];
-          dataConvertida = `${ano}-${mes}-${dia}`; // PostgreSQL: YYYY-MM-DD
-        }
-      } else if (dataStr.match(/^\d{4}-\d{2}-\d{2}/)) {
-        // Já está no formato YYYY-MM-DD
-        dataConvertida = dataStr.split(' ')[0]; // Pega só a data, ignora hora se houver
-      }
-      
-      if (!dataConvertida) {
-        console.warn('⚠️ [Supabase] Formato de data não reconhecido:', dataStr);
-        // Tentar criar data a partir de string ISO se possível
-        try {
-          const dateObj = new Date(dataStr);
-          if (!isNaN(dateObj.getTime())) {
-            dataConvertida = dateObj.toISOString().split('T')[0]; // YYYY-MM-DD
-          }
-        } catch (e) {
-          console.warn('⚠️ [Supabase] Não foi possível converter data:', e);
-        }
-      }
-    }
-    
-    // Converter formato Excel para formato Supabase
-    const tabulacaoFinalValue = record['TABULAÇÃO FINAL'];
-    const horaValue = record['HORA'];
-    console.log('💾 [Supabase] Tabulação Final antes de salvar:', tabulacaoFinalValue);
-    console.log('💾 [Supabase] Tipo da tabulação:', typeof tabulacaoFinalValue);
-    console.log('💾 [Supabase] Hora antes de salvar:', horaValue);
-    
-    const dataToSave = {
-      vi_ala: record['VI ALA'] || '',
-      ala: record['ALA'] || null,
-      data: dataConvertida, // Data convertida para formato PostgreSQL
-      hora: (horaValue && horaValue.trim() !== '') ? horaValue.trim() : null, // Nova coluna: hora no formato "20:30h"
-      projetista: record['PROJETISTA'] || null,
-      cidade: record['CIDADE'] || null,
-      endereco: record['ENDEREÇO'] || null,
-      latitude: record['LATITUDE'] ? parseFloat(record['LATITUDE']) : null,
-      longitude: record['LONGITUDE'] ? parseFloat(record['LONGITUDE']) : null,
-      tabulacao_final: (tabulacaoFinalValue && tabulacaoFinalValue.trim() !== '') ? tabulacaoFinalValue.trim() : null
-    };
-    
-    // Validar campos obrigatórios
+
+    const dataToSave = buildVIALARecordForSupabase(record);
+
     if (!dataToSave.vi_ala) {
-      throw new Error('VI ALA é obrigatório');
+      return { success: false, error: 'VI ALA é obrigatório', useFallback: false };
     }
-    
+
     console.log('💾 [Supabase] Dados formatados para salvar:', JSON.stringify(dataToSave, null, 2));
-    console.log('💾 [Supabase] Tabulação Final que será salva:', dataToSave.tabulacao_final);
-    
-    // Inserir no Supabase
-    console.log('💾 [Supabase] Inserindo no Supabase com tabulação_final:', dataToSave.tabulacao_final);
-    const { data: insertedData, error } = await supabase
+
+    const { error } = await supabase
       .from('vi_ala')
-      .insert([dataToSave])
-      .select();
-    
+      .insert([dataToSave]);
+
     if (error) {
       console.error('❌ [Supabase] Erro ao inserir VI ALA:', error);
       console.error('❌ [Supabase] Detalhes do erro:', JSON.stringify(error, null, 2));
-      return false;
+      return {
+        success: false,
+        error: error.message || 'Erro ao inserir VI ALA no Supabase',
+        code: error.code || null,
+        useFallback: false
+      };
     }
-    
+
     console.log(`✅ [Supabase] Registro VI ALA salvo: ${dataToSave.vi_ala}`);
-    if (insertedData && insertedData.length > 0) {
-      console.log('✅ [Supabase] Dados inseridos retornados:', JSON.stringify(insertedData, null, 2));
-      console.log('✅ [Supabase] Tabulação Final salva:', insertedData[0].tabulacao_final);
-    }
-    return true; // Sucesso
+    return { success: true, storage: 'supabase' };
   } catch (err) {
     console.error('❌ [Supabase] Erro ao salvar registro VI ALA:', err);
-    return false; // Fallback para Excel
+    return {
+      success: false,
+      error: err.message || 'Erro inesperado ao salvar VI ALA',
+      useFallback: false
+    };
   }
 }
 
@@ -4567,19 +4601,20 @@ async function saveVIALARecordToExcel(record) {
     try {
       await _ensureVIALABaseInternal();
       const data = await _readVIALABaseInternal();
-      
-      // Adicionar novo registro
-      data.push(record);
-      
-      // Criar worksheet com os dados
+      const viAlaKey = String(record['VI ALA'] || '').trim();
+      const alreadyExists = viAlaKey && data.some((row) => String(row['VI ALA'] || '').trim() === viAlaKey);
+
+      if (!alreadyExists) {
+        data.push(record);
+      }
+
       const worksheet = XLSX.utils.json_to_sheet(data);
       const workbook = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(workbook, worksheet, 'VI ALA');
-      
-      // Salvar arquivo
+
       XLSX.writeFile(workbook, BASE_VI_ALA_FILE);
       console.log('✅ [Excel] Registro VI ALA salvo:', record['VI ALA']);
-      
+
       return true;
     } catch (err) {
       console.error('❌ [Excel] Erro ao salvar registro VI ALA:', err);
@@ -4590,24 +4625,63 @@ async function saveVIALARecordToExcel(record) {
 
 // Função para salvar registro VI ALA (tenta Supabase primeiro, fallback para Excel)
 async function saveVIALARecord(record) {
-  // Tentar Supabase primeiro
-  const saved = await saveVIALARecordToSupabase(record);
-  if (saved) {
-    // Sucesso no Supabase - também atualizar Excel para manter sincronização
+  const supabaseResult = await saveVIALARecordToSupabase(record);
+
+  if (supabaseResult.success) {
     console.log('💾 [Save] Atualizando arquivo Excel após salvar no Supabase...');
     try {
       await saveVIALARecordToExcel(record);
       console.log('✅ [Save] Arquivo Excel atualizado com sucesso');
     } catch (excelErr) {
-      // Não falhar se Excel der erro, apenas logar
       console.warn('⚠️ [Save] Erro ao atualizar Excel (não crítico):', excelErr.message);
     }
-    return;
+    return { success: true, storage: 'supabase' };
   }
-  
-  // Fallback para Excel
-  console.log('⚠️ [Save] Usando fallback Excel para salvar VI ALA');
+
+  if (isSupabaseAvailable()) {
+    throw new Error(supabaseResult.error || 'Falha ao salvar VI ALA no Supabase');
+  }
+
+  console.log('⚠️ [Save] Supabase indisponível, usando fallback Excel para salvar VI ALA');
   await saveVIALARecordToExcel(record);
+  return { success: true, storage: 'excel' };
+}
+
+// Gera o próximo VI ALA e salva o registro em uma única operação no backend
+async function registerVIALARecord(body) {
+  const maxAttempts = 3;
+  let lastError = 'Não foi possível registrar VI ALA';
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const nextVIALA = await getNextVIALA();
+    if (!nextVIALA) {
+      throw new Error('Não foi possível gerar próximo VI ALA');
+    }
+
+    const record = buildVIALARecordFromRequest(body, nextVIALA);
+    console.log(`📝 [Register] Tentativa ${attempt}/${maxAttempts} para registrar ${nextVIALA}`);
+
+    try {
+      const saveResult = await saveVIALARecord(record);
+      return {
+        success: true,
+        viAla: nextVIALA,
+        storage: saveResult.storage || 'supabase'
+      };
+    } catch (err) {
+      lastError = err.message || lastError;
+      const isDuplicate = /duplicate key|unique constraint|23505/i.test(lastError);
+
+      if (isDuplicate && attempt < maxAttempts) {
+        console.warn(`⚠️ [Register] VI ALA ${nextVIALA} já existe, tentando próximo número...`);
+        continue;
+      }
+
+      throw new Error(lastError);
+    }
+  }
+
+  throw new Error(lastError);
 }
 
 // Rota para listar projetistas
@@ -8013,6 +8087,7 @@ app.get('/', (req, res) => {
       tabulacoes: '/api/tabulacoes',
       viAla: {
         next: '/api/vi-ala/next',
+        register: '/api/vi-ala/register',
         save: '/api/vi-ala/save',
         list: '/api/vi-ala/list',
         download: '/api/vi-ala.xlsx'
@@ -8083,6 +8158,46 @@ app.get('/api/vi-ala/next', async (req, res) => {
   }
 });
 
+// Rota para registrar VI ALA (gera próximo número e salva no Supabase em uma operação)
+app.post('/api/vi-ala/register', async (req, res) => {
+  try {
+    const origin = req.headers.origin;
+    if (origin) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+    } else {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+    }
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+
+    console.log('📥 [API] Requisição recebida para registrar VI ALA');
+    console.log('📦 [API] Body recebido do frontend:', JSON.stringify(req.body, null, 2));
+
+    const result = await registerVIALARecord(req.body);
+
+    console.log(`✅ [API] VI ALA registrado: ${result.viAla} (${result.storage})`);
+    res.json({
+      success: true,
+      viAla: result.viAla,
+      storage: result.storage,
+      message: 'Registro salvo com sucesso'
+    });
+  } catch (err) {
+    console.error('❌ [API] Erro ao registrar VI ALA:', err);
+    console.error('❌ [API] Stack trace:', err.stack);
+
+    const origin = req.headers.origin;
+    if (origin) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+    } else {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+    }
+
+    if (!res.headersSent) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  }
+});
+
 // Rota para salvar registro VI ALA (Supabase primeiro, fallback Excel)
 app.post('/api/vi-ala/save', async (req, res) => {
   try {
@@ -8126,11 +8241,14 @@ app.post('/api/vi-ala/save', async (req, res) => {
     console.log('💾 [API] Salvando registro:', JSON.stringify(record, null, 2));
     console.log('💾 [API] Tabulação Final no record:', record['TABULAÇÃO FINAL']);
     
-    // Salvar (tenta Supabase primeiro, fallback Excel)
-    await saveVIALARecord(record);
+    const saveResult = await saveVIALARecord(record);
     
-    console.log('✅ [API] Registro salvo com sucesso');
-    res.json({ success: true, message: 'Registro salvo com sucesso' });
+    console.log(`✅ [API] Registro salvo com sucesso (${saveResult.storage})`);
+    res.json({
+      success: true,
+      storage: saveResult.storage,
+      message: 'Registro salvo com sucesso'
+    });
   } catch (err) {
     console.error('❌ [API] Erro ao salvar registro VI ALA:', err);
     console.error('❌ [API] Stack trace:', err.stack);
