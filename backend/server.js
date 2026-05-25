@@ -4151,7 +4151,7 @@ async function readVIALABaseFromSupabase() {
       
       const { data, error } = await supabase
         .from('vi_ala')
-        .select('vi_ala, ala, data, hora, projetista, cidade, endereco, latitude, longitude, tabulacao_final, created_at')
+        .select('vi_ala, ala, data, projetista, cidade, endereco, latitude, longitude, tabulacao_final, created_at')
         .order('created_at', { ascending: false })
         .range(offset, offset + BATCH_SIZE - 1); // range é inclusivo: [offset, offset + BATCH_SIZE - 1]
       
@@ -4505,13 +4505,11 @@ function parseVIALARecordCoordinate(value) {
 
 function buildVIALARecordForSupabase(record) {
   const tabulacaoFinalValue = record['TABULAÇÃO FINAL'];
-  const horaValue = record['HORA'];
 
   return {
     vi_ala: record['VI ALA'] || '',
     ala: record['ALA'] || null,
     data: parseVIALARecordDate(record),
-    hora: (horaValue && String(horaValue).trim() !== '') ? String(horaValue).trim() : null,
     projetista: record['PROJETISTA'] || null,
     cidade: record['CIDADE'] || null,
     endereco: record['ENDEREÇO'] || null,
@@ -8867,7 +8865,6 @@ app.post('/api/vi-ala/upload-base', upload.single('file'), async (req, res) => {
         vi_ala: row['VI ALA'],
         ala: row['ALA'],
         data: row['DATA'],
-        hora: row['HORA'] || null,
         projetista: row['PROJETISTA'],
         cidade: row['CIDADE'],
         endereco: row['ENDEREÇO'],
