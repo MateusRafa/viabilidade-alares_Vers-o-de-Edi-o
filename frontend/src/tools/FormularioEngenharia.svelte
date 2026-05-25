@@ -12,6 +12,7 @@
     printEngineeringPdf,
     loadLogoDataUrl,
     loadCapaOndasDataUrl,
+    loadAssinaturaSupervisorDataUrl,
     waitForPrintImages,
     sanitizeRichHtml,
     MAX_ANEXO_PDF_MB,
@@ -67,6 +68,7 @@
   };
   let logoDataUrl = '';
   let capaOndasDataUrl = '';
+  let assinaturaSupervisorDataUrl = '';
   let assetsReady = false;
   let passoImageInput;
   let anexoPdfInput;
@@ -135,6 +137,7 @@
       baseUrl: previewBaseUrl,
       logoDataUrl,
       capaOndasDataUrl,
+      assinaturaSupervisorDataUrl,
       passoLayouts: layoutsForPreview,
       measurePassoLayout,
       measureNonce
@@ -758,7 +761,7 @@
 
   async function handleGeneratePdf() {
     if (!assetsReady) {
-      pdfError = 'Aguarde o carregamento das imagens da capa antes de gerar o PDF.';
+      pdfError = 'Aguarde o carregamento dos recursos do PDF antes de gerar.';
       return;
     }
     generatingPDF = true;
@@ -791,12 +794,14 @@
     if (typeof window !== 'undefined') {
       loadFormColumnWidthPreference();
       const origin = window.location.origin;
-      const [logo, ondas] = await Promise.all([
+      const [logo, ondas, assinatura] = await Promise.all([
         loadLogoDataUrl(origin),
-        loadCapaOndasDataUrl(origin)
+        loadCapaOndasDataUrl(origin),
+        loadAssinaturaSupervisorDataUrl(origin)
       ]);
       logoDataUrl = logo;
       capaOndasDataUrl = ondas;
+      assinaturaSupervisorDataUrl = assinatura;
       assetsReady = true;
       applyPreviewHtml();
       schedulePassoLayoutMeasure(true);
