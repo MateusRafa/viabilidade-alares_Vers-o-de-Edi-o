@@ -49,8 +49,8 @@ const portalToolsMeta = [
   },
   {
     id: 'formulario-engenharia',
-    title: 'Formulário de Engenharia',
-    description: 'Formulário com prévia em tempo real e geração de PDF no padrão Alares',
+    title: 'Relatório Técnico de Projeto B2B',
+    description: 'Relatório técnico B2B com prévia em tempo real e geração de PDF no padrão Alares',
     icon: '📋',
     color: '#7B68EE',
     available: true
