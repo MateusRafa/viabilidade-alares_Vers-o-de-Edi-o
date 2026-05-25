@@ -12,7 +12,9 @@ export const BRAND = {
   /** SVG da assinatura digitalizada — substitua o arquivo em public/images/ */
   assinaturaSupervisorPath: '/images/assinatura-supervisor.svg',
   /** Texto exibido abaixo da linha de assinatura na Lista de Material */
-  supervisorCargo: 'Supervisor de Engenharia',
+  supervisorCargo: 'Coordenador de Projetos',
+  /** Nome padrão do campo Coordenador de Projetos (Informações do projeto) */
+  coordenadorProjetosNomePadrao: 'Adônis Pimentel',
   cores: {
     primaria: '#1a4a7a',
     secundaria: '#8a9bb5',
