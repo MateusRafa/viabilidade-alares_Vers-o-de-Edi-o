@@ -19,10 +19,13 @@ export const BRAND = {
   ],
   /** Pixels RGB acima deste valor viram transparentes (0–255; maior = remove mais cinza) */
   assinaturaFundoClaroLimite: 238,
-  /** Texto exibido abaixo da linha de assinatura na Lista de Material */
-  supervisorCargo: 'Coordenador de Projetos',
+  /** Nome abaixo da linha de assinatura na Lista de Material */
+  assinaturaCoordenadorNome: 'Adônis Pimentel de Araújo',
+  /** Cargo abaixo do nome (negrito) na Lista de Material */
+  assinaturaCoordenadorCargo:
+    'Coordenador de Planejamento e Projetos de Engenharia - Alares',
   /** Nome padrão do campo Coordenador de Projetos (Informações do projeto) */
-  coordenadorProjetosNomePadrao: 'Adônis Pimentel',
+  coordenadorProjetosNomePadrao: 'Adônis Pimentel de Araújo',
   cores: {
     primaria: '#1a4a7a',
     secundaria: '#8a9bb5',
