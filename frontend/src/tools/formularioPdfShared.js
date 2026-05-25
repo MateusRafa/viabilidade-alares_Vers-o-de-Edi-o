@@ -40,8 +40,8 @@ export const CABECALHO_FIELDS = [
   { key: 'projetista', label: 'Projetista', placeholder: 'Nome do projetista' },
   {
     key: 'supervisorPlanejamento',
-    label: 'Supervisor Planejamento e Engenharia de Redes FTTx',
-    placeholder: 'Nome do supervisor'
+    label: 'Coordenador de Projetos',
+    placeholder: 'Nome do coordenador'
   },
   { key: 'contatoConsultor', label: 'Nome e Contato do consultor', placeholder: 'Nome e telefone/e-mail' },
   { key: 'contatoCliente', label: 'Nome e Contato do cliente', placeholder: 'Nome e telefone/e-mail' },
@@ -65,7 +65,10 @@ export const CABECALHO_FIELDS = [
 ];
 
 function emptyCabecalho() {
-  return Object.fromEntries(CABECALHO_FIELDS.map(({ key }) => [key, '']));
+  const cab = Object.fromEntries(CABECALHO_FIELDS.map(({ key }) => [key, '']));
+  const coordenador = (BRAND.coordenadorProjetosNomePadrao || '').trim();
+  if (coordenador) cab.supervisorPlanejamento = coordenador;
+  return cab;
 }
 
 /** Bloco de passo ou lista de material (mesma estrutura) */
