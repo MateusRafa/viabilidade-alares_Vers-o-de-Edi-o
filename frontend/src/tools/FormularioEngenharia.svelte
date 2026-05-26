@@ -2221,8 +2221,8 @@
 
   .pdf-measure-iframe {
     position: absolute;
-    width: 1px;
-    height: 1px;
+    width: 210mm;
+    height: 297mm;
     opacity: 0;
     pointer-events: none;
     visibility: hidden;
