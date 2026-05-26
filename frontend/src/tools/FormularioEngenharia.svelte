@@ -18,6 +18,8 @@
     sanitizeRichHtml,
     MAX_ANEXO_PDF_MB,
     createAnexoId,
+    createPassoImagemId,
+    getPassoImagens,
     renderPdfFileToPageImages
   } from './formularioPdfShared.js';
 
@@ -121,7 +123,12 @@
 
   $: measurePassoKey = assetsReady
     ? JSON.stringify(
-        formData.passos.map((p) => [p.tituloPasso, p.descricao, p.imagemDataUrl?.length || 0])
+        formData.passos.map((p) => [
+          p.tituloPasso,
+          p.descricao,
+          p.tituloImagem,
+          (p.imagens || []).map((img) => [img.id, img.dataUrl?.length || 0])
+        ])
       )
     : '';
 
@@ -465,44 +472,57 @@
     }
   }
 
-  function applyImageToTarget(file) {
-    if (!file) return false;
-    if (!uploadTarget) return false;
-
-    if (!file.type.startsWith('image/')) {
-      pdfError = 'Use um arquivo de imagem (PNG, JPG, WEBP ou SVG).';
-      return false;
-    }
-
-    if (file.size > MAX_PASSO_IMAGE_MB * 1024 * 1024) {
-      pdfError = `A imagem deve ter no máximo ${MAX_PASSO_IMAGE_MB} MB.`;
-      return false;
-    }
-
-    const reader = new FileReader();
-    reader.onload = () => {
-      const dataUrl = typeof reader.result === 'string' ? reader.result : '';
-      const nome =
-        file.name?.trim() ||
-        `imagem-colada.${(file.type.split('/')[1] || 'png').replace('svg+xml', 'svg')}`;
-      const patch = { imagemDataUrl: dataUrl, imagemNome: nome };
-      if (uploadTarget.type === 'passo') {
-        updatePasso(uploadTarget.index, patch);
-        schedulePassoLayoutMeasure(true);
+  function readImageFileAsDataUrl(file) {
+    return new Promise((resolve) => {
+      if (!file?.type?.startsWith('image/')) {
+        resolve(null);
+        return;
       }
-    };
-    reader.onerror = () => {
-      pdfError = 'Não foi possível ler a imagem. Tente outro arquivo.';
-    };
-    reader.readAsDataURL(file);
+      if (file.size > MAX_PASSO_IMAGE_MB * 1024 * 1024) {
+        pdfError = `Cada imagem deve ter no máximo ${MAX_PASSO_IMAGE_MB} MB.`;
+        resolve(null);
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = () => {
+        const dataUrl = typeof reader.result === 'string' ? reader.result : '';
+        const nome =
+          file.name?.trim() ||
+          `imagem-colada.${(file.type.split('/')[1] || 'png').replace('svg+xml', 'svg')}`;
+        resolve(dataUrl ? { dataUrl, nome } : null);
+      };
+      reader.onerror = () => {
+        pdfError = 'Não foi possível ler a imagem. Tente outro arquivo.';
+        resolve(null);
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function appendImagesToPasso(passoIndex, files) {
+    const list = Array.from(files || []).filter((f) => f?.type?.startsWith('image/'));
+    if (!list.length) return false;
+
+    const results = await Promise.all(list.map(readImageFileAsDataUrl));
+    const valid = results.filter(Boolean);
+    if (!valid.length) return false;
+
+    const passo = formData.passos[passoIndex];
+    const novas = valid.map(({ dataUrl, nome }) => ({
+      id: createPassoImagemId(),
+      dataUrl,
+      nome
+    }));
+    updatePasso(passoIndex, { imagens: [...(passo.imagens || []), ...novas] });
+    schedulePassoLayoutMeasure(true);
     return true;
   }
 
   function handlePassoImageChange(event) {
     pdfError = '';
-    const file = event.currentTarget?.files?.[0];
-    if (!file) return;
-    applyImageToTarget(file);
+    const files = event.currentTarget?.files;
+    if (!files?.length || uploadTarget?.type !== 'passo') return;
+    appendImagesToPasso(uploadTarget.index, files);
     event.currentTarget.value = '';
   }
 
@@ -565,30 +585,33 @@
 
   async function processImagePaste(event) {
     pdfError = '';
+    if (uploadTarget?.type !== 'passo') return false;
+    const passoIndex = uploadTarget.index;
+    const files = [];
     const dt = event?.clipboardData;
 
     if (dt?.files?.length) {
       for (let i = 0; i < dt.files.length; i++) {
         const file = dt.files[i];
-        if (file?.type?.startsWith('image/') && applyImageToTarget(file)) {
-          return true;
-        }
+        if (file?.type?.startsWith('image/')) files.push(file);
       }
     }
 
     if (dt?.items?.length) {
       for (const item of dt.items) {
         const file = fileFromClipboardItem(item);
-        if (file && applyImageToTarget(file)) {
-          return true;
-        }
+        if (file) files.push(file);
       }
+    }
+
+    if (files.length) {
+      return appendImagesToPasso(passoIndex, files);
     }
 
     try {
       const file = await readImageFromClipboardApi();
-      if (file && applyImageToTarget(file)) {
-        return true;
+      if (file) {
+        return appendImagesToPasso(passoIndex, [file]);
       }
     } catch (err) {
       console.warn('Leitura da área de transferência:', err);
@@ -718,8 +741,16 @@
     tick().then(initMaterialDescricaoEditor);
   }
 
-  function clearPassoImage(passoIndex) {
-    updatePasso(passoIndex, { imagemDataUrl: '', imagemNome: '' });
+  function removePassoImagem(passoIndex, imagemId) {
+    const passo = formData.passos[passoIndex];
+    updatePasso(passoIndex, {
+      imagens: (passo.imagens || []).filter((img) => img.id !== imagemId)
+    });
+    schedulePassoLayoutMeasure(true);
+  }
+
+  function clearPassoImages(passoIndex) {
+    updatePasso(passoIndex, { imagens: [] });
     schedulePassoLayoutMeasure(true);
   }
 
@@ -965,6 +996,7 @@
           type="file"
           class="file-input-hidden"
           accept="image/png,image/jpeg,image/jpg,image/webp,image/svg+xml,image/*"
+          multiple
           on:change={handlePassoImageChange}
           tabindex="-1"
           aria-hidden="true"
@@ -1049,14 +1081,23 @@
                     }}
                   ></div>
                 </label>
+                <label class="field">
+                  <span>Título da seção (aparece no PDF)</span>
+                  <input
+                    type="text"
+                    value={passo.tituloImagem || 'Imagem'}
+                    on:input={(e) => updatePasso(passoIndex, { tituloImagem: e.currentTarget.value })}
+                    placeholder="Imagem"
+                  />
+                </label>
                 <div class="field field-upload">
-                  <span>Imagem</span>
+                  <span>Imagens</span>
                   <div
                     class="upload-box"
                     class:armed={uploadTargetsMatch(armedUploadTarget, uploadCtx)}
                     tabindex="0"
                     role="group"
-                    aria-label="Imagem do passo {passoIndex + 1}. Um clique para selecionar e colar com Ctrl+V. Dois cliques para escolher arquivo."
+                    aria-label="Imagens do passo {passoIndex + 1}. Um clique para selecionar e colar com Ctrl+V. Dois cliques para escolher arquivos."
                     on:click={() => armImagePaste(uploadCtx)}
                     on:focus={() => armImagePaste(uploadCtx)}
                     on:blur={disarmImagePaste}
@@ -1069,25 +1110,37 @@
                     <div class="upload-trigger">
                       <span class="upload-trigger-text">1 clique: selecionar o box e colar (Ctrl+V)</span>
                       <span class="upload-trigger-hint"
-                        >2 cliques seguidos: escolher imagem no computador — até {MAX_PASSO_IMAGE_MB} MB</span
+                        >2 cliques: escolher imagens no computador — várias em sequência, até
+                        {MAX_PASSO_IMAGE_MB} MB cada</span
                       >
                     </div>
-                    {#if passo.imagemDataUrl}
-                      <div class="upload-preview-wrap">
-                        <img
-                          class="upload-preview"
-                          src={passo.imagemDataUrl}
-                          alt="Prévia da imagem do passo {passoIndex + 1}"
-                        />
-                        {#if passo.imagemNome}
-                          <p class="upload-filename">{passo.imagemNome}</p>
-                        {/if}
+                    {#if getPassoImagens(passo).length}
+                      <div class="upload-previews-stack">
+                        {#each getPassoImagens(passo) as img (img.id)}
+                          <div class="upload-preview-wrap">
+                            <img
+                              class="upload-preview"
+                              src={img.dataUrl}
+                              alt="Prévia — {passo.tituloImagem || 'Imagem'} ({img.nome || 'sem nome'})"
+                            />
+                            {#if img.nome}
+                              <p class="upload-filename">{img.nome}</p>
+                            {/if}
+                            <button
+                              type="button"
+                              class="btn-remove-image"
+                              on:click|stopPropagation={() => removePassoImagem(passoIndex, img.id)}
+                            >
+                              Remover
+                            </button>
+                          </div>
+                        {/each}
                         <button
                           type="button"
-                          class="btn-remove-image"
-                          on:click|stopPropagation={() => clearPassoImage(passoIndex)}
+                          class="btn-remove-all-images"
+                          on:click|stopPropagation={() => clearPassoImages(passoIndex)}
                         >
-                          Remover imagem
+                          Remover todas
                         </button>
                       </div>
                     {/if}
@@ -1667,6 +1720,14 @@
     pointer-events: none;
   }
 
+  .upload-previews-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 0.85rem;
+    width: 100%;
+    margin-top: 0.5rem;
+  }
+
   .upload-preview-wrap {
     display: flex;
     flex-direction: column;
@@ -1708,6 +1769,23 @@
 
   .btn-remove-image:hover {
     background: #fee2e2;
+  }
+
+  .btn-remove-all-images {
+    align-self: flex-start;
+    margin-top: 0.25rem;
+    padding: 0.4rem 0.75rem;
+    font-size: 0.8rem;
+    font-family: inherit;
+    color: #7c2d12;
+    background: #fff7ed;
+    border: 1px solid #fed7aa;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+
+  .btn-remove-all-images:hover {
+    background: #ffedd5;
   }
 
   .form-actions {
