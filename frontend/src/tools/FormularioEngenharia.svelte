@@ -8,6 +8,7 @@
     measurePassoLayoutsFromDocument,
     getPassoLayoutWarnings,
     CABECALHO_FIELDS,
+    getCabecalhoFieldsForDisplay,
     buildFullPdfHtml,
     getEngineeringPdfDocumentTitle,
     printPdfHtmlNamed,
@@ -123,6 +124,8 @@
   let previewPreferTailScroll = false;
   /** Ignora eventos load antigos do iframe quando várias atualizações seguidas */
   let previewApplyGeneration = 0;
+
+  $: cabecalhoFieldsVisible = getCabecalhoFieldsForDisplay(formData.cabecalho);
 
   $: previewBaseUrl = typeof window !== 'undefined' ? window.location.origin : '';
   $: layoutsForPreview =
@@ -1148,7 +1151,7 @@
           </button>
           {#if expandedSections.cabecalho}
             <div class="form-box-body form-box-body-cabecalho">
-              {#each CABECALHO_FIELDS as field (field.key)}
+              {#each cabecalhoFieldsVisible as field (field.key)}
                 <label class="field">
                   <span>{field.label}</span>
                   {#if field.multiline}
