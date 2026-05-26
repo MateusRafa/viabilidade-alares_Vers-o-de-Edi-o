@@ -16,6 +16,20 @@ export {
 /** Sugestões do campo Objetivo (lista suspensa editável no formulário) */
 export const OBJETIVO_OPCOES = ['Gpon', 'Ponto a Ponto', 'Fibra Apagada'];
 
+export const OBJETIVO_PONTO_A_PONTO = 'Ponto a Ponto';
+
+export function isObjetivoPontoAPonto(objetivo) {
+  return (objetivo ?? '').trim().toLowerCase() === OBJETIVO_PONTO_A_PONTO.toLowerCase();
+}
+
+/** Campos visíveis no formulário e no PDF conforme o Objetivo selecionado */
+export function getCabecalhoFieldsForDisplay(cabecalho = {}) {
+  const pontoAPonto = isObjetivoPontoAPonto(cabecalho?.objetivo);
+  return CABECALHO_FIELDS.filter(
+    (field) => !field.showWhenObjetivoPontoAPonto || pontoAPonto
+  );
+}
+
 /** Campos da página 2 — ordem fixa do documento */
 export const CABECALHO_FIELDS = [
   { key: 'operacao', label: 'Operação', placeholder: 'Ex: Alares' },
@@ -47,7 +61,7 @@ export const CABECALHO_FIELDS = [
   { key: 'contatoCliente', label: 'Nome e Contato do cliente', placeholder: 'Nome e telefone/e-mail' },
   { key: 'contrato', label: 'Contrato', placeholder: 'Ex: 3933511' },
   { key: 'ordemJira', label: 'Ordem Jira', placeholder: 'Ex: ENGT-46557' },
-  { key: 'ativacaoPortaSw', label: 'Ativação de porta SW', placeholder: 'Ex: ENGT-47714' },
+  { key: 'ativacaoPortaSw', label: 'Ativação de porta SW', placeholder: 'Ex: ENGT-47714', showWhenObjetivoPontoAPonto: true },
   { key: 'osProjetoTecB2b', label: 'O.S de Projeto tec. B2B', placeholder: 'Ex: 39048036' },
   { key: 'supervisorRedeExterna', label: 'Supervisor de Rede Externa', placeholder: 'Nome do supervisor' },
   { key: 'projetoOzmap', label: 'Projeto ozmap', placeholder: 'Ex: PR - Cambará - Webby' },
@@ -2374,7 +2388,7 @@ function buildPageCabecalho(formData, options = {}) {
           <div class="page-content">
             <div class="report-info report-info-cabecalho">
               ${buildSectionFields(
-                CABECALHO_FIELDS.map(({ key, label, multiline }) => ({
+                getCabecalhoFieldsForDisplay(formData.cabecalho).map(({ key, label, multiline }) => ({
                   label,
                   value: formData.cabecalho[key],
                   multiline
