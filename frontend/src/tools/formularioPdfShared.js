@@ -440,14 +440,22 @@ export function getPdfPagesMeta(formData, options = {}) {
   return pages;
 }
 
+/** Folha de passo com dimensões confiáveis para medição no DOM (iframe oculto 1×1 px quebra layout) */
+function canMeasurePassoOnPage(pageEl) {
+  if (!pageEl) return false;
+  const pageContent = pageEl.querySelector('.page-content');
+  return (pageContent?.clientWidth ?? 0) > 100 && (pageEl.clientHeight ?? 0) > 200;
+}
+
 /** Área útil para conteúdo dentro de uma folha de passo (px) */
 export function getPassoContentAreaHeight(pageEl) {
   if (!pageEl) return PDF_PASSO_PAGE_CONTENT_PX;
   const pageContent = pageEl.querySelector('.page-content');
-  if (pageContent && pageContent.clientHeight > 80) {
+  if (pageContent && pageContent.clientHeight > 80 && canMeasurePassoOnPage(pageEl)) {
     return pageContent.clientHeight;
   }
   const pageH = pageEl.clientHeight || PDF_PASSO_PAGE_CONTENT_PX;
+  if (pageH < 200) return PDF_PASSO_PAGE_CONTENT_PX;
   let chrome = 0;
   pageEl.querySelectorAll('.capa-logo-wrap, .page-title, .artwork-page-footer').forEach((el) => {
     chrome += el.offsetHeight || 0;
@@ -456,7 +464,8 @@ export function getPassoContentAreaHeight(pageEl) {
   const pad = style
     ? (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0)
     : 0;
-  return Math.max(120, pageH - chrome - pad - 12);
+  const computed = pageH - chrome - pad - 12;
+  return computed > 200 ? computed : PDF_PASSO_PAGE_CONTENT_PX;
 }
 
 function getPassoDescricaoInnerHtml(passo) {
@@ -847,7 +856,7 @@ function measurePassoBlockWithImagesOnPage(
   }
 
   const totalH = block.scrollHeight;
-  const available = pageContent.clientHeight;
+  const available = getPassoContentAreaHeight(pageEl);
 
   block.querySelector('.passo-imagem-inline-probe')?.remove();
   if (descValueEl && saved.descHtml != null) descValueEl.innerHTML = saved.descHtml;
@@ -870,7 +879,7 @@ function measurePassoInlineImagesFit(
   imageIndices,
   { contentWidth = null, showDescLabel = true, layoutMode = 'inline' } = {}
 ) {
-  if (pageEl) {
+  if (pageEl && canMeasurePassoOnPage(pageEl)) {
     const onPage = measurePassoBlockWithImagesOnPage(pageEl, imagePasso, passoNumero, doc, {
       imageIndices,
       chunkHtml,
@@ -897,7 +906,7 @@ function measureImageGroupHeight(
   imageIndices,
   { contentWidth = null, imagePageOnly = true } = {}
 ) {
-  if (pageEl) {
+  if (pageEl && canMeasurePassoOnPage(pageEl)) {
     const onPage = measurePassoBlockWithImagesOnPage(pageEl, imagePasso, passoNumero, doc, {
       imageIndices,
       chunkHtml: '<span class="empty-value">—</span>',
@@ -1038,7 +1047,7 @@ function applyImagePlacementToLayout(
     return;
   }
 
-  if (pageEl && getPassoImagens(imagePasso).length) {
+  if (pageEl && canMeasurePassoOnPage(pageEl) && getPassoImagens(imagePasso).length) {
     const allIndices = getPassoImagens(imagePasso).map((_, idx) => idx);
     const onPage = measurePassoBlockWithImagesOnPage(pageEl, imagePasso, passoNumero, doc, {
       imageIndices: allIndices,
@@ -1196,13 +1205,14 @@ export function measurePassoLayoutsFromDocument(doc, passos = []) {
     }
 
     const pageContent = page.querySelector('.page-content');
-    const available = pageContent?.clientHeight || getPassoContentAreaHeight(page);
-    const contentWidth = pageContent?.clientWidth || null;
+    const available = getPassoContentAreaHeight(page);
+    const contentWidth =
+      pageContent && pageContent.clientWidth > 100 ? pageContent.clientWidth : null;
     const descEl = page.querySelector('.passo-descricao-body');
     const innerRaw = descEl?.innerHTML?.trim()
       ? descEl.innerHTML
       : getPassoDescricaoInnerHtml(passo);
-    const labelEl = page.querySelector('.passo-descricao-body .report-info-label');
+    const labelEl = page.querySelector('.passo-texto-bloco > .report-info-label');
     const labelReserve = (labelEl?.offsetHeight || 0) + 10;
     const contentHtml = extractPassoDescricaoContentHtml(innerRaw) || getPassoDescricaoInnerHtml(passo);
     const mainLayout = measureDescricaoImagensLayout(
