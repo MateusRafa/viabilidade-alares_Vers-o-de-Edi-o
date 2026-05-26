@@ -77,12 +77,17 @@ export function emptyPasso() {
     tituloPasso: 'XXXXX',
     descricao: '',
     tituloImagem: 'Imagem',
-    imagens: []
+    imagens: [],
+    descricoesAposImagem: []
   };
 }
 
 export function createPassoImagemId() {
   return `img-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+}
+
+export function createPassoDescricaoAposId() {
+  return `desc-apos-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
 /** Lista de imagens válidas do passo */
@@ -93,6 +98,20 @@ export function getPassoImagens(passo) {
 
 export function hasPassoImagens(passo) {
   return getPassoImagens(passo).length > 0;
+}
+
+/** Caixas de descrição opcionais abaixo das imagens do passo */
+export function getPassoDescricoesAposImagem(passo) {
+  if (!passo || !Array.isArray(passo.descricoesAposImagem)) return [];
+  return passo.descricoesAposImagem.map((block) => ({
+    id: block?.id || createPassoDescricaoAposId(),
+    descricao: block?.descricao ?? ''
+  }));
+}
+
+export function hasPassoDescricaoAposContent(descricao) {
+  const inner = getPassoDescricaoInnerHtml({ descricao });
+  return inner && !inner.includes('empty-value');
 }
 
 function normalizePassoImagens(passo) {
@@ -117,11 +136,19 @@ function normalizePassoImagens(passo) {
     ];
   }
 
+  const descricoesAposImagem = Array.isArray(base.descricoesAposImagem)
+    ? base.descricoesAposImagem.map((block) => ({
+        id: block?.id || createPassoDescricaoAposId(),
+        descricao: block?.descricao ?? ''
+      }))
+    : [];
+
   return {
     tituloPasso: base.tituloPasso ?? emptyPasso().tituloPasso,
     descricao: base.descricao ?? '',
     tituloImagem: (base.tituloImagem ?? emptyPasso().tituloImagem).trim() || 'Imagem',
-    imagens
+    imagens,
+    descricoesAposImagem
   };
 }
 
@@ -142,22 +169,34 @@ export const PDF_PASSO_PAGE_CONTENT_PX = 1046;
 export function defaultPassoLayout(passo) {
   const inner = getPassoDescricaoInnerHtml(passo);
   const hasImage = hasPassoImagens(passo);
+  const posImageDescChunkHtmls = getPassoDescricoesAposImagem(passo)
+    .filter((block) => hasPassoDescricaoAposContent(block.descricao))
+    .map((block) => [getPassoDescricaoInnerHtml({ descricao: block.descricao })]);
   return {
     textChunkHtmls: [inner],
     hasImagePage: false,
     imageOnFirstPage: hasImage,
-    imagePageGroups: []
+    imagePageGroups: [],
+    posImageDescChunkHtmls
   };
+}
+
+function countPosImageDescPages(layout) {
+  return (layout?.posImageDescChunkHtmls || []).reduce(
+    (sum, chunks) => sum + (chunks?.length || 0),
+    0
+  );
 }
 
 function countPassoPages(layout) {
   if (!layout) return 1;
   const textPages = layout.textChunkHtmls?.length || 1;
-  if (layout.imageOnFirstPage) return textPages;
-  if (!layout.hasImagePage) return textPages;
-  if (textPages > 1) return textPages;
+  const posImagePages = countPosImageDescPages(layout);
+  if (layout.imageOnFirstPage) return textPages + posImagePages;
+  if (!layout.hasImagePage) return textPages + posImagePages;
+  if (textPages > 1) return textPages + posImagePages;
   const imageGroups = layout.imagePageGroups?.length || 1;
-  return textPages + imageGroups;
+  return textPages + imageGroups + posImagePages;
 }
 
 /** Total de páginas: capa + informações + páginas dos passos + lista de material */
@@ -251,6 +290,21 @@ export function getPdfPagesMeta(formData, options = {}) {
         });
       }
     }
+    (layout.posImageDescChunkHtmls || []).forEach((chunks, blockIdx) => {
+      chunks.forEach((_, chunkIdx) => {
+        const suffix =
+          chunkIdx > 0
+            ? ' (continuação)'
+            : blockIdx > 0
+              ? ` (descrição ${blockIdx + 1})`
+              : '';
+        pages.push({
+          id: `passo-${n}-desc-apos-${blockIdx}${chunkIdx > 0 ? `-cont-${chunkIdx}` : ''}`,
+          number: pages.length + 1,
+          title: `Passo ${n}° — ${titulo}${suffix}`
+        });
+      });
+    });
   });
   pages.push({
     id: 'listaMaterial',
@@ -674,11 +728,25 @@ export function measurePassoLayoutsFromDocument(doc, passos = []) {
       imagePageGroups = splitPassoImagesIntoPageGroups(passo, passoNumero, available, doc);
     }
 
+    const posImageDescChunkHtmls = [];
+    const descLabelReserve = 34;
+    for (const block of getPassoDescricoesAposImagem(passo)) {
+      if (!hasPassoDescricaoAposContent(block.descricao)) continue;
+      const innerRaw = getPassoDescricaoInnerHtml({ descricao: block.descricao });
+      const blockContent =
+        extractPassoDescricaoContentHtml(innerRaw) || innerRaw;
+      const chunks = splitRichHtmlByMaxHeight(blockContent, available, doc, {
+        firstPageExtraPx: descLabelReserve
+      });
+      if (chunks.length) posImageDescChunkHtmls.push(chunks);
+    }
+
     return {
       textChunkHtmls: textChunkHtmls.length ? textChunkHtmls : [contentHtml],
       hasImagePage,
       imageOnFirstPage,
-      imagePageGroups
+      imagePageGroups,
+      posImageDescChunkHtmls
     };
   });
 }
@@ -715,6 +783,15 @@ export function getPassoLayoutWarnings(passos, passoLayouts) {
         message: msg
       });
     }
+
+    (layout.posImageDescChunkHtmls || []).forEach((chunks, blockIdx) => {
+      if ((chunks?.length || 0) > 1) {
+        warnings.push({
+          passoIndex: i,
+          message: `Passo ${n}°: a descrição abaixo da imagem${blockIdx > 0 ? ` (${blockIdx + 1})` : ''} continua em ${chunks.length - 1} página(s) adicional(is).`
+        });
+      }
+    });
   });
 
   return warnings;
@@ -2244,6 +2321,22 @@ function buildPassoPagesHtml(passo, passoNumero, passoIndex, startPageNum, optio
       });
     });
   }
+
+  (layout.posImageDescChunkHtmls || []).forEach((chunks) => {
+    chunks.forEach((chunkHtml, chunkIndex) => {
+      pageNum += 1;
+      html += buildPagePassoTextChunk(
+        passo,
+        passoNumero,
+        passoIndex,
+        pageNum,
+        chunkHtml,
+        chunkIndex,
+        options,
+        { appendImage: false }
+      );
+    });
+  });
 
   return { html, nextPageNum: pageNum };
 }
