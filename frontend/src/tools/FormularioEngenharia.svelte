@@ -82,6 +82,8 @@
   let armedUploadTarget = null;
   const descricaoEditorEls = {};
   const descricaoEditorReady = {};
+  /** Evita resetar innerHTML enquanto o usuário digita (cursor não pula para o início). */
+  let focusedDescricaoEditorKey = null;
   const MAX_PASSO_IMAGE_MB = 8;
 
   const PREVIEW_DEBOUNCE_MS = 50;
@@ -610,6 +612,16 @@
     return `passo-${passoIndex}`;
   }
 
+  function richHtmlEquivalent(a, b) {
+    return sanitizeRichHtml(a || '') === sanitizeRichHtml(b || '');
+  }
+
+  function isDescricaoEditorFocused(key) {
+    if (focusedDescricaoEditorKey === key) return true;
+    const el = descricaoEditorEls[key];
+    return !!(el && typeof document !== 'undefined' && el.contains(document.activeElement));
+  }
+
   function syncDescricaoEditor(passoIndex, el) {
     if (!el) return;
     const html = sanitizeRichHtml(el.innerHTML);
@@ -660,25 +672,41 @@
   async function initDescricaoEditor(passoIndex) {
     const key = descricaoEditorKey(passoIndex);
     const el = descricaoEditorEls[key];
-    if (!el) return;
+    if (!el || isDescricaoEditorFocused(key)) return;
+
     const html = formData.passos[passoIndex]?.descricao || '';
-    if (!descricaoEditorReady[key] || el.innerHTML !== html) {
+    if (!descricaoEditorReady[key]) {
       el.innerHTML = html;
       descricaoEditorReady[key] = true;
+      return;
+    }
+    if (!richHtmlEquivalent(el.innerHTML, html)) {
+      el.innerHTML = html;
     }
   }
 
   async function initMaterialDescricaoEditor() {
     const el = descricaoEditorEls.material;
-    if (!el) return;
+    if (!el || isDescricaoEditorFocused('material')) return;
+
     const html = formData.listaMaterial.descricao || '';
-    if (!descricaoEditorReady.material || el.innerHTML !== html) {
+    if (!descricaoEditorReady.material) {
       el.innerHTML = html;
       descricaoEditorReady.material = true;
+      return;
+    }
+    if (!richHtmlEquivalent(el.innerHTML, html)) {
+      el.innerHTML = html;
     }
   }
 
-  $: {
+  /** Só reidrata editores ao expandir passos ou mudar quantidade — não a cada tecla na descrição. */
+  $: passoEditorsHydrateKey = `${formData.passos.length}|${Object.entries(expandedSections)
+    .filter(([id, open]) => open && id.startsWith('passo-'))
+    .map(([id]) => id)
+    .join(',')}`;
+
+  $: if (passoEditorsHydrateKey) {
     formData.passos.forEach((_, passoIndex) => {
       if (expandedSections[passoSectionId(passoIndex)]) {
         tick().then(() => initDescricaoEditor(passoIndex));
@@ -1010,9 +1038,15 @@
                     aria-multiline="true"
                     data-passo-index={passoIndex}
                     data-placeholder="Descrição do passo (suporta negrito e formatação ao colar)"
+                    on:focus={() => {
+                      focusedDescricaoEditorKey = editorKey;
+                    }}
                     on:input={(e) => handlePassoDescricaoInput(passoIndex, e)}
                     on:paste={handleDescricaoPaste}
-                    on:blur={(e) => syncDescricaoEditor(passoIndex, e.currentTarget)}
+                    on:blur={(e) => {
+                      focusedDescricaoEditorKey = null;
+                      syncDescricaoEditor(passoIndex, e.currentTarget);
+                    }}
                   ></div>
                 </label>
                 <div class="field field-upload">
@@ -1090,9 +1124,15 @@
                   aria-multiline="true"
                   data-editor="material"
                   data-placeholder="Descrição da lista de material"
+                  on:focus={() => {
+                    focusedDescricaoEditorKey = 'material';
+                  }}
                   on:input={handleMaterialDescricaoInput}
                   on:paste={handleDescricaoPaste}
-                  on:blur={(e) => syncMaterialDescricaoEditor(e.currentTarget)}
+                  on:blur={(e) => {
+                    focusedDescricaoEditorKey = null;
+                    syncMaterialDescricaoEditor(e.currentTarget);
+                  }}
                 ></div>
               </label>
             </div>
