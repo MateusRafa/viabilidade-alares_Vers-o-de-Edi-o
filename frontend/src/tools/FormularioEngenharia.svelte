@@ -19,7 +19,9 @@
     MAX_ANEXO_PDF_MB,
     createAnexoId,
     createPassoImagemId,
+    createPassoDescricaoAposId,
     getPassoImagens,
+    getPassoDescricoesAposImagem,
     renderPdfFileToPageImages
   } from './formularioPdfShared.js';
 
@@ -128,7 +130,8 @@
           p.tituloPasso,
           p.descricao,
           p.tituloImagem,
-          (p.imagens || []).map((img) => [img.id, img.dataUrl?.length || 0])
+          (p.imagens || []).map((img) => [img.id, img.dataUrl?.length || 0]),
+          (p.descricoesAposImagem || []).map((b) => [b.id, b.descricao])
         ])
       )
     : '';
@@ -161,6 +164,11 @@
     const editor = target.closest('.rich-editor[data-passo-index]');
     if (editor) {
       previewFocusAnchor = `passo:${editor.dataset.passoIndex ?? '0'}`;
+      return true;
+    }
+    const editorApos = target.closest('.rich-editor[data-desc-apos-id]');
+    if (editorApos) {
+      previewFocusAnchor = `passo:${editorApos.dataset.passoIndex ?? '0'}`;
       return true;
     }
 
@@ -649,6 +657,10 @@
     return `passo-${passoIndex}`;
   }
 
+  function descricaoAposEditorKey(passoIndex, blockId) {
+    return `passo-${passoIndex}-apos-${blockId}`;
+  }
+
   function richHtmlEquivalent(a, b) {
     return sanitizeRichHtml(a || '') === sanitizeRichHtml(b || '');
   }
@@ -665,6 +677,19 @@
     if (html !== formData.passos[passoIndex].descricao) {
       updatePasso(passoIndex, { descricao: html });
     }
+  }
+
+  function syncDescricaoAposEditor(passoIndex, blockId, el) {
+    if (!el) return;
+    const html = sanitizeRichHtml(el.innerHTML);
+    const blocks = getPassoDescricoesAposImagem(formData.passos[passoIndex]);
+    const current = blocks.find((b) => b.id === blockId);
+    if (!current || html === current.descricao) return;
+    updatePasso(passoIndex, {
+      descricoesAposImagem: blocks.map((b) =>
+        b.id === blockId ? { ...b, descricao: html } : b
+      )
+    });
   }
 
   function syncMaterialDescricaoEditor(el) {
@@ -691,6 +716,12 @@
     const target = event.currentTarget;
     if (target?.dataset?.editor === 'material') {
       syncMaterialDescricaoEditor(target);
+    } else if (target?.dataset?.descAposId) {
+      syncDescricaoAposEditor(
+        Number(target.dataset.passoIndex),
+        target.dataset.descAposId,
+        target
+      );
     } else if (target?.dataset?.passoIndex != null) {
       syncDescricaoEditor(Number(target.dataset.passoIndex), target);
     }
@@ -700,6 +731,33 @@
     previewFocusAnchor = `passo:${passoIndex}`;
     syncDescricaoEditor(passoIndex, event.currentTarget);
     schedulePassoLayoutMeasure();
+  }
+
+  function handlePassoDescricaoAposInput(passoIndex, blockId, event) {
+    previewFocusAnchor = `passo:${passoIndex}`;
+    syncDescricaoAposEditor(passoIndex, blockId, event.currentTarget);
+    schedulePassoLayoutMeasure();
+  }
+
+  function addDescricaoAposImagem(passoIndex) {
+    const blocks = getPassoDescricoesAposImagem(formData.passos[passoIndex]);
+    const newId = createPassoDescricaoAposId();
+    updatePasso(passoIndex, {
+      descricoesAposImagem: [...blocks, { id: newId, descricao: '' }]
+    });
+    schedulePassoLayoutMeasure(true);
+    tick().then(() => initDescricaoAposEditor(passoIndex, newId));
+  }
+
+  function removeDescricaoAposImagem(passoIndex, blockId) {
+    const key = descricaoAposEditorKey(passoIndex, blockId);
+    delete descricaoEditorEls[key];
+    delete descricaoEditorReady[key];
+    const blocks = getPassoDescricoesAposImagem(formData.passos[passoIndex]).filter(
+      (b) => b.id !== blockId
+    );
+    updatePasso(passoIndex, { descricoesAposImagem: blocks });
+    schedulePassoLayoutMeasure(true);
   }
 
   function handleMaterialDescricaoInput(event) {
@@ -712,6 +770,25 @@
     if (!el || isDescricaoEditorFocused(key)) return;
 
     const html = formData.passos[passoIndex]?.descricao || '';
+    if (!descricaoEditorReady[key]) {
+      el.innerHTML = html;
+      descricaoEditorReady[key] = true;
+      return;
+    }
+    if (!richHtmlEquivalent(el.innerHTML, html)) {
+      el.innerHTML = html;
+    }
+  }
+
+  async function initDescricaoAposEditor(passoIndex, blockId) {
+    const key = descricaoAposEditorKey(passoIndex, blockId);
+    const el = descricaoEditorEls[key];
+    if (!el || isDescricaoEditorFocused(key)) return;
+
+    const block = getPassoDescricoesAposImagem(formData.passos[passoIndex]).find(
+      (b) => b.id === blockId
+    );
+    const html = block?.descricao || '';
     if (!descricaoEditorReady[key]) {
       el.innerHTML = html;
       descricaoEditorReady[key] = true;
@@ -744,9 +821,14 @@
     .join(',')}`;
 
   $: if (passoEditorsHydrateKey) {
-    formData.passos.forEach((_, passoIndex) => {
+    formData.passos.forEach((passo, passoIndex) => {
       if (expandedSections[passoSectionId(passoIndex)]) {
-        tick().then(() => initDescricaoEditor(passoIndex));
+        tick().then(() => {
+          initDescricaoEditor(passoIndex);
+          getPassoDescricoesAposImagem(passo).forEach((block) => {
+            initDescricaoAposEditor(passoIndex, block.id);
+          });
+        });
       }
     });
   }
@@ -1101,7 +1183,7 @@
                   ></div>
                 </label>
                 <label class="field">
-                  <span>Título da seção (aparece no PDF)</span>
+                  <span>Título da seção de Imagens</span>
                   <input
                     type="text"
                     value={passo.tituloImagem || 'Imagem'}
@@ -1110,7 +1192,6 @@
                   />
                 </label>
                 <div class="field field-upload">
-                  <span>Imagens</span>
                   <div
                     class="upload-box"
                     class:armed={uploadTargetsMatch(armedUploadTarget, uploadCtx)}
@@ -1164,6 +1245,45 @@
                     {/if}
                   </div>
                 </div>
+                {#each getPassoDescricoesAposImagem(passo) as block, blockIndex (block.id)}
+                  {@const aposEditorKey = descricaoAposEditorKey(passoIndex, block.id)}
+                  <label class="field field-desc-apos">
+                    <span>Descrição abaixo da imagem{getPassoDescricoesAposImagem(passo).length > 1 ? ` (${blockIndex + 1})` : ''}</span>
+                    <div
+                      use:registerDescricaoEditor={{ key: aposEditorKey }}
+                      class="rich-editor"
+                      contenteditable="true"
+                      role="textbox"
+                      aria-multiline="true"
+                      data-passo-index={passoIndex}
+                      data-desc-apos-id={block.id}
+                      data-placeholder="Texto adicional após as imagens (suporta negrito e formatação ao colar)"
+                      on:focus={() => {
+                        focusedDescricaoEditorKey = aposEditorKey;
+                      }}
+                      on:input={(e) => handlePassoDescricaoAposInput(passoIndex, block.id, e)}
+                      on:paste={handleDescricaoPaste}
+                      on:blur={(e) => {
+                        focusedDescricaoEditorKey = null;
+                        syncDescricaoAposEditor(passoIndex, block.id, e.currentTarget);
+                      }}
+                    ></div>
+                    <button
+                      type="button"
+                      class="btn-remove-desc-apos"
+                      on:click={() => removeDescricaoAposImagem(passoIndex, block.id)}
+                    >
+                      Remover esta descrição
+                    </button>
+                  </label>
+                {/each}
+                <button
+                  type="button"
+                  class="btn-add-desc-apos"
+                  on:click={() => addDescricaoAposImagem(passoIndex)}
+                >
+                  + Adicionar descrição abaixo das imagens
+                </button>
               </div>
               {#each passoLayoutWarnings.filter((w) => w.passoIndex === passoIndex) as w (w.message)}
                 <p class="passo-layout-warning" role="status">{w.message}</p>
@@ -1804,6 +1924,48 @@
 
   .btn-remove-all-images:hover {
     background: #ffedd5;
+  }
+
+  .field-desc-apos {
+    margin-top: 0.75rem;
+  }
+
+  .btn-add-desc-apos {
+    display: block;
+    width: 100%;
+    margin-top: 0.5rem;
+    padding: 0.65rem 1rem;
+    font-size: 0.875rem;
+    font-weight: 600;
+    font-family: inherit;
+    color: #5b21b6;
+    background: #f5f3ff;
+    border: 1px dashed rgba(123, 104, 238, 0.55);
+    border-radius: 8px;
+    cursor: pointer;
+    text-align: center;
+  }
+
+  .btn-add-desc-apos:hover {
+    background: #ede9fe;
+    border-color: #7b68ee;
+  }
+
+  .btn-remove-desc-apos {
+    align-self: flex-start;
+    margin-top: 0.35rem;
+    padding: 0.4rem 0.75rem;
+    font-size: 0.8rem;
+    font-family: inherit;
+    color: #b91c1c;
+    background: #fef2f2;
+    border: 1px solid #fecaca;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+
+  .btn-remove-desc-apos:hover {
+    background: #fee2e2;
   }
 
   .form-actions {
