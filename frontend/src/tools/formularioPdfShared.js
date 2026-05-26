@@ -778,6 +778,143 @@ function measurePassoTextBlockWithImagesHeight(
   return h;
 }
 
+/** Mede texto + imagens no contexto real da folha de passo (mais fiel ao PDF do que probe solto) */
+function measurePassoBlockWithImagesOnPage(
+  pageEl,
+  imagePasso,
+  passoNumero,
+  doc,
+  {
+    imageIndices = null,
+    chunkHtml = null,
+    showDescLabel = true,
+    layoutMode = 'inline'
+  } = {}
+) {
+  const pageContent = pageEl?.querySelector('.page-content');
+  const block = pageEl?.querySelector('.passo-texto-bloco');
+  if (!pageContent || !block) return null;
+
+  const labelEl = block.querySelector(':scope > .report-info-label');
+  const descValueEl =
+    block.querySelector(`.passo-descricao-body .${PASSO_DESC_MEASURE_CLASS.split(' ')[0]}`) ||
+    block.querySelector('.passo-descricao-body .report-info-rich') ||
+    block.querySelector('.passo-descricao-body > div');
+
+  const saved = {
+    labelClass: labelEl?.className ?? '',
+    labelText: labelEl?.textContent ?? '',
+    descHtml: descValueEl?.innerHTML ?? '',
+    pageClass: pageEl.className
+  };
+
+  if (chunkHtml != null && descValueEl) {
+    descValueEl.innerHTML = chunkHtml;
+  }
+
+  if (labelEl) {
+    if (showDescLabel) {
+      labelEl.className = 'report-info-label';
+      labelEl.textContent = 'Descrição';
+    } else {
+      labelEl.className = 'report-info-label passo-continuacao-label';
+      labelEl.textContent = 'Continuação';
+    }
+  }
+
+  if (layoutMode === 'image-only-page') {
+    pageEl.classList.add('pdf-page-passo-imagem');
+    pageEl.classList.remove('pdf-page-passo-texto');
+  }
+
+  block.querySelector('.passo-imagem-inline-probe')?.remove();
+
+  const imgs = getPassoImagens(imagePasso);
+  const indices = imageIndices === null ? imgs.map((_, idx) => idx) : imageIndices;
+
+  if (indices.length) {
+    const probe = doc.createElement('div');
+    probe.className = 'passo-imagem-apos-texto passo-imagem-inline-probe';
+    probe.innerHTML = buildPassoImagesBlock(imagePasso, passoNumero, {
+      showLabel: layoutMode === 'inline',
+      imageIndices: indices
+    });
+    block.appendChild(probe);
+    probe.querySelectorAll('img').forEach((img) => {
+      void img.offsetHeight;
+      void img.getBoundingClientRect().height;
+    });
+  }
+
+  const totalH = block.scrollHeight;
+  const available = pageContent.clientHeight;
+
+  block.querySelector('.passo-imagem-inline-probe')?.remove();
+  if (descValueEl && saved.descHtml != null) descValueEl.innerHTML = saved.descHtml;
+  if (labelEl) {
+    labelEl.className = saved.labelClass;
+    labelEl.textContent = saved.labelText;
+  }
+  pageEl.className = saved.pageClass;
+
+  return { totalH, available };
+}
+
+function measurePassoInlineImagesFit(
+  pageEl,
+  imagePasso,
+  passoNumero,
+  available,
+  doc,
+  chunkHtml,
+  imageIndices,
+  { contentWidth = null, showDescLabel = true, layoutMode = 'inline' } = {}
+) {
+  if (pageEl) {
+    const onPage = measurePassoBlockWithImagesOnPage(pageEl, imagePasso, passoNumero, doc, {
+      imageIndices,
+      chunkHtml,
+      showDescLabel,
+      layoutMode
+    });
+    if (onPage) return onPage.totalH <= onPage.available + 12;
+  }
+
+  const totalH = measurePassoTextBlockWithImagesHeight(chunkHtml, imagePasso, passoNumero, doc, {
+    imageIndices,
+    contentWidth,
+    showDescLabel
+  });
+  return totalH <= available + 12;
+}
+
+function measureImageGroupHeight(
+  pageEl,
+  imagePasso,
+  passoNumero,
+  available,
+  doc,
+  imageIndices,
+  { contentWidth = null, imagePageOnly = true } = {}
+) {
+  if (pageEl) {
+    const onPage = measurePassoBlockWithImagesOnPage(pageEl, imagePasso, passoNumero, doc, {
+      imageIndices,
+      chunkHtml: '<span class="empty-value">—</span>',
+      showDescLabel: false,
+      layoutMode: imagePageOnly ? 'image-only-page' : 'inline'
+    });
+    if (onPage) return onPage.totalH;
+  }
+
+  return measurePassoImagesBlockHeight(imagePasso, passoNumero, doc, {
+    imageIndices,
+    showLabel: imageIndices?.length !== 1,
+    imagePageOnly,
+    contentWidth
+  });
+}
+
 function measurePassoImageAppendHeight(imagePasso, passoNumero, doc, { imageIndices = null } = {}) {
   return (
     measurePassoImagesBlockHeight(imagePasso, passoNumero, doc, {
@@ -793,7 +930,7 @@ function splitImageIndicesIntoPageGroups(
   passoNumero,
   availableHeight,
   doc,
-  { indices = null, imagePageOnly = true, contentWidth = null } = {}
+  { indices = null, imagePageOnly = true, contentWidth = null, pageEl = null } = {}
 ) {
   const imgs = getPassoImagens(imagePasso);
   const pool = indices ?? imgs.map((_, idx) => idx);
@@ -804,14 +941,12 @@ function splitImageIndicesIntoPageGroups(
 
   for (const i of pool) {
     const trial = [...current, i];
-    const h = measurePassoImagesBlockHeight(imagePasso, passoNumero, doc, {
-      imageIndices: trial,
-      showLabel: current.length === 0,
-      imagePageOnly,
-      contentWidth
+    const h = measureImageGroupHeight(pageEl, imagePasso, passoNumero, availableHeight, doc, trial, {
+      contentWidth,
+      imagePageOnly
     });
 
-    if (current.length && h > availableHeight + 8) {
+    if (current.length && h > availableHeight + 12) {
       groups.push(current);
       current = [i];
     } else {
@@ -835,7 +970,7 @@ function computeInlineAndOverflowImages(
   available,
   doc,
   chunkHtml,
-  { contentWidth = null, showDescLabel = true } = {}
+  { contentWidth = null, showDescLabel = true, pageEl = null } = {}
 ) {
   const imgs = getPassoImagens(imagePasso);
   if (!imgs.length) {
@@ -846,12 +981,18 @@ function computeInlineAndOverflowImages(
 
   for (let i = 0; i < imgs.length; i++) {
     const trial = [...inlineImageIndices, i];
-    const totalH = measurePassoTextBlockWithImagesHeight(chunkHtml, imagePasso, passoNumero, doc, {
-      imageIndices: trial,
-      contentWidth,
-      showDescLabel
-    });
-    if (totalH <= available + 8) {
+    if (
+      measurePassoInlineImagesFit(
+        pageEl,
+        imagePasso,
+        passoNumero,
+        available,
+        doc,
+        chunkHtml,
+        trial,
+        { contentWidth, showDescLabel }
+      )
+    ) {
       inlineImageIndices = trial;
     } else {
       break;
@@ -863,7 +1004,8 @@ function computeInlineAndOverflowImages(
     ? splitImageIndicesIntoPageGroups(imagePasso, passoNumero, available, doc, {
         indices: remaining,
         imagePageOnly: true,
-        contentWidth
+        contentWidth,
+        pageEl
       })
     : [];
 
@@ -876,7 +1018,7 @@ function applyImagePlacementToLayout(
   passoNumero,
   available,
   doc,
-  { chunkHtml, contentWidth, inlineOnFirstChunk, inlineOnLastChunk, showDescLabel = true }
+  { chunkHtml, contentWidth, inlineOnFirstChunk, inlineOnLastChunk, showDescLabel = true, pageEl = null }
 ) {
   const { inlineImageIndices, overflowGroups } = computeInlineAndOverflowImages(
     imagePasso,
@@ -884,7 +1026,7 @@ function applyImagePlacementToLayout(
     available,
     doc,
     chunkHtml,
-    { contentWidth, showDescLabel }
+    { contentWidth, showDescLabel, pageEl }
   );
 
   if (inlineImageIndices.length) {
@@ -896,12 +1038,31 @@ function applyImagePlacementToLayout(
     return;
   }
 
+  if (pageEl && getPassoImagens(imagePasso).length) {
+    const allIndices = getPassoImagens(imagePasso).map((_, idx) => idx);
+    const onPage = measurePassoBlockWithImagesOnPage(pageEl, imagePasso, passoNumero, doc, {
+      imageIndices: allIndices,
+      chunkHtml,
+      showDescLabel,
+      layoutMode: 'inline'
+    });
+    if (onPage && onPage.totalH <= onPage.available + 12) {
+      layout.inlineImageIndices = allIndices;
+      layout.imagePageGroups = [];
+      layout.imageOnFirstPage = inlineOnFirstChunk;
+      layout.imageOnLastChunk = inlineOnLastChunk;
+      layout.hasImagePage = inlineOnLastChunk && !inlineOnFirstChunk;
+      return;
+    }
+  }
+
   layout.inlineImageIndices = [];
   layout.imageOnFirstPage = false;
   layout.imageOnLastChunk = false;
   layout.imagePageGroups = splitImageIndicesIntoPageGroups(imagePasso, passoNumero, available, doc, {
     imagePageOnly: true,
-    contentWidth
+    contentWidth,
+    pageEl
   });
   layout.hasImagePage = layout.imagePageGroups.length > 0;
 }
@@ -939,7 +1100,7 @@ function measureDescricaoImagensLayout(
   passoNumero,
   available,
   doc,
-  { labelReserve = 34, contentWidth = null } = {}
+  { labelReserve = 34, contentWidth = null, pageEl = null } = {}
 ) {
   const hasImage = getPassoImagens(imagePasso).length > 0;
   const hasText = hasPassoDescricaoAposContent(descricao);
@@ -985,7 +1146,8 @@ function measureDescricaoImagensLayout(
         contentWidth,
         inlineOnFirstChunk: true,
         inlineOnLastChunk: false,
-        showDescLabel: true
+        showDescLabel: true,
+        pageEl
       });
     } else if (textChunkHtmls.length > 1) {
       layout.hasImagePage = true;
@@ -996,7 +1158,8 @@ function measureDescricaoImagensLayout(
         contentWidth,
         inlineOnFirstChunk: false,
         inlineOnLastChunk: true,
-        showDescLabel: false
+        showDescLabel: false,
+        pageEl
       });
     }
   } else if (hasImage && !textChunkHtmls.length) {
@@ -1006,7 +1169,8 @@ function measureDescricaoImagensLayout(
       contentWidth,
       inlineOnFirstChunk: true,
       inlineOnLastChunk: false,
-      showDescLabel: true
+      showDescLabel: true,
+      pageEl
     });
   }
 
@@ -1047,7 +1211,7 @@ export function measurePassoLayoutsFromDocument(doc, passos = []) {
       passoNumero,
       available,
       doc,
-      { labelReserve, contentWidth }
+      { labelReserve, contentWidth, pageEl: page }
     );
 
     const aposBlockLayouts = [];
@@ -1059,7 +1223,7 @@ export function measurePassoLayoutsFromDocument(doc, passos = []) {
         passoNumero,
         available,
         doc,
-        { contentWidth }
+        { contentWidth, pageEl: page }
       );
       if (blockLayout) aposBlockLayouts.push(blockLayout);
     }
