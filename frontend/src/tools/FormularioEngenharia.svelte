@@ -1297,7 +1297,7 @@
                   {@const aposEditorKey = descricaoAposEditorKey(passoIndex, block.id)}
                   {@const blockUploadCtx = { type: 'passo', index: passoIndex, blockId: block.id }}
                   <div class="passo-bloco-apos">
-                    <label class="field field-desc-apos">
+                    <label class="field">
                       <span>Descrição</span>
                       <div
                         use:registerDescricaoEditor={{ key: aposEditorKey }}
@@ -2043,19 +2043,16 @@
   }
 
   .passo-bloco-apos {
-    margin-top: 1rem;
-    padding-top: 1rem;
-    border-top: 1px dashed rgba(123, 104, 238, 0.35);
-  }
-
-  .field-desc-apos {
-    margin-top: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.85rem;
+    min-width: 0;
+    width: 100%;
   }
 
   .btn-add-desc-apos {
     display: block;
     width: 100%;
-    margin-top: 0.5rem;
     padding: 0.65rem 1rem;
     font-size: 0.875rem;
     font-weight: 600;
@@ -2075,7 +2072,6 @@
 
   .btn-remove-desc-apos {
     align-self: flex-start;
-    margin-top: 0.35rem;
     padding: 0.4rem 0.75rem;
     font-size: 0.8rem;
     font-family: inherit;
