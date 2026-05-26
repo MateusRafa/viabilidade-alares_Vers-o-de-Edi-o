@@ -136,6 +136,7 @@
           (p.descricoesAposImagem || []).map((b) => [
             b.id,
             b.descricao,
+            b.tituloImagem,
             (b.imagens || []).map((img) => [img.id, img.dataUrl?.length || 0])
           ])
         ])
@@ -756,6 +757,16 @@
     schedulePassoLayoutMeasure();
   }
 
+  function updatePassoBlocoTituloImagem(passoIndex, blockId, tituloImagem) {
+    const blocks = getPassoDescricoesAposImagem(formData.passos[passoIndex]);
+    updatePasso(passoIndex, {
+      descricoesAposImagem: blocks.map((b) =>
+        b.id === blockId ? { ...b, tituloImagem } : b
+      )
+    });
+    schedulePassoLayoutMeasure();
+  }
+
   function addDescricaoAposImagem(passoIndex) {
     const blocks = getPassoDescricoesAposImagem(formData.passos[passoIndex]);
     const novo = emptyPassoBlocoApos();
@@ -1308,13 +1319,23 @@
                         }}
                       ></div>
                     </label>
+                    <label class="field">
+                      <span>Título da seção de Imagens</span>
+                      <input
+                        type="text"
+                        value={block.tituloImagem || 'Imagem'}
+                        on:input={(e) =>
+                          updatePassoBlocoTituloImagem(passoIndex, block.id, e.currentTarget.value)}
+                        placeholder="Imagem"
+                      />
+                    </label>
                     <div class="field field-upload">
                       <div
                         class="upload-box"
                         class:armed={uploadTargetsMatch(armedUploadTarget, blockUploadCtx)}
                         tabindex="0"
                         role="group"
-                        aria-label="Imagens do bloco {blockIndex + 1} do passo {passoIndex + 1}. Um clique para selecionar e colar com Ctrl+V. Dois cliques para escolher arquivos."
+                        aria-label="Imagens — {block.tituloImagem || 'Imagem'} do bloco {blockIndex + 1} do passo {passoIndex + 1}. Um clique para selecionar e colar com Ctrl+V. Dois cliques para escolher arquivos."
                         on:click={() => armImagePaste(blockUploadCtx)}
                         on:focus={() => armImagePaste(blockUploadCtx)}
                         on:blur={disarmImagePaste}
@@ -1337,7 +1358,7 @@
                                 <img
                                   class="upload-preview"
                                   src={img.dataUrl}
-                                  alt="Prévia — {passo.tituloImagem || 'Imagem'} ({img.nome || 'sem nome'})"
+                                  alt="Prévia — {block.tituloImagem || 'Imagem'} ({img.nome || 'sem nome'})"
                                 />
                                 {#if img.nome}
                                   <p class="upload-filename">{img.nome}</p>
