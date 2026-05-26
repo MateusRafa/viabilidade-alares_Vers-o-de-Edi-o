@@ -1101,7 +1101,6 @@
                     on:click={() => armImagePaste(uploadCtx)}
                     on:focus={() => armImagePaste(uploadCtx)}
                     on:blur={disarmImagePaste}
-                    on:paste={handleImagePaste}
                     on:dblclick={(e) => {
                       setUploadTarget(uploadCtx);
                       handleUploadBoxDblClick(e);
