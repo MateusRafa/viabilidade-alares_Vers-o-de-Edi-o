@@ -76,9 +76,57 @@ export function emptyPasso() {
   return {
     tituloPasso: 'XXXXX',
     descricao: '',
-    imagemDataUrl: '',
-    imagemNome: ''
+    tituloImagem: 'Imagem',
+    imagens: []
   };
+}
+
+export function createPassoImagemId() {
+  return `img-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+}
+
+/** Lista de imagens válidas do passo */
+export function getPassoImagens(passo) {
+  if (!passo || !Array.isArray(passo.imagens)) return [];
+  return passo.imagens.filter((img) => img?.dataUrl?.trim());
+}
+
+export function hasPassoImagens(passo) {
+  return getPassoImagens(passo).length > 0;
+}
+
+function normalizePassoImagens(passo) {
+  const base = { ...emptyPasso(), ...passo };
+  let imagens = [];
+
+  if (Array.isArray(base.imagens) && base.imagens.length) {
+    imagens = base.imagens
+      .filter((img) => img?.dataUrl?.trim())
+      .map((img) => ({
+        id: img.id || createPassoImagemId(),
+        dataUrl: img.dataUrl.trim(),
+        nome: img.nome || ''
+      }));
+  } else if (base.imagemDataUrl?.trim()) {
+    imagens = [
+      {
+        id: createPassoImagemId(),
+        dataUrl: base.imagemDataUrl.trim(),
+        nome: base.imagemNome || ''
+      }
+    ];
+  }
+
+  return {
+    tituloPasso: base.tituloPasso ?? emptyPasso().tituloPasso,
+    descricao: base.descricao ?? '',
+    tituloImagem: (base.tituloImagem ?? emptyPasso().tituloImagem).trim() || 'Imagem',
+    imagens
+  };
+}
+
+function getPassoTituloImagem(passo) {
+  return (passo?.tituloImagem || '').trim() || 'Imagem';
 }
 
 export function emptyListaMaterial() {
@@ -90,14 +138,15 @@ export function emptyListaMaterial() {
 /** Altura útil do conteúdo em uma folha de passo (alinha ao CSS min-height 277mm) */
 export const PDF_PASSO_PAGE_CONTENT_PX = 1046;
 
-/** Layout de páginas de um passo: blocos de texto + página de imagem opcional */
+/** Layout de páginas de um passo: blocos de texto + páginas de imagem opcionais */
 export function defaultPassoLayout(passo) {
   const inner = getPassoDescricaoInnerHtml(passo);
-  const hasImage = !!passo?.imagemDataUrl?.trim();
+  const hasImage = hasPassoImagens(passo);
   return {
     textChunkHtmls: [inner],
     hasImagePage: false,
-    imageOnFirstPage: hasImage
+    imageOnFirstPage: hasImage,
+    imagePageGroups: []
   };
 }
 
@@ -107,7 +156,8 @@ function countPassoPages(layout) {
   if (layout.imageOnFirstPage) return textPages;
   if (!layout.hasImagePage) return textPages;
   if (textPages > 1) return textPages;
-  return textPages + 1;
+  const imageGroups = layout.imagePageGroups?.length || 1;
+  return textPages + imageGroups;
 }
 
 /** Total de páginas: capa + informações + páginas dos passos + lista de material */
@@ -127,9 +177,9 @@ export function normalizeFormData(data) {
 
   let passos = data.passos;
   if (!Array.isArray(passos) || !passos.length) {
-    passos = data.passo1 ? [{ ...emptyPasso(), ...data.passo1 }] : base.passos;
+    passos = data.passo1 ? [normalizePassoImagens({ ...emptyPasso(), ...data.passo1 })] : base.passos;
   } else {
-    passos = passos.map((p) => ({ ...emptyPasso(), ...p }));
+    passos = passos.map((p) => normalizePassoImagens(p));
   }
 
   return {
@@ -191,11 +241,15 @@ export function getPdfPagesMeta(formData, options = {}) {
       });
     }
     if (layout.hasImagePage && chunkCount === 1 && !layout.imageOnFirstPage) {
-      pages.push({
-        id: `passo-${n}-imagem`,
-        number: pages.length + 1,
-        title: `Passo ${n}° — ${titulo} (imagem)`
-      });
+      const imageGroups = layout.imagePageGroups?.length || 1;
+      for (let g = 0; g < imageGroups; g++) {
+        const suffix = imageGroups > 1 ? ` (imagem ${g + 1}/${imageGroups})` : ' (imagem)';
+        pages.push({
+          id: `passo-${n}-imagem${g > 0 ? `-${g}` : ''}`,
+          number: pages.length + 1,
+          title: `Passo ${n}° — ${titulo}${suffix}`
+        });
+      }
     }
   });
   pages.push({
@@ -487,25 +541,55 @@ function splitRichHtmlByMaxHeight(innerHtml, maxHeightPx, doc, splitOptions = {}
   return chunks.length ? chunks : [contentHtml];
 }
 
-function measurePassoImageAppendHeight(passo, passoNumero, doc) {
+function measurePassoImagesBlockHeight(passo, passoNumero, doc, { imageIndices = null, showLabel = true } = {}) {
   const probe = doc.createElement('div');
   probe.className = 'passo-imagem-apos-texto';
   probe.style.cssText = PASSO_DESC_PROBE_STYLE;
   doc.body.appendChild(probe);
-  probe.innerHTML = buildPassoImageBlock(passo, `Imagem do passo ${passoNumero}`, { showLabel: true });
+  probe.innerHTML = buildPassoImagesBlock(passo, passoNumero, { showLabel, imageIndices });
   const h = probe.scrollHeight;
   probe.remove();
-  return h + 14;
+  return h;
 }
 
-/** Altura do bloco de texto do passo (rótulo + descrição + imagem opcional) */
+function measurePassoImageAppendHeight(passo, passoNumero, doc) {
+  return measurePassoImagesBlockHeight(passo, passoNumero, doc, { showLabel: true }) + 14;
+}
+
+function splitPassoImagesIntoPageGroups(passo, passoNumero, availableHeight, doc) {
+  const imgs = getPassoImagens(passo);
+  if (!imgs.length) return [];
+
+  const groups = [];
+  let current = [];
+
+  for (let i = 0; i < imgs.length; i++) {
+    const trial = [...current, i];
+    const h = measurePassoImagesBlockHeight(passo, passoNumero, doc, {
+      imageIndices: trial,
+      showLabel: current.length === 0
+    });
+
+    if (current.length && h > availableHeight + 8) {
+      groups.push(current);
+      current = [i];
+    } else {
+      current = trial;
+    }
+  }
+
+  if (current.length) groups.push(current);
+  return groups.length ? groups : [imgs.map((_, idx) => idx)];
+}
+
+/** Altura do bloco de texto do passo (rótulo + descrição + imagens opcionais) */
 function measurePassoTextBlockHeight(chunkHtml, passo, passoNumero, doc, { includeImage = false } = {}) {
   const probe = doc.createElement('div');
   probe.className = 'passo-texto-bloco';
   probe.style.cssText = PASSO_DESC_PROBE_STYLE;
   doc.body.appendChild(probe);
   const imageHtml = includeImage
-    ? `<div class="passo-imagem-apos-texto">${buildPassoImageBlock(passo, `Imagem do passo ${passoNumero}`, { showLabel: true })}</div>`
+    ? `<div class="passo-imagem-apos-texto">${buildPassoImagesBlock(passo, passoNumero, { showLabel: true })}</div>`
     : '';
   probe.innerHTML = `
     <span class="report-info-label">Descrição</span>
@@ -523,7 +607,7 @@ export function measurePassoLayoutsFromDocument(doc, passos = []) {
   if (!doc?.body) return passos.map((p) => defaultPassoLayout(p));
 
   return passos.map((passo, i) => {
-    const hasImage = !!passo?.imagemDataUrl?.trim();
+    const hasImage = hasPassoImagens(passo);
     const passoNumero = i + 1;
     const page = doc.querySelector(`.pdf-page-passo[data-passo-index="${i}"]`);
 
@@ -546,6 +630,7 @@ export function measurePassoLayoutsFromDocument(doc, passos = []) {
 
     let imageOnFirstPage = false;
     let hasImagePage = false;
+    let imagePageGroups = [];
 
     if (hasImage) {
       const imageReserve = measurePassoImageAppendHeight(passo, passoNumero, doc);
@@ -585,10 +670,15 @@ export function measurePassoLayoutsFromDocument(doc, passos = []) {
       }
     }
 
+    if (hasImage && hasImagePage && !imageOnFirstPage && textChunkHtmls.length === 1) {
+      imagePageGroups = splitPassoImagesIntoPageGroups(passo, passoNumero, available, doc);
+    }
+
     return {
       textChunkHtmls: textChunkHtmls.length ? textChunkHtmls : [contentHtml],
       hasImagePage,
-      imageOnFirstPage
+      imageOnFirstPage,
+      imagePageGroups
     };
   });
 }
@@ -1559,6 +1649,16 @@ export const FORMULARIO_PDF_STYLES = `
     padding-top: 8px;
     border-top: 1px solid #f0f0f0;
   }
+  .passo-imagens-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    width: 100%;
+  }
+  .passo-imagem-item {
+    display: block;
+    width: 100%;
+  }
   .pdf-page-passo-imagem .passo1-imagem-wrap {
     margin-top: 4mm;
     padding-top: 0;
@@ -1888,23 +1988,40 @@ function buildPageCabecalho(formData, options = {}) {
   `;
 }
 
-function buildPassoImageBlock(passo = {}, altFallback = 'Imagem', { showLabel = true } = {}) {
-  const src = passo.imagemDataUrl?.trim();
-  if (!src) {
+function buildPassoImagesBlock(passo = {}, passoNumero = 1, { showLabel = true, imageIndices = null } = {}) {
+  const imgs = getPassoImagens(passo);
+  const titulo = getPassoTituloImagem(passo);
+  const subset =
+    imageIndices != null
+      ? imageIndices.map((idx) => imgs[idx]).filter(Boolean)
+      : imgs;
+
+  if (!subset.length) {
+    if (!showLabel) return '';
     return `
       <div class="passo1-imagem-wrap passo-imagem-body">
-        ${showLabel ? '<span class="report-info-label">Imagem</span>' : ''}
+        <span class="report-info-label">${escapeHtml(titulo)}</span>
         <span class="report-info-value">${displayValue('')}</span>
       </div>`;
   }
+
+  const imgsHtml = subset
+    .map(
+      (img, idx) => `
+      <div class="passo-imagem-item">
+        <img
+          class="passo1-imagem"
+          src="${attrUrl(img.dataUrl)}"
+          alt="${escapeHtml(img.nome || `${titulo} ${idx + 1} — passo ${passoNumero}`)}"
+        />
+      </div>`
+    )
+    .join('');
+
   return `
     <div class="passo1-imagem-wrap passo-imagem-body">
-      ${showLabel ? '<span class="report-info-label">Imagem</span>' : ''}
-      <img
-        class="passo1-imagem"
-        src="${attrUrl(src)}"
-        alt="${escapeHtml(passo.imagemNome || altFallback)}"
-      />
+      ${showLabel ? `<span class="report-info-label">${escapeHtml(titulo)}</span>` : ''}
+      <div class="passo-imagens-stack">${imgsHtml}</div>
     </div>`;
 }
 
@@ -1998,8 +2115,8 @@ function buildPagePassoMeasure(passo, passoNumero, passoIndex, pageNum, options)
                 <div class="${PASSO_DESC_MEASURE_CLASS}">${descHtml}</div>
               </div>
               ${
-                passo.imagemDataUrl?.trim()
-                  ? `<div class="passo-imagem-apos-texto passo-imagem-measure-only" aria-hidden="true">${buildPassoImageBlock(passo, `Imagem do passo ${passoNumero}`, { showLabel: true })}</div>`
+                hasPassoImagens(passo)
+                  ? `<div class="passo-imagem-apos-texto passo-imagem-measure-only" aria-hidden="true">${buildPassoImagesBlock(passo, passoNumero, { showLabel: true })}</div>`
                   : ''
               }
             </div>`;
@@ -2033,7 +2150,7 @@ function buildPagePassoTextChunk(
     : '<span class="report-info-label passo-continuacao-label">Continuação</span>';
   const appendImage = chunkOptions.appendImage === true;
   const imageHtml = appendImage
-    ? `<div class="passo-imagem-apos-texto">${buildPassoImageBlock(passo, `Imagem do passo ${passoNumero}`, { showLabel: true })}</div>`
+    ? `<div class="passo-imagem-apos-texto">${buildPassoImagesBlock(passo, passoNumero, { showLabel: true })}</div>`
     : '';
 
   const bodyHtml = `
@@ -2056,12 +2173,14 @@ function buildPagePassoTextChunk(
   });
 }
 
-function buildPagePassoImageOnly(passo, passoNumero, passoIndex, pageNum, options) {
+function buildPagePassoImageOnly(passo, passoNumero, passoIndex, pageNum, options, imageOptions = {}) {
   const tituloPasso = passo.tituloPasso?.trim() || 'XXXXX';
+  const tituloImagem = getPassoTituloImagem(passo);
+  const { imageIndices = null, showSectionTitle = true } = imageOptions;
   const bodyHtml = `
             <div class="report-info passo-conteudo-bloco">
-              <p class="passo-subtitulo-imagem">Imagem</p>
-              ${buildPassoImageBlock(passo, `Imagem do passo ${passoNumero}`, { showLabel: false })}
+              ${showSectionTitle ? `<p class="passo-subtitulo-imagem">${escapeHtml(tituloImagem)}</p>` : ''}
+              ${buildPassoImagesBlock(passo, passoNumero, { showLabel: false, imageIndices })}
             </div>`;
 
   return buildPassoPageShell({
@@ -2112,8 +2231,18 @@ function buildPassoPagesHtml(passo, passoNumero, passoIndex, startPageNum, optio
   });
 
   if (layout.hasImagePage && !imageOnContinuation && !imageOnFirstPage) {
-    pageNum += 1;
-    html += buildPagePassoImageOnly(passo, passoNumero, passoIndex, pageNum, options);
+    const groups =
+      layout.imagePageGroups?.length > 0
+        ? layout.imagePageGroups
+        : [null];
+
+    groups.forEach((imageIndices, groupIdx) => {
+      pageNum += 1;
+      html += buildPagePassoImageOnly(passo, passoNumero, passoIndex, pageNum, options, {
+        imageIndices,
+        showSectionTitle: groupIdx === 0
+      });
+    });
   }
 
   return { html, nextPageNum: pageNum };
