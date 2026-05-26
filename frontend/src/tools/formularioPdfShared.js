@@ -701,15 +701,64 @@ function measurePassoImagesBlockHeight(
   imagePasso,
   passoNumero,
   doc,
-  { imageIndices = null, showLabel = true, imagePageOnly = false } = {}
+  { imageIndices = null, showLabel = true, imagePageOnly = false, contentWidth = null } = {}
 ) {
   const probe = doc.createElement('div');
   probe.className = imagePageOnly
     ? 'pdf-page-passo-imagem passo-imagem-apos-texto'
     : 'passo-imagem-apos-texto';
-  probe.style.cssText = PASSO_DESC_PROBE_STYLE;
+  const widthPart = contentWidth ? `width:${contentWidth}px;max-width:${contentWidth}px;` : '';
+  probe.style.cssText = `${PASSO_DESC_PROBE_STYLE}${widthPart}`;
   doc.body.appendChild(probe);
   probe.innerHTML = buildPassoImagesBlock(imagePasso, passoNumero, { showLabel, imageIndices });
+  probe.querySelectorAll('img').forEach((img) => {
+    void img.offsetHeight;
+  });
+  const h = probe.scrollHeight;
+  probe.remove();
+  return h;
+}
+
+function measurePassoTextBlockWithImagesHeight(
+  chunkHtml,
+  imagePasso,
+  passoNumero,
+  doc,
+  { imageIndices = null, contentWidth = null, showDescLabel = true } = {}
+) {
+  const probe = doc.createElement('div');
+  probe.className = 'passo-texto-bloco pdf-page-passo-texto';
+  const widthPart = contentWidth ? `width:${contentWidth}px;max-width:${contentWidth}px;` : '';
+  probe.style.cssText = `${PASSO_DESC_PROBE_STYLE}${widthPart}`;
+  doc.body.appendChild(probe);
+
+  const hasImages =
+    imageIndices === null
+      ? getPassoImagens(imagePasso).length > 0
+      : imageIndices.length > 0;
+
+  const imageHtml = hasImages
+    ? `<div class="passo-imagem-apos-texto">${buildPassoImagesBlock(imagePasso, passoNumero, {
+        showLabel: true,
+        imageIndices: imageIndices ?? undefined
+      })}</div>`
+    : '';
+
+  const labelHtml = showDescLabel
+    ? '<span class="report-info-label">Descrição</span>'
+    : '<span class="report-info-label passo-continuacao-label">Continuação</span>';
+
+  probe.innerHTML = `
+    ${labelHtml}
+    <div class="passo-descricao-body">
+      <div class="${PASSO_DESC_MEASURE_CLASS}">${chunkHtml}</div>
+    </div>
+    ${imageHtml}`;
+
+  probe.querySelectorAll('img').forEach((img) => {
+    void img.offsetHeight;
+  });
+
   const h = probe.scrollHeight;
   probe.remove();
   return h;
@@ -730,7 +779,7 @@ function splitImageIndicesIntoPageGroups(
   passoNumero,
   availableHeight,
   doc,
-  { indices = null, imagePageOnly = true } = {}
+  { indices = null, imagePageOnly = true, contentWidth = null } = {}
 ) {
   const imgs = getPassoImagens(imagePasso);
   const pool = indices ?? imgs.map((_, idx) => idx);
@@ -744,7 +793,8 @@ function splitImageIndicesIntoPageGroups(
     const h = measurePassoImagesBlockHeight(imagePasso, passoNumero, doc, {
       imageIndices: trial,
       showLabel: current.length === 0,
-      imagePageOnly
+      imagePageOnly,
+      contentWidth
     });
 
     if (current.length && h > availableHeight + 8) {
@@ -765,23 +815,29 @@ function splitPassoImagesIntoPageGroups(passo, passoNumero, availableHeight, doc
 }
 
 /** Imagens que cabem inline (após texto) + grupos excedentes em páginas só de imagem */
-function computeInlineAndOverflowImages(imagePasso, passoNumero, available, doc, usedHeight) {
+function computeInlineAndOverflowImages(
+  imagePasso,
+  passoNumero,
+  available,
+  doc,
+  chunkHtml,
+  { contentWidth = null, showDescLabel = true } = {}
+) {
   const imgs = getPassoImagens(imagePasso);
   if (!imgs.length) {
-    return { inlineImageIndices: [], overflowGroups: [], imageOnFirstPage: false, imageOnLastChunk: false };
+    return { inlineImageIndices: [], overflowGroups: [] };
   }
 
-  const budgetInline = Math.max(80, available - usedHeight);
   let inlineImageIndices = [];
 
   for (let i = 0; i < imgs.length; i++) {
     const trial = [...inlineImageIndices, i];
-    const h = measurePassoImagesBlockHeight(imagePasso, passoNumero, doc, {
+    const totalH = measurePassoTextBlockWithImagesHeight(chunkHtml, imagePasso, passoNumero, doc, {
       imageIndices: trial,
-      showLabel: inlineImageIndices.length === 0,
-      imagePageOnly: false
+      contentWidth,
+      showDescLabel
     });
-    if (h <= budgetInline + 8) {
+    if (totalH <= available + 8) {
       inlineImageIndices = trial;
     } else {
       break;
@@ -792,7 +848,8 @@ function computeInlineAndOverflowImages(imagePasso, passoNumero, available, doc,
   const overflowGroups = remaining.length
     ? splitImageIndicesIntoPageGroups(imagePasso, passoNumero, available, doc, {
         indices: remaining,
-        imagePageOnly: true
+        imagePageOnly: true,
+        contentWidth
       })
     : [];
 
@@ -805,14 +862,15 @@ function applyImagePlacementToLayout(
   passoNumero,
   available,
   doc,
-  { usedHeight, inlineOnFirstChunk, inlineOnLastChunk }
+  { chunkHtml, contentWidth, inlineOnFirstChunk, inlineOnLastChunk, showDescLabel = true }
 ) {
   const { inlineImageIndices, overflowGroups } = computeInlineAndOverflowImages(
     imagePasso,
     passoNumero,
     available,
     doc,
-    usedHeight
+    chunkHtml,
+    { contentWidth, showDescLabel }
   );
 
   if (inlineImageIndices.length) {
@@ -828,7 +886,8 @@ function applyImagePlacementToLayout(
   layout.imageOnFirstPage = false;
   layout.imageOnLastChunk = false;
   layout.imagePageGroups = splitImageIndicesIntoPageGroups(imagePasso, passoNumero, available, doc, {
-    imagePageOnly: true
+    imagePageOnly: true,
+    contentWidth
   });
   layout.hasImagePage = layout.imagePageGroups.length > 0;
 }
@@ -866,7 +925,7 @@ function measureDescricaoImagensLayout(
   passoNumero,
   available,
   doc,
-  { labelReserve = 34 } = {}
+  { labelReserve = 34, contentWidth = null } = {}
 ) {
   const hasImage = getPassoImagens(imagePasso).length > 0;
   const hasText = hasPassoDescricaoAposContent(descricao);
@@ -907,34 +966,33 @@ function measureDescricaoImagensLayout(
 
     if (textChunkHtmls.length === 1) {
       const chunk = textChunkHtmls[0];
-      const textOnlyH = hasText
-        ? measurePassoTextBlockHeight(chunk, imagePasso, passoNumero, doc, { includeImage: false })
-        : labelReserve;
       applyImagePlacementToLayout(layout, imagePasso, passoNumero, available, doc, {
-        usedHeight: textOnlyH + 14,
+        chunkHtml: chunk,
+        contentWidth,
         inlineOnFirstChunk: true,
-        inlineOnLastChunk: false
+        inlineOnLastChunk: false,
+        showDescLabel: true
       });
     } else if (textChunkHtmls.length > 1) {
       layout.hasImagePage = true;
-      const probe = createPassoDescMeasureProbe(doc);
-      const continLabelReserve = 24;
       const lastChunk = textChunkHtmls[textChunkHtmls.length - 1];
-      const lastTextH = measurePassoDescHtmlHeight(lastChunk, probe);
-      probe.remove();
 
       applyImagePlacementToLayout(layout, imagePasso, passoNumero, available, doc, {
-        usedHeight: lastTextH + continLabelReserve + 14,
+        chunkHtml: lastChunk,
+        contentWidth,
         inlineOnFirstChunk: false,
-        inlineOnLastChunk: true
+        inlineOnLastChunk: true,
+        showDescLabel: false
       });
     }
   } else if (hasImage && !textChunkHtmls.length) {
     layout.textChunkHtmls = [contentHtml];
     applyImagePlacementToLayout(layout, imagePasso, passoNumero, available, doc, {
-      usedHeight: labelReserve + 14,
+      chunkHtml: contentHtml,
+      contentWidth,
       inlineOnFirstChunk: true,
-      inlineOnLastChunk: false
+      inlineOnLastChunk: false,
+      showDescLabel: true
     });
   }
 
@@ -961,6 +1019,7 @@ export function measurePassoLayoutsFromDocument(doc, passos = []) {
 
     const pageContent = page.querySelector('.page-content');
     const available = pageContent?.clientHeight || getPassoContentAreaHeight(page);
+    const contentWidth = pageContent?.clientWidth || null;
     const descEl = page.querySelector('.passo-descricao-body');
     const innerRaw = descEl?.innerHTML?.trim()
       ? descEl.innerHTML
@@ -974,7 +1033,7 @@ export function measurePassoLayoutsFromDocument(doc, passos = []) {
       passoNumero,
       available,
       doc,
-      { labelReserve }
+      { labelReserve, contentWidth }
     );
 
     const aposBlockLayouts = [];
@@ -985,7 +1044,8 @@ export function measurePassoLayoutsFromDocument(doc, passos = []) {
         passoSliceForBlocoImagens(passo, block),
         passoNumero,
         available,
-        doc
+        doc,
+        { contentWidth }
       );
       if (blockLayout) aposBlockLayouts.push(blockLayout);
     }
@@ -2561,17 +2621,19 @@ function appendPassoContentSectionHtml(
 
   let html = '';
   let pageNum = startPageNum;
-  const inlineImageIndices = contentLayout.inlineImageIndices?.length
-    ? contentLayout.inlineImageIndices
-    : null;
+  const inlineIndices = contentLayout.inlineImageIndices;
+  const hasInlineImages =
+    inlineIndices == null
+      ? getPassoImagens(imagePasso).length > 0
+      : inlineIndices.length > 0;
 
   chunks.forEach((chunkHtml, chunkIndex) => {
     pageNum += 1;
     const isFirst = chunkIndex === 0;
     const isLast = chunkIndex === chunks.length - 1;
     const appendImage =
-      (contentLayout.imageOnFirstPage && isFirst && inlineImageIndices) ||
-      (contentLayout.imageOnLastChunk && isLast && inlineImageIndices);
+      (contentLayout.imageOnFirstPage && isFirst && hasInlineImages) ||
+      (contentLayout.imageOnLastChunk && isLast && hasInlineImages);
     html += buildPagePassoTextChunk(
       passo,
       passoNumero,
@@ -2583,7 +2645,7 @@ function appendPassoContentSectionHtml(
       {
         appendImage,
         imagePasso,
-        imageIndices: appendImage ? inlineImageIndices : null
+        imageIndices: appendImage ? inlineIndices : null
       }
     );
   });
@@ -2595,7 +2657,7 @@ function appendPassoContentSectionHtml(
       pageNum += 1;
       html += buildPagePassoImageOnly(passo, passoNumero, null, pageNum, options, {
         imageIndices,
-        showSectionTitle: groupIdx === 0 && !inlineImageIndices?.length,
+        showSectionTitle: groupIdx === 0 && !hasInlineImages,
         imagePasso
       });
     });
