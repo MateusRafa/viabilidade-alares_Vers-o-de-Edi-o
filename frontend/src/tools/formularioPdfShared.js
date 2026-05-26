@@ -104,6 +104,7 @@ export function emptyPassoBlocoApos() {
   return {
     id: createPassoDescricaoAposId(),
     descricao: '',
+    tituloImagem: 'Imagem',
     imagens: []
   };
 }
@@ -114,6 +115,7 @@ export function getPassoDescricoesAposImagem(passo) {
   return passo.descricoesAposImagem.map((block) => ({
     id: block?.id || createPassoDescricaoAposId(),
     descricao: block?.descricao ?? '',
+    tituloImagem: (block?.tituloImagem ?? emptyPassoBlocoApos().tituloImagem).trim() || 'Imagem',
     imagens: Array.isArray(block?.imagens)
       ? block.imagens
           .filter((img) => img?.dataUrl?.trim())
@@ -144,10 +146,14 @@ export function isPassoBlocoAposEmpty(block) {
   return !hasPassoDescricaoAposContent(block?.descricao) && !hasPassoBlocoImagens(block);
 }
 
-/** Pseudo-passo só com imagens do bloco (título da seção = do passo) */
-function passoSliceForBlocoImagens(passo, block) {
+export function getPassoBlocoTituloImagem(block) {
+  return (block?.tituloImagem ?? '').trim() || 'Imagem';
+}
+
+/** Pseudo-passo só com imagens do bloco e título próprio da seção */
+function passoSliceForBlocoImagens(_passo, block) {
   return {
-    tituloImagem: passo?.tituloImagem,
+    tituloImagem: getPassoBlocoTituloImagem(block),
     imagens: getPassoBlocoImagens(block)
   };
 }
@@ -180,6 +186,7 @@ function normalizePassoImagens(passo) {
         return {
           id: normalized.id,
           descricao: normalized.descricao ?? '',
+          tituloImagem: getPassoBlocoTituloImagem(normalized),
           imagens: getPassoBlocoImagens(normalized)
         };
       })
