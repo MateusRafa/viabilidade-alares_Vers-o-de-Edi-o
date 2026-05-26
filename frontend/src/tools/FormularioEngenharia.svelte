@@ -20,7 +20,9 @@
     createAnexoId,
     createPassoImagemId,
     createPassoDescricaoAposId,
+    emptyPassoBlocoApos,
     getPassoImagens,
+    getPassoBlocoImagens,
     getPassoDescricoesAposImagem,
     renderPdfFileToPageImages
   } from './formularioPdfShared.js';
@@ -131,7 +133,11 @@
           p.descricao,
           p.tituloImagem,
           (p.imagens || []).map((img) => [img.id, img.dataUrl?.length || 0]),
-          (p.descricoesAposImagem || []).map((b) => [b.id, b.descricao])
+          (p.descricoesAposImagem || []).map((b) => [
+            b.id,
+            b.descricao,
+            (b.imagens || []).map((img) => [img.id, img.dataUrl?.length || 0])
+          ])
         ])
       )
     : '';
@@ -545,7 +551,7 @@
     return dedupeImageFiles(fromFiles);
   }
 
-  async function appendImagesToPasso(passoIndex, files) {
+  async function appendImagesToPasso(passoIndex, files, blockId = null) {
     const list = dedupeImageFiles(Array.from(files || []));
     if (!list.length) return false;
 
@@ -553,13 +559,23 @@
     const valid = results.filter(Boolean);
     if (!valid.length) return false;
 
-    const passo = formData.passos[passoIndex];
     const novas = valid.map(({ dataUrl, nome }) => ({
       id: createPassoImagemId(),
       dataUrl,
       nome
     }));
-    updatePasso(passoIndex, { imagens: [...(passo.imagens || []), ...novas] });
+
+    if (blockId) {
+      const blocks = getPassoDescricoesAposImagem(formData.passos[passoIndex]);
+      updatePasso(passoIndex, {
+        descricoesAposImagem: blocks.map((b) =>
+          b.id === blockId ? { ...b, imagens: [...(b.imagens || []), ...novas] } : b
+        )
+      });
+    } else {
+      const passo = formData.passos[passoIndex];
+      updatePasso(passoIndex, { imagens: [...(passo.imagens || []), ...novas] });
+    }
     schedulePassoLayoutMeasure(true);
     return true;
   }
@@ -568,7 +584,7 @@
     pdfError = '';
     const files = event.currentTarget?.files;
     if (!files?.length || uploadTarget?.type !== 'passo') return;
-    appendImagesToPasso(uploadTarget.index, files);
+    appendImagesToPasso(uploadTarget.index, files, uploadTarget.blockId ?? null);
     event.currentTarget.value = '';
   }
 
@@ -595,7 +611,7 @@
   function uploadTargetsMatch(a, b) {
     if (!a || !b) return false;
     if (a.type !== 'passo' || b.type !== 'passo') return false;
-    return a.index === b.index;
+    return a.index === b.index && (a.blockId ?? null) === (b.blockId ?? null);
   }
 
   function fileFromClipboardItem(item) {
@@ -635,14 +651,15 @@
     const passoIndex = uploadTarget.index;
     const files = collectClipboardImageFiles(event?.clipboardData);
 
+    const blockId = uploadTarget.blockId ?? null;
     if (files.length) {
-      return appendImagesToPasso(passoIndex, files);
+      return appendImagesToPasso(passoIndex, files, blockId);
     }
 
     try {
       const file = await readImageFromClipboardApi();
       if (file) {
-        return appendImagesToPasso(passoIndex, [file]);
+        return appendImagesToPasso(passoIndex, [file], blockId);
       }
     } catch (err) {
       console.warn('Leitura da área de transferência:', err);
@@ -741,12 +758,32 @@
 
   function addDescricaoAposImagem(passoIndex) {
     const blocks = getPassoDescricoesAposImagem(formData.passos[passoIndex]);
-    const newId = createPassoDescricaoAposId();
+    const novo = emptyPassoBlocoApos();
     updatePasso(passoIndex, {
-      descricoesAposImagem: [...blocks, { id: newId, descricao: '' }]
+      descricoesAposImagem: [...blocks, novo]
     });
     schedulePassoLayoutMeasure(true);
-    tick().then(() => initDescricaoAposEditor(passoIndex, newId));
+    tick().then(() => initDescricaoAposEditor(passoIndex, novo.id));
+  }
+
+  function removePassoBlocoImagem(passoIndex, blockId, imagemId) {
+    const blocks = getPassoDescricoesAposImagem(formData.passos[passoIndex]);
+    updatePasso(passoIndex, {
+      descricoesAposImagem: blocks.map((b) =>
+        b.id === blockId
+          ? { ...b, imagens: (b.imagens || []).filter((img) => img.id !== imagemId) }
+          : b
+      )
+    });
+    schedulePassoLayoutMeasure(true);
+  }
+
+  function clearPassoBlocoImages(passoIndex, blockId) {
+    const blocks = getPassoDescricoesAposImagem(formData.passos[passoIndex]);
+    updatePasso(passoIndex, {
+      descricoesAposImagem: blocks.map((b) => (b.id === blockId ? { ...b, imagens: [] } : b))
+    });
+    schedulePassoLayoutMeasure(true);
   }
 
   function removeDescricaoAposImagem(passoIndex, blockId) {
@@ -1247,35 +1284,93 @@
                 </div>
                 {#each getPassoDescricoesAposImagem(passo) as block, blockIndex (block.id)}
                   {@const aposEditorKey = descricaoAposEditorKey(passoIndex, block.id)}
-                  <label class="field field-desc-apos">
-                    <span>Descrição abaixo da imagem{getPassoDescricoesAposImagem(passo).length > 1 ? ` (${blockIndex + 1})` : ''}</span>
-                    <div
-                      use:registerDescricaoEditor={{ key: aposEditorKey }}
-                      class="rich-editor"
-                      contenteditable="true"
-                      role="textbox"
-                      aria-multiline="true"
-                      data-passo-index={passoIndex}
-                      data-desc-apos-id={block.id}
-                      data-placeholder="Texto adicional após as imagens (suporta negrito e formatação ao colar)"
-                      on:focus={() => {
-                        focusedDescricaoEditorKey = aposEditorKey;
-                      }}
-                      on:input={(e) => handlePassoDescricaoAposInput(passoIndex, block.id, e)}
-                      on:paste={handleDescricaoPaste}
-                      on:blur={(e) => {
-                        focusedDescricaoEditorKey = null;
-                        syncDescricaoAposEditor(passoIndex, block.id, e.currentTarget);
-                      }}
-                    ></div>
+                  {@const blockUploadCtx = { type: 'passo', index: passoIndex, blockId: block.id }}
+                  <div class="passo-bloco-apos">
+                    <label class="field field-desc-apos">
+                      <span>Descrição</span>
+                      <div
+                        use:registerDescricaoEditor={{ key: aposEditorKey }}
+                        class="rich-editor"
+                        contenteditable="true"
+                        role="textbox"
+                        aria-multiline="true"
+                        data-passo-index={passoIndex}
+                        data-desc-apos-id={block.id}
+                        data-placeholder="Descrição (suporta negrito e formatação ao colar)"
+                        on:focus={() => {
+                          focusedDescricaoEditorKey = aposEditorKey;
+                        }}
+                        on:input={(e) => handlePassoDescricaoAposInput(passoIndex, block.id, e)}
+                        on:paste={handleDescricaoPaste}
+                        on:blur={(e) => {
+                          focusedDescricaoEditorKey = null;
+                          syncDescricaoAposEditor(passoIndex, block.id, e.currentTarget);
+                        }}
+                      ></div>
+                    </label>
+                    <div class="field field-upload">
+                      <div
+                        class="upload-box"
+                        class:armed={uploadTargetsMatch(armedUploadTarget, blockUploadCtx)}
+                        tabindex="0"
+                        role="group"
+                        aria-label="Imagens do bloco {blockIndex + 1} do passo {passoIndex + 1}. Um clique para selecionar e colar com Ctrl+V. Dois cliques para escolher arquivos."
+                        on:click={() => armImagePaste(blockUploadCtx)}
+                        on:focus={() => armImagePaste(blockUploadCtx)}
+                        on:blur={disarmImagePaste}
+                        on:dblclick={(e) => {
+                          setUploadTarget(blockUploadCtx);
+                          handleUploadBoxDblClick(e);
+                        }}
+                      >
+                        <div class="upload-trigger">
+                          <span class="upload-trigger-text">1 clique: selecionar o box e colar (Ctrl+V)</span>
+                          <span class="upload-trigger-hint"
+                            >2 cliques: escolher imagens no computador — várias em sequência, até
+                            {MAX_PASSO_IMAGE_MB} MB cada</span
+                          >
+                        </div>
+                        {#if getPassoBlocoImagens(block).length}
+                          <div class="upload-previews-stack">
+                            {#each getPassoBlocoImagens(block) as img (img.id)}
+                              <div class="upload-preview-wrap">
+                                <img
+                                  class="upload-preview"
+                                  src={img.dataUrl}
+                                  alt="Prévia — {passo.tituloImagem || 'Imagem'} ({img.nome || 'sem nome'})"
+                                />
+                                {#if img.nome}
+                                  <p class="upload-filename">{img.nome}</p>
+                                {/if}
+                                <button
+                                  type="button"
+                                  class="btn-remove-image"
+                                  on:click|stopPropagation={() =>
+                                    removePassoBlocoImagem(passoIndex, block.id, img.id)}
+                                >
+                                  Remover
+                                </button>
+                              </div>
+                            {/each}
+                            <button
+                              type="button"
+                              class="btn-remove-all-images"
+                              on:click|stopPropagation={() => clearPassoBlocoImages(passoIndex, block.id)}
+                            >
+                              Remover todas
+                            </button>
+                          </div>
+                        {/if}
+                      </div>
+                    </div>
                     <button
                       type="button"
                       class="btn-remove-desc-apos"
                       on:click={() => removeDescricaoAposImagem(passoIndex, block.id)}
                     >
-                      Remover esta descrição
+                      Remover bloco (descrição e imagens)
                     </button>
-                  </label>
+                  </div>
                 {/each}
                 <button
                   type="button"
@@ -1926,8 +2021,14 @@
     background: #ffedd5;
   }
 
+  .passo-bloco-apos {
+    margin-top: 1rem;
+    padding-top: 1rem;
+    border-top: 1px dashed rgba(123, 104, 238, 0.35);
+  }
+
   .field-desc-apos {
-    margin-top: 0.75rem;
+    margin-top: 0;
   }
 
   .btn-add-desc-apos {
