@@ -82,6 +82,7 @@
   /** { type: 'passo', index: number } | { type: 'material' } */
   let uploadTarget = null;
   let armedUploadTarget = null;
+  let imagePasteInFlight = false;
   const descricaoEditorEls = {};
   const descricaoEditorReady = {};
   /** Evita resetar innerHTML enquanto o usuário digita (cursor não pula para o início). */
@@ -499,8 +500,45 @@
     });
   }
 
+  function dedupeImageFiles(files) {
+    const out = [];
+    const seen = new Set();
+    for (const file of files || []) {
+      if (!file?.type?.startsWith('image/')) continue;
+      const key = `${file.size}:${file.type}:${file.name || ''}:${file.lastModified || 0}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(file);
+    }
+    return out;
+  }
+
+  /** Clipboard costuma expor a mesma imagem em items e em files — usar só uma fonte. */
+  function collectClipboardImageFiles(dt) {
+    if (!dt) return [];
+
+    const fromItems = [];
+    if (dt.items?.length) {
+      for (const item of dt.items) {
+        if (!item.type?.startsWith('image/')) continue;
+        const file = fileFromClipboardItem(item);
+        if (file?.type?.startsWith('image/')) fromItems.push(file);
+      }
+    }
+    if (fromItems.length) return dedupeImageFiles(fromItems);
+
+    const fromFiles = [];
+    if (dt.files?.length) {
+      for (let i = 0; i < dt.files.length; i++) {
+        const file = dt.files[i];
+        if (file?.type?.startsWith('image/')) fromFiles.push(file);
+      }
+    }
+    return dedupeImageFiles(fromFiles);
+  }
+
   async function appendImagesToPasso(passoIndex, files) {
-    const list = Array.from(files || []).filter((f) => f?.type?.startsWith('image/'));
+    const list = dedupeImageFiles(Array.from(files || []));
     if (!list.length) return false;
 
     const results = await Promise.all(list.map(readImageFileAsDataUrl));
@@ -587,22 +625,7 @@
     pdfError = '';
     if (uploadTarget?.type !== 'passo') return false;
     const passoIndex = uploadTarget.index;
-    const files = [];
-    const dt = event?.clipboardData;
-
-    if (dt?.files?.length) {
-      for (let i = 0; i < dt.files.length; i++) {
-        const file = dt.files[i];
-        if (file?.type?.startsWith('image/')) files.push(file);
-      }
-    }
-
-    if (dt?.items?.length) {
-      for (const item of dt.items) {
-        const file = fileFromClipboardItem(item);
-        if (file) files.push(file);
-      }
-    }
+    const files = collectClipboardImageFiles(event?.clipboardData);
 
     if (files.length) {
       return appendImagesToPasso(passoIndex, files);
@@ -620,15 +643,6 @@
     pdfError =
       'Não foi possível colar esta imagem. Clique uma vez no box roxo, depois Ctrl+V — ou use duplo clique para escolher arquivo.';
     return false;
-  }
-
-  async function handleImagePaste(event) {
-    if (!armedUploadTarget) return;
-
-    event.preventDefault();
-    event.stopPropagation();
-    uploadTarget = armedUploadTarget;
-    await processImagePaste(event);
   }
 
   function descricaoEditorKey(passoIndex) {
@@ -864,12 +878,17 @@
       applyPreviewHtml();
       schedulePassoLayoutMeasure(true);
 
-      const onWindowPaste = (e) => {
-        if (!armedUploadTarget) return;
+      const onWindowPaste = async (e) => {
+        if (!armedUploadTarget || imagePasteInFlight) return;
         e.preventDefault();
         e.stopPropagation();
         uploadTarget = armedUploadTarget;
-        processImagePaste(e);
+        imagePasteInFlight = true;
+        try {
+          await processImagePaste(e);
+        } finally {
+          imagePasteInFlight = false;
+        }
       };
       window.addEventListener('paste', onWindowPaste, true);
       removeWindowPaste = () => window.removeEventListener('paste', onWindowPaste, true);
