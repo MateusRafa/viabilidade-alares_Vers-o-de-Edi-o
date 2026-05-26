@@ -115,8 +115,12 @@
   let previewHtmlDisplayed = '';
   /** HTML do iframe oculto só para medição de quebra de página */
   let measureHtml = '';
-  /** Seção do formulário em edição — prévia volta sempre para a página correspondente */
+  /** Seção do formulário em edição — prévia volta para a página correspondente */
   let previewFocusAnchor = 'capa';
+  /** Restaura rolagem da prévia após atualização automática (mesma seção em edição) */
+  let previewScrollRestore = null;
+  /** Ao digitar descrição longa, rolar para a última folha de texto do passo */
+  let previewPreferTailScroll = false;
   /** Ignora eventos load antigos do iframe quando várias atualizações seguidas */
   let previewApplyGeneration = 0;
 
@@ -200,7 +204,17 @@
     syncPreviewFocusFromTarget(event.target);
   }
 
-  function findPreviewAnchorPageElement(doc) {
+  function capturePreviewScroll() {
+    const win = previewIframeEl?.contentWindow;
+    if (!win) return;
+    previewScrollRestore = {
+      top: win.scrollY,
+      left: win.scrollX,
+      anchor: previewFocusAnchor
+    };
+  }
+
+  function findPreviewAnchorPageElement(doc, { preferTail = false } = {}) {
     if (!doc || !previewFocusAnchor) return null;
 
     if (previewFocusAnchor === 'capa') {
@@ -227,10 +241,17 @@
     if (previewFocusAnchor.startsWith('passo:')) {
       const passoIndex = previewFocusAnchor.split(':')[1];
       const passoNumero = Number(passoIndex) + 1;
-      return (
-        doc.querySelector(`.pdf-page-passo[data-passo-index="${passoIndex}"]`) ||
-        doc.querySelector(`[data-pdf-section="passo-${passoNumero}"]`)
+      const textPages = doc.querySelectorAll(
+        `[data-pdf-section="passo-${passoNumero}"].pdf-page-passo-texto`
       );
+      if (textPages.length) {
+        return preferTail ? textPages[textPages.length - 1] : textPages[0];
+      }
+      const passoPages = doc.querySelectorAll(`[data-pdf-section="passo-${passoNumero}"]`);
+      if (passoPages.length) {
+        return preferTail ? passoPages[passoPages.length - 1] : passoPages[0];
+      }
+      return doc.querySelector(`.pdf-page-passo[data-passo-index="${passoIndex}"]`);
     }
     return null;
   }
@@ -242,7 +263,25 @@
     const win = previewIframeEl?.contentWindow;
     if (!doc || !win) return;
 
-    const pageEl = findPreviewAnchorPageElement(doc);
+    if (
+      previewScrollRestore &&
+      previewScrollRestore.anchor === previewFocusAnchor &&
+      !previewPreferTailScroll
+    ) {
+      win.scrollTo({
+        top: previewScrollRestore.top,
+        left: previewScrollRestore.left,
+        behavior: 'auto'
+      });
+      previewScrollRestore = null;
+      previewPreferTailScroll = false;
+      return;
+    }
+
+    const pageEl = findPreviewAnchorPageElement(doc, { preferTail: previewPreferTailScroll });
+    previewPreferTailScroll = false;
+    previewScrollRestore = null;
+
     if (pageEl) {
       pageEl.scrollIntoView({ block: 'start', behavior: 'auto' });
       return;
@@ -254,6 +293,7 @@
 
   function applyPreviewHtml() {
     if (!assetsReady) return;
+    capturePreviewScroll();
     previewApplyGeneration += 1;
     previewHtmlDisplayed = buildFullPdfHtml(formData, {}, buildPreviewHtmlOptions());
   }
@@ -747,12 +787,14 @@
 
   function handlePassoDescricaoInput(passoIndex, event) {
     previewFocusAnchor = `passo:${passoIndex}`;
+    previewPreferTailScroll = true;
     syncDescricaoEditor(passoIndex, event.currentTarget);
     schedulePassoLayoutMeasure();
   }
 
   function handlePassoDescricaoAposInput(passoIndex, blockId, event) {
     previewFocusAnchor = `passo:${passoIndex}`;
+    previewPreferTailScroll = true;
     syncDescricaoAposEditor(passoIndex, blockId, event.currentTarget);
     schedulePassoLayoutMeasure();
   }
@@ -809,6 +851,7 @@
   }
 
   function handleMaterialDescricaoInput(event) {
+    previewPreferTailScroll = true;
     syncMaterialDescricaoEditor(event.currentTarget);
   }
 
