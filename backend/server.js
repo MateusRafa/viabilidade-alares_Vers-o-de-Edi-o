@@ -10,6 +10,8 @@ import multer from 'multer';
 import * as turf from '@turf/turf';
 import { union as martinezUnion } from 'martinez-polygon-clipping';
 import supabase, { testSupabaseConnection, checkTables, isSupabaseAvailable } from './supabase.js';
+import { registerDiagramacaoRoutes } from './diagramacaoRoutes.js';
+import { registerRelatoriosB2bRoutes } from './relatoriosB2bRoutes.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -9008,6 +9010,15 @@ app.post('/api/vi-ala/upload-base', upload.single('file'), async (req, res) => {
     });
   }
 });
+
+await registerDiagramacaoRoutes(app, { DATA_DIR });
+
+try {
+  registerRelatoriosB2bRoutes(app);
+  console.log('✅ [RelatoriosB2B] Rotas registradas (/api/relatorios-b2b/*)');
+} catch (err) {
+  console.error('❌ [RelatoriosB2B] Não foi possível registrar rotas:', err.message);
+}
 
 // Rota catch-all para rotas não encontradas (sempre retorna JSON)
 app.use((req, res) => {
