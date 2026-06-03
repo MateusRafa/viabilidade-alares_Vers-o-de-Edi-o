@@ -54,6 +54,41 @@ const portalToolsMeta = [
     icon: '📋',
     color: '#7B68EE',
     available: true
+  },
+  {
+    id: 'formulario-engenharia-implantacao',
+    title: 'Relatório de Construção - Implantação',
+    description:
+      'Formulário de relatório de construção para o setor de Implantação (cópia independente do formulário de Projetos)',
+    icon: '🏗️',
+    color: '#0D9488',
+    available: true,
+    portalVisible: false
+  },
+  {
+    id: 'dashboard-projetos',
+    title: 'Dashboard Projetos',
+    description: 'Gerenciar relatórios técnicos B2B do setor de Projetos',
+    icon: '📁',
+    color: '#7B68EE',
+    available: true
+  },
+  {
+    id: 'dashboard-implantacao',
+    title: 'Dashboard Implantação',
+    description: 'Gerenciar relatórios enviados por Projetos e Relatório de Construção',
+    icon: '🏗️',
+    color: '#0D9488',
+    available: true
+  },
+  {
+    id: 'ia-auditoria-diagramacao',
+    title: 'IA de Auditoria de Diagramação',
+    description:
+      'Auditoria em lote de PDFs CEO/CTO: classifica sem diagramação, incompleta ou diagramada',
+    icon: '📐',
+    color: '#0D9488',
+    available: true
   }
 ];
 
@@ -66,7 +101,11 @@ const TOOL_COMPONENT_FILES = {
   'calculadora-orcamento': './CalculadoraOrcamento.svelte',
   'mapa-consulta': './MapaConsulta.svelte',
   'dashboard-censup': './DashboardCensup.svelte',
-  'formulario-engenharia': './FormularioEngenharia.svelte'
+  'formulario-engenharia': './FormularioEngenharia.svelte',
+  'formulario-engenharia-implantacao': './FormularioEngenhariaImplantacao.svelte',
+  'dashboard-projetos': './DashboardProjetos.svelte',
+  'dashboard-implantacao': './DashboardImplantacao.svelte',
+  'ia-auditoria-diagramacao': './IaAuditoriaDiagramacao.svelte'
 };
 
 const FAVICON_BY_TOOL = {
@@ -128,7 +167,9 @@ export function getToolById(toolId) {
  * Retorna todas as ferramentas disponíveis
  */
 export function getAvailableTools() {
-  return toolsRegistry.filter((tool) => tool.available && tool.component);
+  return toolsRegistry.filter(
+    (tool) => tool.available && tool.component && tool.portalVisible !== false
+  );
 }
 
 /**
