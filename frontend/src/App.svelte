@@ -86,6 +86,61 @@
   let heartbeatInterval = null;
   let currentView = null; // 'dashboard', 'tool', 'login' ou null (será definido pelo processUrl)
   let currentTool = null; // ID da ferramenta atual
+  /** Ao voltar da ferramenta filha, reabre esta ferramenta em vez do portal (ex.: dashboard-implantacao). */
+  let toolReturnTo = null;
+  /** Opções ao abrir ferramenta filha (ex.: relatorioId para editar/imprimir). */
+  let toolOpenOptions = null;
+  /** Força remount/recarga dos dashboards de relatórios B2B ao voltar do formulário. */
+  let relatoriosDashboardRefreshKey = 0;
+  /** Força remount limpo do formulário PDF a cada abertura (evita estado travado). */
+  let formToolSessionKey = 0;
+  /** Voltar do header — registrado pelo formulário de relatório. */
+  let toolBackHandler = null;
+
+  const DASHBOARD_RELATORIOS_TOOL_IDS = ['dashboard-projetos', 'dashboard-implantacao'];
+  const FORM_RELATORIO_TOOL_IDS = ['formulario-engenharia', 'formulario-engenharia-implantacao'];
+
+  function isDashboardRelatoriosTool(toolId) {
+    return DASHBOARD_RELATORIOS_TOOL_IDS.includes(toolId);
+  }
+
+  function getToolComponentKey(toolId) {
+    if (isDashboardRelatoriosTool(toolId)) {
+      return `${toolId}-${relatoriosDashboardRefreshKey}`;
+    }
+    if (FORM_RELATORIO_TOOL_IDS.includes(toolId)) {
+      return `${toolId}-${formToolSessionKey}`;
+    }
+    return toolId;
+  }
+
+  function registerToolBackHandler(handler) {
+    toolBackHandler = typeof handler === 'function' ? handler : null;
+  }
+
+  function bumpRelatoriosDashboardRefresh() {
+    relatoriosDashboardRefreshKey += 1;
+    return relatoriosDashboardRefreshKey;
+  }
+
+  function buildToolOpenOptionsForNavigation(toolId, options = {}) {
+    if (options.relatorioId || options.prefetchedRelatorio) {
+      return {
+        relatorioId: options.relatorioId,
+        mode: options.mode || 'edit',
+        prefetchedRelatorio: options.prefetchedRelatorio ?? null
+      };
+    }
+    if (isDashboardRelatoriosTool(toolId) || options.refreshRelatorios) {
+      const refreshKey = bumpRelatoriosDashboardRefresh();
+      const result = { refreshRelatorios: true, refreshKey };
+      if (options.initialRelatorios != null) {
+        result.initialRelatorios = options.initialRelatorios;
+      }
+      return result;
+    }
+    return null;
+  }
   let toolSettingsHandler = null; // Função de configurações da ferramenta atual
   let toolSettingsHoverHandler = null; // Função de pré-carregamento no hover da engrenagem
   let broadcastChannel = null; // Canal de comunicação entre abas
@@ -520,14 +575,62 @@
     
     // Definir ferramenta atual
     currentTool = toolId;
+    toolReturnTo = null;
+    toolOpenOptions = null;
     currentView = 'tool';
     
     // Cada ferramenta gerencia sua própria inicialização através do onMount do componente
     // Não precisamos inicializar aqui - o componente fará isso quando for montado
   }
 
+  /**
+   * Abre outra ferramenta a partir de uma ferramenta já aberta (ex.: Dashboard → Formulário).
+   * @param {string} toolId
+   * @param {{ returnTo?: string, relatorioId?: string, mode?: 'edit'|'print' }} [options]
+   */
+  function handleOpenTool(toolId, options = {}) {
+    const tool = getToolById(toolId);
+
+    if (!tool || !tool.available) {
+      console.error(`Ferramenta ${toolId} não encontrada ou não disponível`);
+      alert('Esta ferramenta não está disponível.');
+      return;
+    }
+
+    if (!hasToolPermission(toolId)) {
+      alert(
+        'Você não tem permissão para acessar o formulário de relatório. Entre em contato com o administrador.'
+      );
+      return;
+    }
+
+    const returnTo = options.returnTo;
+    if (returnTo && !hasToolPermission(returnTo)) {
+      toolReturnTo = null;
+    } else {
+      toolReturnTo = returnTo || null;
+    }
+
+    toolOpenOptions = buildToolOpenOptionsForNavigation(toolId, options);
+
+    toolBackHandler = null;
+    if (FORM_RELATORIO_TOOL_IDS.includes(toolId)) {
+      formToolSessionKey += 1;
+    }
+
+    currentTool = toolId;
+    currentView = 'tool';
+    toolSettingsHandler = null;
+    toolSettingsHoverHandler = null;
+  }
+
   // Função para voltar ao Dashboard
   async function handleBackToDashboard() {
+    if (typeof toolBackHandler === 'function') {
+      toolBackHandler();
+      return;
+    }
+
     // Se a ferramenta está em nova aba, tentar encontrar Dashboard aberto
     if (isToolInNewTab && typeof window !== 'undefined' && broadcastChannel) {
       try {
@@ -581,6 +684,24 @@
         }, 100);
       }
     } else {
+      // Voltar à ferramenta de origem (ex.: Dashboard Implantação → Formulário → voltar)
+      if (toolReturnTo && hasToolPermission(toolReturnTo)) {
+        const returnTool = getToolById(toolReturnTo);
+        if (returnTool?.available && returnTool.component) {
+          currentTool = toolReturnTo;
+          toolReturnTo = null;
+          toolOpenOptions = buildToolOpenOptionsForNavigation(currentTool, {
+            refreshRelatorios: true
+          });
+          currentView = 'tool';
+          toolSettingsHandler = null;
+          toolSettingsHoverHandler = null;
+          return;
+        }
+      }
+      toolReturnTo = null;
+      toolOpenOptions = null;
+      toolBackHandler = null;
       // Comportamento normal: voltar ao Dashboard na mesma aba
       currentView = 'dashboard';
       currentTool = null;
@@ -908,15 +1029,20 @@
         onBackToDashboard={handleBackToDashboard}
         onOpenSettings={handleOpenSettings}
         onSettingsHover={handleSettingsHover}
-        showSettingsButton={toolSettingsHandler !== null && tool.id !== 'analise-cobertura' && tool.id !== 'viabilidade-alares' && tool.id !== 'formulario-engenharia'}
+        showSettingsButton={toolSettingsHandler !== null && tool.id !== 'analise-cobertura' && tool.id !== 'viabilidade-alares' && tool.id !== 'formulario-engenharia' && tool.id !== 'formulario-engenharia-implantacao' && tool.id !== 'dashboard-projetos' && tool.id !== 'dashboard-implantacao'}
       >
+        {#key getToolComponentKey(currentTool)}
         <svelte:component this={tool.component} 
           currentUser={currentUser}
           userTipo={userTipo}
           onBackToDashboard={handleBackToDashboard}
+          onOpenTool={handleOpenTool}
+          onBackRequest={registerToolBackHandler}
           onSettingsRequest={registerToolSettings}
           onSettingsHover={registerToolSettingsHover}
+          toolOpenOptions={toolOpenOptions}
         />
+        {/key}
       </ToolWrapper>
     {:else}
       <div class="error-container">
