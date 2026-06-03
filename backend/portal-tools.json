@@ -22,5 +22,21 @@
   {
     "id": "formulario-engenharia",
     "title": "Relatório Técnico de Projeto B2B"
+  },
+  {
+    "id": "formulario-engenharia-implantacao",
+    "title": "Relatório de Construção - Implantação"
+  },
+  {
+    "id": "dashboard-projetos",
+    "title": "Dashboard Projetos"
+  },
+  {
+    "id": "dashboard-implantacao",
+    "title": "Dashboard Implantação"
+  },
+  {
+    "id": "ia-auditoria-diagramacao",
+    "title": "IA de Auditoria de Diagramação"
   }
 ]
