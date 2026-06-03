@@ -1,0 +1,74 @@
+[
+  {
+    "id": "viabilidade-alares",
+    "title": "Viabilidade Alares - Engenharia",
+    "description": "Análise de viabilidade técnica para identificação de CTOs próximas a endereços de clientes",
+    "icon": "🔍",
+    "color": "#7B68EE",
+    "available": true
+  },
+  {
+    "id": "analise-cobertura",
+    "title": "Consulta de Alívio de Rede",
+    "description": "Consulta de CTOs para análise de alívio de rede e infraestrutura",
+    "icon": "📡",
+    "color": "#6495ED",
+    "available": true
+  },
+  {
+    "id": "calculadora-orcamento",
+    "title": "Calculadora de Orçamento",
+    "description": "Cálculo de orçamentos para projetos de engenharia",
+    "icon": "🧮",
+    "color": "#10B981",
+    "available": true
+  },
+  {
+    "id": "mapa-consulta",
+    "title": "Mapa de Consulta",
+    "description": "Visualização e consulta de informações em mapa interativo",
+    "icon": "🗺️",
+    "color": "#F59E0B",
+    "available": true
+  },
+  {
+    "id": "dashboard-censup",
+    "title": "Dashboard CENSUP",
+    "description": "Dashboard para visualização e análise de dados CENSUP",
+    "icon": "📊",
+    "color": "#6366F1",
+    "available": true
+  },
+  {
+    "id": "formulario-engenharia",
+    "title": "Relatório Técnico de Projeto B2B",
+    "description": "Relatório técnico B2B com prévia em tempo real e geração de PDF no padrão Alares",
+    "icon": "📋",
+    "color": "#7B68EE",
+    "available": true
+  },
+  {
+    "id": "dashboard-projetos",
+    "title": "Dashboard Projetos",
+    "description": "Gerenciar relatórios técnicos B2B do setor de Projetos",
+    "icon": "📁",
+    "color": "#7B68EE",
+    "available": true
+  },
+  {
+    "id": "dashboard-implantacao",
+    "title": "Dashboard Implantação",
+    "description": "Gerenciar relatórios enviados por Projetos e Relatório de Construção",
+    "icon": "🏗️",
+    "color": "#0D9488",
+    "available": true
+  },
+  {
+    "id": "ia-auditoria-diagramacao",
+    "title": "IA de Auditoria de Diagramação",
+    "description": "Auditoria em lote de PDFs CEO/CTO: classifica sem diagramação, incompleta ou diagramada",
+    "icon": "📐",
+    "color": "#0D9488",
+    "available": true
+  }
+]
