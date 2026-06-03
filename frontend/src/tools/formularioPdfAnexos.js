@@ -9,11 +9,14 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
   import.meta.url
 ).toString();
 
-export const MAX_ANEXO_PDF_MB = 15;
+/** Limite do arquivo .pdf (não do número de páginas). PDFs “leves” em páginas mas pesados (imagens embutidas) são comuns. */
+export const MAX_ANEXO_PDF_MB = 60;
 export const MAX_ANEXO_PDF_BYTES = MAX_ANEXO_PDF_MB * 1024 * 1024;
 
 /** Largura alvo da rasterização (~210 mm em 150 DPI efetivo na prévia) */
 const RENDER_TARGET_WIDTH_PX = 1240;
+/** Qualidade JPEG na conversão — páginas viram imagens menores ao salvar (o .pdf original pode ser bem maior). */
+const ANEXO_JPEG_QUALITY = 0.82;
 
 export function emptyAnexoPdf() {
   return {
@@ -71,7 +74,7 @@ export async function renderPdfFileToPageImages(file) {
     }
 
     await page.render({ canvasContext: ctx, viewport }).promise;
-    pageImages.push(canvas.toDataURL('image/jpeg', 0.9));
+    pageImages.push(canvas.toDataURL('image/jpeg', ANEXO_JPEG_QUALITY));
   }
 
   return {
