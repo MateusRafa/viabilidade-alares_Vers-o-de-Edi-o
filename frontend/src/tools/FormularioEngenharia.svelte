@@ -1,5 +1,8 @@
 <script>
-  import { onMount, tick } from 'svelte';
+  import { onMount, onDestroy, tick } from 'svelte';
+  import Loading from '../Loading.svelte';
+  import InfoDialog from '../components/InfoDialog.svelte';
+  import ConfirmDialog from '../components/ConfirmDialog.svelte';
   import {
     defaultFormData,
     normalizeFormData,
@@ -27,12 +30,115 @@
     getPassoDescricoesAposImagem,
     renderPdfFileToPageImages
   } from './formularioPdfShared.js';
+  import {
+    createRelatorioB2b,
+    updateRelatorioB2b,
+    fetchRelatorioB2bById,
+    fetchRelatoriosB2b,
+    PAYLOAD_TIPO,
+    SETOR_ORIGEM,
+    RELATORIO_STATUS,
+    notifyRelatoriosB2bAtualizados
+  } from './relatoriosB2bApi.js';
+  import { runDuringTransition } from './transitionLoading.js';
 
   export let currentUser = '';
   export let userTipo = 'user';
   export let onBackToDashboard = () => {};
+  /** Navega para outra ferramenta do portal (ex.: dashboard-projetos). */
+  export let onOpenTool = null;
   export let onSettingsRequest = null;
   export let onSettingsHover = null;
+  /** Registra o handler do botão voltar do header (App.svelte). */
+  export let onBackRequest = null;
+  /** @type {{ relatorioId?: string, mode?: 'edit'|'print', prefetchedRelatorio?: object } | null} */
+  export let toolOpenOptions = null;
+
+  const DASHBOARD_PROJETOS_ID = 'dashboard-projetos';
+  const TRANSITION_LOADING_MS = 2000;
+
+  let isTransitionLoading = false;
+  let loadingMessage = '';
+  let exitWithoutSaveDialogOpen = false;
+  /** Snapshot do formulário após Salvar PDF ou carregar — Gerar PDF não atualiza. */
+  let lastPersistedFormJson = '';
+  /** Só true após Salvar PDF ou ao abrir relatório já existente para edição. */
+  let formSavedViaSalvarButton = false;
+
+  function syncPersistedSnapshot() {
+    lastPersistedFormJson = JSON.stringify(normalizeFormData(formData));
+  }
+
+  function hasUnsavedChanges() {
+    if (formReadonly) return false;
+    return JSON.stringify(normalizeFormData(formData)) !== lastPersistedFormJson;
+  }
+
+  /** Exige Salvar PDF; Gerar PDF grava no servidor mas não libera saída sem aviso. */
+  function shouldPromptExitWithoutSave() {
+    if (formReadonly) return false;
+    if (!formSavedViaSalvarButton) return true;
+    return hasUnsavedChanges();
+  }
+
+  function solicitarVoltarParaDashboardProjetos(event) {
+    event?.preventDefault();
+    event?.stopPropagation();
+    event?.stopImmediatePropagation?.();
+
+    if (isTransitionLoading) return;
+
+    if (shouldPromptExitWithoutSave()) {
+      saveSuccessDialogOpen = false;
+      exitWithoutSaveDialogOpen = true;
+      return;
+    }
+
+    void executarVoltarParaDashboardProjetos();
+  }
+
+  function closeExitWithoutSaveDialog() {
+    exitWithoutSaveDialogOpen = false;
+  }
+
+  function confirmExitWithoutSave() {
+    exitWithoutSaveDialogOpen = false;
+    void executarVoltarParaDashboardProjetos();
+  }
+
+  async function executarVoltarParaDashboardProjetos() {
+    if (isTransitionLoading) return;
+
+    saveSuccessDialogOpen = false;
+    isTransitionLoading = true;
+    loadingMessage = 'Voltando ao Dashboard Projetos…';
+    await tick();
+
+    if (typeof onOpenTool !== 'function') {
+      isTransitionLoading = false;
+      onBackToDashboard();
+      return;
+    }
+
+    try {
+      const initialRelatorios = await runDuringTransition(
+        () =>
+          fetchRelatoriosB2b(currentUser, {
+            setorOrigem: SETOR_ORIGEM.PROJETOS,
+            limit: 100
+          }),
+        TRANSITION_LOADING_MS
+      );
+      onOpenTool(DASHBOARD_PROJETOS_ID, {
+        refreshRelatorios: true,
+        initialRelatorios
+      });
+    } catch (err) {
+      alert(err?.message || 'Não foi possível carregar o dashboard.');
+    } finally {
+      isTransitionLoading = false;
+    }
+  }
 
   let projetistaUserDefaultApplied = false;
 
@@ -66,7 +172,12 @@
 
   $: applyProjetistaDefault(currentUser);
   let generatingPDF = false;
+  let savingPDF = false;
   let pdfError = '';
+  let saveSuccessDialogOpen = false;
+  let relatorioSalvoId = null;
+  let relatorioStatus = RELATORIO_STATUS.EM_ANALISE;
+  let formReadonly = false;
   let expandedSections = {
     capa: false,
     cabecalho: false,
@@ -1009,50 +1120,199 @@
     }
   }
 
+  function aplicarRelatorioApi(rel) {
+    relatorioSalvoId = rel.id;
+    relatorioStatus = rel.status || RELATORIO_STATUS.EM_ANALISE;
+    formReadonly = relatorioStatus !== RELATORIO_STATUS.EM_ANALISE;
+
+    if (rel.formData) {
+      formData = normalizeFormData(rel.formData);
+      projetistaUserDefaultApplied = true;
+    }
+
+    applyPreviewHtml();
+    schedulePassoLayoutMeasure(true);
+    formSavedViaSalvarButton = true;
+    syncPersistedSnapshot();
+  }
+
+  async function bootstrapFormulario() {
+    const mode = toolOpenOptions?.mode || 'edit';
+    const abrindoRelatorio = Boolean(
+      toolOpenOptions?.prefetchedRelatorio || toolOpenOptions?.relatorioId
+    );
+
+    if (abrindoRelatorio) {
+      isTransitionLoading = true;
+      loadingMessage = 'Carregando relatório…';
+      await tick();
+    }
+
+    try {
+      const usuario = (currentUser || '').trim();
+      const origin = window.location.origin;
+
+      const relatorioPromise = toolOpenOptions?.prefetchedRelatorio
+        ? Promise.resolve(toolOpenOptions.prefetchedRelatorio)
+        : toolOpenOptions?.relatorioId && usuario
+          ? fetchRelatorioB2bById(usuario, toolOpenOptions.relatorioId, {
+              payloadTipo: PAYLOAD_TIPO.PROJETOS
+            })
+          : Promise.resolve(null);
+
+      const [rel, logo, ondas, assinatura] = await Promise.all([
+        relatorioPromise,
+        loadLogoDataUrl(origin),
+        loadCapaOndasDataUrl(origin),
+        loadAssinaturaSupervisorDataUrl(origin)
+      ]);
+
+      logoDataUrl = logo;
+      capaOndasDataUrl = ondas;
+      assinaturaSupervisorDataUrl = assinatura;
+      assetsReady = true;
+
+      if (rel) {
+        aplicarRelatorioApi(rel);
+      } else {
+        formSavedViaSalvarButton = false;
+        applyPreviewHtml();
+        schedulePassoLayoutMeasure(true);
+      }
+
+      if (mode === 'print' && rel) {
+        await tick();
+        await flushPreviewRefresh();
+        await handleGeneratePdf();
+      }
+    } catch (err) {
+      pdfError = err?.message || 'Não foi possível carregar o relatório.';
+    } finally {
+      if (abrindoRelatorio) isTransitionLoading = false;
+      await tick();
+      syncPersistedSnapshot();
+    }
+  }
+
+  async function carregarRelatorioSalvo(relatorioId, mode = 'edit') {
+    const usuario = (currentUser || '').trim();
+    if (!usuario || !relatorioId) return;
+
+    try {
+      const rel = await fetchRelatorioB2bById(usuario, relatorioId, {
+        payloadTipo: PAYLOAD_TIPO.PROJETOS
+      });
+      aplicarRelatorioApi(rel);
+
+      if (mode === 'print') {
+        if (!assetsReady) {
+          pdfError = 'Aguarde o carregamento dos recursos do PDF antes de imprimir.';
+          return;
+        }
+        await tick();
+        await flushPreviewRefresh();
+        await handleGeneratePdf();
+      }
+    } catch (err) {
+      pdfError = err?.message || 'Não foi possível carregar o relatório salvo.';
+    }
+  }
+
+  async function persistRelatorio() {
+    if (formReadonly) return;
+
+    const usuario = (currentUser || '').trim();
+    if (!usuario) {
+      throw new Error('Usuário não identificado. Faça login novamente.');
+    }
+
+    const payload = normalizeFormData(formData);
+    const saveOptions = {
+      payload,
+      payloadTipo: PAYLOAD_TIPO.PROJETOS,
+      status: relatorioStatus || RELATORIO_STATUS.EM_ANALISE,
+      setorOrigem: SETOR_ORIGEM.PROJETOS
+    };
+
+    if (relatorioSalvoId) {
+      await updateRelatorioB2b(currentUser, relatorioSalvoId, saveOptions);
+    } else {
+      const criado = await createRelatorioB2b(currentUser, saveOptions);
+      relatorioSalvoId = criado.id;
+      relatorioStatus = criado.status || RELATORIO_STATUS.EM_ANALISE;
+    }
+
+    notifyRelatoriosB2bAtualizados();
+  }
+
+  async function handleSalvarPdf() {
+    if (savingPDF || formReadonly) return;
+
+    savingPDF = true;
+    pdfError = '';
+
+    try {
+      await persistRelatorio();
+      formSavedViaSalvarButton = true;
+      syncPersistedSnapshot();
+      saveSuccessDialogOpen = true;
+    } catch (err) {
+      pdfError = err?.message || 'Não foi possível salvar o relatório. Tente novamente.';
+    } finally {
+      savingPDF = false;
+    }
+  }
+
   async function handleGeneratePdf() {
     if (!assetsReady) {
       pdfError = 'Aguarde o carregamento dos recursos do PDF antes de gerar.';
       return;
     }
+    if (generatingPDF || savingPDF) return;
+
     generatingPDF = true;
     pdfError = '';
-    await flushPreviewRefresh();
-    const docTitle = getEngineeringPdfDocumentTitle(formData);
-    const printHtml = buildFullPdfHtml(formData, {}, buildPreviewHtmlOptions());
-    const result = await printPdfHtmlNamed(printHtml, { title: docTitle });
-    generatingPDF = false;
-    if (!result.success) {
-      pdfError =
-        result.error === 'popup_blocked'
-          ? 'Não foi possível abrir a impressão. Permita pop-ups para este site e tente de novo.'
-          : 'Não foi possível abrir a impressão. Tente novamente.';
+
+    try {
+      if (!formReadonly) {
+        await persistRelatorio();
+      }
+      await flushPreviewRefresh();
+      const docTitle = getEngineeringPdfDocumentTitle(formData);
+      const printHtml = buildFullPdfHtml(formData, {}, buildPreviewHtmlOptions());
+      const result = await printPdfHtmlNamed(printHtml, { title: docTitle });
+      if (!result.success) {
+        pdfError =
+          result.error === 'popup_blocked'
+            ? 'Não foi possível abrir a impressão. Permita pop-ups para este site e tente de novo.'
+            : 'Não foi possível abrir a impressão. Tente novamente.';
+      }
+    } catch (err) {
+      pdfError = err?.message || 'Não foi possível salvar o relatório. Tente novamente.';
+    } finally {
+      generatingPDF = false;
     }
   }
 
   onMount(async () => {
+    isTransitionLoading = false;
+    exitWithoutSaveDialogOpen = false;
+
     if (onSettingsRequest && typeof onSettingsRequest === 'function') {
       onSettingsRequest(() => {});
     }
     if (onSettingsHover && typeof onSettingsHover === 'function') {
       onSettingsHover(() => {});
     }
+    if (typeof onBackRequest === 'function') {
+      onBackRequest(() => solicitarVoltarParaDashboardProjetos());
+    }
 
     let removeWindowPaste = null;
 
     if (typeof window !== 'undefined') {
       loadFormColumnWidthPreference();
-      const origin = window.location.origin;
-      const [logo, ondas, assinatura] = await Promise.all([
-        loadLogoDataUrl(origin),
-        loadCapaOndasDataUrl(origin),
-        loadAssinaturaSupervisorDataUrl(origin)
-      ]);
-      logoDataUrl = logo;
-      capaOndasDataUrl = ondas;
-      assinaturaSupervisorDataUrl = assinatura;
-      assetsReady = true;
-      applyPreviewHtml();
-      schedulePassoLayoutMeasure(true);
+      await bootstrapFormulario();
 
       const onWindowPaste = async (e) => {
         if (!armedUploadTarget || imagePasteInFlight) return;
@@ -1071,12 +1331,22 @@
     }
 
     return () => {
+      if (typeof onBackRequest === 'function') {
+        onBackRequest(null);
+      }
       removeWindowPaste?.();
       disarmImagePaste();
       stopResizeFormColumn();
       clearTimeout(previewDebounceTimer);
       clearTimeout(measureDebounceTimer);
     };
+  });
+
+  onDestroy(() => {
+    isTransitionLoading = false;
+    if (typeof onBackRequest === 'function') {
+      onBackRequest(null);
+    }
   });
 </script>
 
@@ -1086,6 +1356,7 @@
     <aside class="form-column" style="width: {formColumnWidthStyle}; flex: 0 0 auto;">
       <div
         class="form-scroll"
+        class:form-readonly={formReadonly}
         on:focusin|capture={handleFormPreviewActivity}
         on:input|capture={handleFormPreviewActivity}
       >
@@ -1506,8 +1777,9 @@
           {#if expandedSections.anexosPdf}
             <div class="form-box-body form-box-body-anexos">
               <p class="anexos-pdf-hint">
-                Cada PDF anexado vira páginas na prévia e no PDF final, após a Lista de Material. Máximo
-                {MAX_ANEXO_PDF_MB} MB por arquivo. Não é possível editar o conteúdo dos anexos.
+                Cada PDF anexado vira páginas na prévia e no PDF final, após a Lista de Material. Até
+                {MAX_ANEXO_PDF_MB} MB por arquivo (o limite é o tamanho do arquivo, não a quantidade de páginas).
+                Não é possível editar o conteúdo dos anexos.
               </p>
 
               {#each formData.anexosPdf as anexo, anexoIndex (anexo.id)}
@@ -1555,14 +1827,31 @@
         {#if pdfError}
           <p class="pdf-error" role="alert">{pdfError}</p>
         {/if}
-        <button
-          type="button"
-          class="btn-generate-pdf"
-          on:click={handleGeneratePdf}
-          disabled={generatingPDF || !assetsReady}
-        >
-          {generatingPDF ? 'Abrindo impressão...' : 'Gerar PDF'}
-        </button>
+        {#if formReadonly}
+          <p class="readonly-banner" role="status">
+            Este relatório não pode mais ser editado (transferido ou finalizado).
+          </p>
+        {/if}
+        <div class="form-actions-buttons">
+          {#if !formReadonly}
+            <button
+              type="button"
+              class="btn-generate-pdf"
+              on:click={handleSalvarPdf}
+              disabled={savingPDF || generatingPDF}
+            >
+              {savingPDF ? 'Salvando…' : 'Salvar PDF'}
+            </button>
+          {/if}
+          <button
+            type="button"
+            class="btn-generate-pdf"
+            on:click={handleGeneratePdf}
+            disabled={generatingPDF || savingPDF || !assetsReady}
+          >
+            {generatingPDF ? 'Abrindo impressão...' : 'Gerar PDF'}
+          </button>
+        </div>
       </footer>
     </aside>
 
@@ -1609,6 +1898,34 @@
     </main>
   </div>
 </div>
+
+{#if isTransitionLoading}
+  <div class="transition-loading-layer" role="status" aria-live="polite" aria-busy="true">
+    <Loading currentMessage={loadingMessage} />
+  </div>
+{/if}
+
+<InfoDialog
+  open={saveSuccessDialogOpen}
+  title="Relatório salvo"
+  message="Relatório salvo com sucesso!"
+  secondaryLabel="Voltar a Editar"
+  primaryLabel="Voltar ao Dashboard"
+  on:secondary={() => (saveSuccessDialogOpen = false)}
+  on:primary={() => executarVoltarParaDashboardProjetos()}
+/>
+
+<ConfirmDialog
+  open={exitWithoutSaveDialogOpen}
+  title="Sair sem salvar?"
+  message="Existem alterações que ainda não foram salvas no relatório.
+
+Tem certeza que deseja sair sem salvar o arquivo?"
+  confirmLabel="Sair sem salvar"
+  cancelLabel="Continuar editando"
+  on:confirm={confirmExitWithoutSave}
+  on:cancel={closeExitWithoutSaveDialog}
+/>
 
 <style>
   .formulario-engenharia {
@@ -1693,6 +2010,11 @@
     gap: 0.75rem;
     overscroll-behavior: contain;
     box-sizing: border-box;
+  }
+
+  .form-scroll.form-readonly {
+    pointer-events: none;
+    opacity: 0.92;
   }
 
   .form-box {
@@ -2138,6 +2460,23 @@
     background: #f8fafc;
   }
 
+  .form-actions-buttons {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .readonly-banner {
+    margin: 0 0 0.65rem;
+    padding: 0.55rem 0.75rem;
+    font-size: 0.82rem;
+    line-height: 1.4;
+    color: #92400e;
+    background: #fffbeb;
+    border: 1px solid #fcd34d;
+    border-radius: 6px;
+  }
+
   .btn-generate-pdf {
     width: 100%;
     padding: 0.85rem 1.25rem;
@@ -2269,5 +2608,15 @@
     .preview-column {
       min-height: 50vh;
     }
+  }
+
+  .transition-loading-layer {
+    position: fixed;
+    inset: 0;
+    z-index: 10000;
+  }
+
+  .transition-loading-layer :global(.loading-container) {
+    min-height: 100%;
   }
 </style>
