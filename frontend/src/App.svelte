@@ -99,7 +99,11 @@
   let toolBackHandler = null;
 
   const DASHBOARD_RELATORIOS_TOOL_IDS = ['dashboard-projetos', 'dashboard-implantacao'];
-  const FORM_RELATORIO_TOOL_IDS = ['formulario-engenharia', 'formulario-engenharia-implantacao'];
+  const FORM_RELATORIO_TOOL_IDS = [
+    'formulario-engenharia',
+    'formulario-engenharia-implantacao',
+    'relatorio-de-construcao'
+  ];
 
   function isDashboardRelatoriosTool(toolId) {
     return DASHBOARD_RELATORIOS_TOOL_IDS.includes(toolId);
@@ -1035,7 +1039,7 @@
         onBackToDashboard={handleBackToDashboard}
         onOpenSettings={handleOpenSettings}
         onSettingsHover={handleSettingsHover}
-        showSettingsButton={toolSettingsHandler !== null && tool.id !== 'analise-cobertura' && tool.id !== 'viabilidade-alares' && tool.id !== 'formulario-engenharia' && tool.id !== 'formulario-engenharia-implantacao' && tool.id !== 'dashboard-projetos' && tool.id !== 'dashboard-implantacao'}
+        showSettingsButton={toolSettingsHandler !== null && tool.id !== 'analise-cobertura' && tool.id !== 'viabilidade-alares' && tool.id !== 'formulario-engenharia' && tool.id !== 'formulario-engenharia-implantacao' && tool.id !== 'relatorio-de-construcao' && tool.id !== 'dashboard-projetos' && tool.id !== 'dashboard-implantacao'}
       >
         {#key getToolComponentKey(currentTool)}
         <svelte:component this={tool.component} 
