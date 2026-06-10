@@ -2,6 +2,7 @@
   import { onMount, tick } from 'svelte';
   import Loading from '../Loading.svelte';
   import ConfirmDialog from '../components/ConfirmDialog.svelte';
+  import InfoDialog from '../components/InfoDialog.svelte';
   import RelatoriosStatusQuadros from './RelatoriosStatusQuadros.svelte';
   import {
     fetchRelatoriosB2b,
@@ -41,8 +42,11 @@
   let loadRelatoriosError = '';
   let confirmDialogOpen = false;
   let confirmDialogLoading = false;
-  /** @type {{ type: 'transferir' | 'transferirParaEdicao' | 'finalizar' | 'excluir', item: object } | null} */
+  /** @type {{ type: 'transferir' | 'transferirParaEdicao' | 'excluir', item: object } | null} */
   let pendingConfirmAction = null;
+  let finalizarInfoOpen = false;
+  /** @type {object | null} */
+  let pendingFinalizarItem = null;
   let appliedRefreshKey = 0;
 
   $: if (
@@ -71,11 +75,6 @@
       message:
         'Deseja devolver este relatório para edição no setor de Projetos?\n\nEle voltará para análise de projetos e poderá ser editado antes de voltar para implantação.',
       confirmLabel: 'Transferir'
-    },
-    finalizar: {
-      title: 'Finalizar projeto',
-      message: 'Finalizar este projeto?\n\nApós a finalização, não será mais possível editá-lo.',
-      confirmLabel: 'Finalizar'
     },
     excluir: {
       title: 'Excluir relatório',
@@ -193,12 +192,6 @@
           setorOrigem: SETOR_ORIGEM.PROJETOS
         });
         notifyRelatoriosB2bAtualizados();
-      } else if (type === 'finalizar') {
-        await updateRelatorioB2b(currentUser, item.id, {
-          status: RELATORIO_STATUS.FINALIZADO,
-          setorOrigem: SETOR_ORIGEM.IMPLANTACAO
-        });
-        notifyRelatoriosB2bAtualizados();
       } else if (type === 'excluir') {
         await deleteRelatorioB2b(currentUser, item.id);
         notifyRelatoriosB2bAtualizados();
@@ -224,7 +217,27 @@
   }
 
   function handleFinalizarRelatorio(item) {
-    openConfirmDialog('finalizar', item);
+    pendingFinalizarItem = item;
+    finalizarInfoOpen = true;
+  }
+
+  function closeFinalizarInfoDialog() {
+    finalizarInfoOpen = false;
+    pendingFinalizarItem = null;
+  }
+
+  function handleFinalizarInfoRetornar() {
+    closeFinalizarInfoDialog();
+  }
+
+  function handleFinalizarInfoAdicionarConstrucao() {
+    const item = pendingFinalizarItem;
+    closeFinalizarInfoDialog();
+    if (!item) return;
+    abrirRelatorioComLoading(item, {
+      mode: 'edit',
+      loadingText: 'Abrindo Relatório de Construção…'
+    });
   }
 
   function handleExcluirRelatorio(item) {
@@ -329,6 +342,18 @@
     loading={confirmDialogLoading}
     on:confirm={handleConfirmDialogAction}
     on:cancel={closeConfirmDialog}
+  />
+{/if}
+
+{#if finalizarInfoOpen}
+  <InfoDialog
+    open={finalizarInfoOpen}
+    title="Finalizar Relatório"
+    message="Para finalizar o Relatório é necessário adicionar o Relatório de Construção"
+    secondaryLabel="Retornar para o Dashboard"
+    primaryLabel="Adicionar Relatório de Construção"
+    on:secondary={handleFinalizarInfoRetornar}
+    on:primary={handleFinalizarInfoAdicionarConstrucao}
   />
 {/if}
 
