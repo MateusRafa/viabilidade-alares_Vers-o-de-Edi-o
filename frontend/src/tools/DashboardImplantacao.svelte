@@ -67,9 +67,9 @@
       confirmLabel: 'Transferir'
     },
     transferirParaEdicao: {
-      title: 'Transferir de volta para Implantação',
+      title: 'Transferir de volta para Projetos',
       message:
-        'Devolver este relatório para edição no setor de Implantação?\n\nEle voltará para análise e poderá ser alterado novamente antes de seguir para implantação.',
+        'Deseja devolver este relatório para edição no setor de Projetos?\n\nEle voltará para análise de projetos e poderá ser editado antes de voltar para implantação.',
       confirmLabel: 'Transferir'
     },
     finalizar: {
@@ -189,8 +189,9 @@
       } else if (type === 'transferirParaEdicao') {
         await updateRelatorioB2b(currentUser, item.id, {
           status: RELATORIO_STATUS.EM_ANALISE,
-          setorOrigem: SETOR_ORIGEM.IMPLANTACAO
+          setorOrigem: SETOR_ORIGEM.PROJETOS
         });
+        notifyRelatoriosB2bAtualizados();
       } else if (type === 'finalizar') {
         await updateRelatorioB2b(currentUser, item.id, {
           status: RELATORIO_STATUS.FINALIZADO,
