@@ -28,7 +28,7 @@
   /** @type {{ refreshRelatorios?: boolean, refreshKey?: number, initialRelatorios?: object[] } | null} */
   export let toolOpenOptions = null;
 
-  const FORMULARIO_TOOL_ID = 'formulario-engenharia-implantacao';
+  const FORMULARIO_TOOL_ID = 'relatorio-de-construcao';
   const RETURN_TOOL_ID = 'dashboard-implantacao';
   const TRANSITION_LOADING_MS = 2000;
 
