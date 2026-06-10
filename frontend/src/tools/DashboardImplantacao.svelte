@@ -41,7 +41,7 @@
   let loadRelatoriosError = '';
   let confirmDialogOpen = false;
   let confirmDialogLoading = false;
-  /** @type {{ type: 'transferir' | 'finalizar', item: object } | null} */
+  /** @type {{ type: 'transferir' | 'transferirParaEdicao' | 'finalizar' | 'excluir', item: object } | null} */
   let pendingConfirmAction = null;
   let appliedRefreshKey = 0;
 
@@ -64,6 +64,12 @@
       title: 'Transferir para Em Implantação',
       message:
         'Transferir este relatório para Em Implantação?\n\nApós a transferência, não será mais possível editá-lo.',
+      confirmLabel: 'Transferir'
+    },
+    transferirParaEdicao: {
+      title: 'Transferir de volta para Implantação',
+      message:
+        'Devolver este relatório para edição no setor de Implantação?\n\nEle voltará para análise e poderá ser alterado novamente antes de seguir para implantação.',
       confirmLabel: 'Transferir'
     },
     finalizar: {
@@ -177,7 +183,13 @@
     try {
       if (type === 'transferir') {
         await updateRelatorioB2b(currentUser, item.id, {
-          status: RELATORIO_STATUS.EM_IMPLANTACAO
+          status: RELATORIO_STATUS.EM_IMPLANTACAO,
+          setorOrigem: SETOR_ORIGEM.IMPLANTACAO
+        });
+      } else if (type === 'transferirParaEdicao') {
+        await updateRelatorioB2b(currentUser, item.id, {
+          status: RELATORIO_STATUS.EM_ANALISE,
+          setorOrigem: SETOR_ORIGEM.IMPLANTACAO
         });
       } else if (type === 'finalizar') {
         await updateRelatorioB2b(currentUser, item.id, {
@@ -202,6 +214,10 @@
 
   function handleTransferirRelatorio(item) {
     openConfirmDialog('transferir', item);
+  }
+
+  function handleTransferirParaEdicao(item) {
+    openConfirmDialog('transferirParaEdicao', item);
   }
 
   function handleFinalizarRelatorio(item) {
@@ -292,6 +308,7 @@
     onEditar={handleEditarRelatorio}
     onImprimir={handleImprimirRelatorio}
     onTransferir={handleTransferirRelatorio}
+    onTransferirParaEdicao={handleTransferirParaEdicao}
     onFinalizar={handleFinalizarRelatorio}
     onExcluir={handleExcluirRelatorio}
   />
