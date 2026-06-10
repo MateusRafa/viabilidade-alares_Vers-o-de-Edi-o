@@ -13,7 +13,7 @@
     SETOR_ORIGEM,
     RELATORIO_STATUS,
     PAYLOAD_TIPO,
-    RELATORIOS_B2B_ATUALIZADOS_EVENT
+    subscribeRelatoriosB2bAtualizados
   } from './relatoriosB2bApi.js';
   import { runDuringTransition } from './transitionLoading.js';
 
@@ -199,6 +199,7 @@
           status: RELATORIO_STATUS.EM_IMPLANTACAO,
           setorOrigem: SETOR_ORIGEM.IMPLANTACAO
         });
+        notifyRelatoriosB2bAtualizados();
       } else if (type === 'finalizar') {
         await updateRelatorioB2b(currentUser, item.id, {
           status: RELATORIO_STATUS.FINALIZADO,
@@ -207,6 +208,7 @@
               ? SETOR_ORIGEM.IMPLANTACAO
               : SETOR_ORIGEM.PROJETOS
         });
+        notifyRelatoriosB2bAtualizados();
       } else if (type === 'excluir') {
         await deleteRelatorioB2b(currentUser, item.id);
         notifyRelatoriosB2bAtualizados();
@@ -258,15 +260,10 @@
       carregarRelatorios();
     }
 
-    const onRelatoriosAtualizados = () => carregarRelatorios({ silent: true });
-    if (typeof window !== 'undefined') {
-      window.addEventListener(RELATORIOS_B2B_ATUALIZADOS_EVENT, onRelatoriosAtualizados);
-    }
+    const unsubscribe = subscribeRelatoriosB2bAtualizados(() => carregarRelatorios({ silent: true }));
 
     return () => {
-      if (typeof window !== 'undefined') {
-        window.removeEventListener(RELATORIOS_B2B_ATUALIZADOS_EVENT, onRelatoriosAtualizados);
-      }
+      unsubscribe();
     };
   });
 </script>
