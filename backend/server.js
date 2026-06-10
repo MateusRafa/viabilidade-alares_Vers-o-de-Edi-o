@@ -5861,6 +5861,29 @@ function normalizeKey(key) {
   return mapping[lower] || lower;
 }
 
+/** Extrai valor bruto de célula Excel (fórmula, rich text, hyperlink, etc.) */
+function extractExcelCellValue(value) {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'object') {
+    if (value.result !== undefined && value.result !== null) return value.result;
+    if (value.hyperlink && value.text !== undefined) return value.text;
+    if (Array.isArray(value.richText)) {
+      return value.richText.map((part) => part.text || '').join('');
+    }
+    if (value.text !== undefined) return value.text;
+    if (value instanceof Date) return value;
+  }
+  return value;
+}
+
+/** Converte latitude/longitude do Excel para número finito ou null */
+function parseCoordinate(value) {
+  const raw = extractExcelCellValue(value);
+  if (raw === null || raw === undefined || raw === '') return null;
+  const parsed = parseFloat(String(raw).trim().replace(',', '.'));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 /**
  * Gera chave_unica para uma CTO
  * Concatena todas as colunas (exceto id_cto) de forma normalizada
@@ -5886,6 +5909,12 @@ function normalizeKey(key) {
  */
 function generateChaveUnica(cto) {
   // Função auxiliar para normalizar valores
+  const normalizeCoordinate = (value) => {
+    if (value === null || value === undefined) return '';
+    const num = typeof value === 'number' ? value : parseFloat(String(value).replace(',', '.'));
+    return Number.isFinite(num) ? num.toFixed(6) : '';
+  };
+
   const normalize = (value) => {
     // Se for null ou undefined, retornar string vazia
     if (value === null || value === undefined) {
@@ -5959,6 +5988,10 @@ function generateChaveUnica(cto) {
   
   // Normalizar e concatenar todas as colunas
   const normalizedValues = columns.map((value, index) => {
+    // Latitude e longitude: arredondar para evitar falsas mudanças por precisão float
+    if (index === 7 || index === 8) {
+      return normalizeCoordinate(value);
+    }
     // Se for data_cadastro (índice 10), usar normalização especial
     if (index === 10) {
       return normalizeDate(value);
@@ -6181,110 +6214,122 @@ async function deleteCTOsInBatches(supabaseClient, idsToDelete, progressCallback
 async function updateCTOsInBatches(supabaseClient, ctosToUpdate, progressCallback = null) {
   if (!ctosToUpdate || ctosToUpdate.length === 0) {
     console.log('ℹ️ [Upload] Nenhuma CTO para atualizar (Cenário 3)');
-    return { updated: 0 };
+    return { updated: 0, errors: 0 };
   }
   
   console.log(`🔄 [Upload] ===== ATUALIZANDO CTOs QUE MUDARAM (Cenário 3) =====`);
   console.log(`🔄 [Upload] Total de CTOs para atualizar: ${ctosToUpdate.length}`);
   
-  const UPDATE_BATCH_SIZE = 1000; // Processar em lotes de 1000
+  const UPDATE_BATCH_SIZE = 1000;
+  const MAX_RETRIES = 3;
   let totalUpdated = 0;
   let totalErrors = 0;
   let batchNumber = 0;
   const startTime = Date.now();
+
+  const buildUpdateRecord = (cto) => ({
+    id_cto: cto.id_cto,
+    cid_rede: cto.cid_rede,
+    estado: cto.estado,
+    pop: cto.pop,
+    olt: cto.olt,
+    slot: cto.slot,
+    pon: cto.pon,
+    cto: cto.cto,
+    latitude: cto.latitude,
+    longitude: cto.longitude,
+    status_cto: cto.status_cto,
+    data_cadastro: cto.data_cadastro,
+    portas: cto.portas,
+    ocupado: cto.ocupado,
+    livre: cto.livre,
+    pct_ocup: cto.pct_ocup,
+    chave_unica: cto.chave_unica || generateChaveUnica(cto)
+  });
+
+  const upsertBatchWithRetry = async (batch, batchNum, retryCount = 0) => {
+    const batchData = batch
+      .filter((cto) => cto.id_cto)
+      .map(buildUpdateRecord);
+
+    const skipped = batch.length - batchData.length;
+    if (skipped > 0) {
+      console.warn(`⚠️ [Upload] Lote ${batchNum}: ${skipped} CTO(s) sem id_cto ignorada(s)`);
+    }
+
+    if (batchData.length === 0) {
+      return { updated: 0, errors: skipped };
+    }
+
+    try {
+      const { error, data } = await supabaseClient
+        .from('ctos')
+        .upsert(batchData, { onConflict: 'id_cto' })
+        .select('id_cto');
+
+      if (error) {
+        if ((error.message.includes('500') || error.message.includes('timeout') || error.message.includes('Cloudflare')) && retryCount < MAX_RETRIES) {
+          const waitTime = (retryCount + 1) * 2000;
+          console.warn(`⚠️ [Upload] Erro temporário no lote ${batchNum} (tentativa ${retryCount + 1}/${MAX_RETRIES}). Aguardando ${waitTime}ms...`);
+          await new Promise(resolve => setTimeout(resolve, waitTime));
+          return upsertBatchWithRetry(batch, batchNum, retryCount + 1);
+        }
+        throw error;
+      }
+
+      return { updated: data ? data.length : batchData.length, errors: skipped };
+    } catch (err) {
+      if (retryCount < MAX_RETRIES && (err.message.includes('500') || err.message.includes('timeout') || err.message.includes('Cloudflare'))) {
+        const waitTime = (retryCount + 1) * 2000;
+        console.warn(`⚠️ [Upload] Erro temporário no lote ${batchNum} (tentativa ${retryCount + 1}/${MAX_RETRIES}). Aguardando ${waitTime}ms...`);
+        await new Promise(resolve => setTimeout(resolve, waitTime));
+        return upsertBatchWithRetry(batch, batchNum, retryCount + 1);
+      }
+      throw err;
+    }
+  };
   
   try {
-    // Processar em lotes
     for (let i = 0; i < ctosToUpdate.length; i += UPDATE_BATCH_SIZE) {
       batchNumber++;
       const batch = ctosToUpdate.slice(i, i + UPDATE_BATCH_SIZE);
-      
-      // Supabase não suporta UPDATE em lote direto com múltiplos IDs diferentes
-      // Precisamos fazer UPDATE individual ou usar uma função SQL
-      // Vamos fazer UPDATE individual para cada CTO do lote
-      let batchUpdated = 0;
-      let batchErrors = 0;
-      
-      for (const cto of batch) {
-        try {
-          // Verificar se id_cto existe
-          if (!cto.id_cto) {
-            console.warn(`⚠️ [Upload] CTO sem id_cto, pulando atualização:`, cto);
-            batchErrors++;
-            continue;
-          }
-          
-          // Preparar objeto de atualização (todas as colunas + chave_unica)
-          const updateData = {
-            cid_rede: cto.cid_rede,
-            estado: cto.estado,
-            pop: cto.pop,
-            olt: cto.olt,
-            slot: cto.slot,
-            pon: cto.pon,
-            cto: cto.cto,
-            latitude: cto.latitude,
-            longitude: cto.longitude,
-            status_cto: cto.status_cto,
-            data_cadastro: cto.data_cadastro,
-            portas: cto.portas,
-            ocupado: cto.ocupado,
-            livre: cto.livre,
-            pct_ocup: cto.pct_ocup,
-            chave_unica: cto.chave_unica // Atualizar chave_unica também
-          };
-          
-          // Atualizar CTO individual
-          const { error } = await supabaseClient
-            .from('ctos')
-            .update(updateData)
-            .eq('id_cto', cto.id_cto);
-          
-          if (error) {
-            console.error(`❌ [Upload] Erro ao atualizar CTO ${cto.id_cto}:`, error.message);
-            batchErrors++;
-            // Continuar mesmo se uma falhar (não quebrar todo o processo)
-          } else {
-            batchUpdated++;
-          }
-        } catch (ctoErr) {
-          console.error(`❌ [Upload] Erro ao processar CTO ${cto.id_cto}:`, ctoErr.message);
-          batchErrors++;
+
+      try {
+        const { updated, errors } = await upsertBatchWithRetry(batch, batchNumber);
+        totalUpdated += updated;
+        totalErrors += errors;
+
+        const progressPercent = Math.round((totalUpdated / ctosToUpdate.length) * 100);
+        if (progressCallback) {
+          progressCallback({
+            updated: totalUpdated,
+            total: ctosToUpdate.length,
+            percent: progressPercent
+          });
         }
-      }
-      
-      totalUpdated += batchUpdated;
-      totalErrors += batchErrors;
-      
-      // Atualizar progresso (se callback fornecido)
-      const progressPercent = Math.round((totalUpdated / ctosToUpdate.length) * 100);
-      if (progressCallback) {
-        progressCallback({
-          updated: totalUpdated,
-          total: ctosToUpdate.length,
-          percent: progressPercent
-        });
-      }
-      
-      // Log de progresso
-      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-      console.log(`🔄 [Upload] Lote ${batchNumber}: ${batchUpdated} atualizada(s), ${batchErrors} erro(s) | Total: ${totalUpdated}/${ctosToUpdate.length} (${progressPercent}%) | Tempo: ${elapsed}s`);
-      
-      // Pequeno delay entre lotes para não sobrecarregar o banco
-      if (i + UPDATE_BATCH_SIZE < ctosToUpdate.length) {
-        await new Promise(resolve => setTimeout(resolve, 100)); // 100ms de delay
+
+        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+        console.log(`🔄 [Upload] Lote ${batchNumber}: ${updated} atualizada(s), ${errors} erro(s) | Total: ${totalUpdated}/${ctosToUpdate.length} (${progressPercent}%) | Tempo: ${elapsed}s`);
+
+        if (i + UPDATE_BATCH_SIZE < ctosToUpdate.length) {
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
+      } catch (batchError) {
+        totalErrors += batch.length;
+        console.error(`❌ [Upload] Erro ao atualizar lote ${batchNumber} após ${MAX_RETRIES} tentativas:`, batchError.message);
+        console.error(`❌ [Upload] Pulando lote ${batchNumber} e continuando com próximo...`);
       }
     }
     
     const totalTime = ((Date.now() - startTime) / 1000).toFixed(1);
+    const avgRate = totalUpdated > 0 ? (totalUpdated / (totalTime / 60)).toFixed(0) : 0;
     console.log(`✅ [Upload] ===== ATUALIZAÇÃO CONCLUÍDA =====`);
-    console.log(`✅ [Upload] Total atualizado: ${totalUpdated} CTO(s) em ${batchNumber} lote(s) (${totalTime}s)`);
+    console.log(`✅ [Upload] Total atualizado: ${totalUpdated} CTO(s) em ${batchNumber} lote(s) (${totalTime}s, média: ~${avgRate} CTOs/min)`);
     
     if (totalErrors > 0) {
       console.warn(`⚠️ [Upload] ATENÇÃO: ${totalErrors} CTO(s) tiveram erro ao atualizar`);
     }
     
-    // Verificar se todas foram atualizadas
     if (totalUpdated < ctosToUpdate.length) {
       const diff = ctosToUpdate.length - totalUpdated;
       console.warn(`⚠️ [Upload] ATENÇÃO: ${diff} CTO(s) não foram atualizadas (erros ou CTOs não encontradas)`);
@@ -6640,15 +6685,15 @@ async function processExcelStreaming(filePath, supabaseClient, existingCTOsMap =
       return;
     }
     
-    // Verificar se CTO existe no Supabase
-    const existingChaveUnica = existingCTOsMap.get(String(cto.id_cto));
+    const idCtoKey = String(cto.id_cto);
+    const existingChaveUnica = existingCTOsMap.get(idCtoKey);
     
-    if (!existingChaveUnica && existingChaveUnica !== null) {
+    if (!existingCTOsMap.has(idCtoKey)) {
       // CENÁRIO 2: CTO nova (não existe no Supabase)
       ctosToInsert.push(cto);
       ctosNew++;
-    } else if (existingChaveUnica !== null && existingChaveUnica !== chaveUnica) {
-      // CENÁRIO 3: CTO atualizada (existe mas chave_unica mudou)
+    } else if (existingChaveUnica === null || existingChaveUnica !== chaveUnica) {
+      // CENÁRIO 3: CTO atualizada (sem chave_unica no banco ou dados mudaram)
       ctosToUpdate.push(cto);
       ctosChanged++;
     } else {
@@ -6703,22 +6748,12 @@ async function processExcelStreaming(filePath, supabaseClient, existingCTOsMap =
           // Ler apenas células com valores
           row.eachCell((cell, colNumber) => {
             if (headers[colNumber] && cell.value !== null && cell.value !== undefined) {
-              rowData[headers[colNumber]] = cell.value;
+              rowData[headers[colNumber]] = extractExcelCellValue(cell.value);
             }
           });
           
-          let lat = rowData.latitude;
-          let lng = rowData.longitude;
-          
-          // Converter coordenadas
-          if (typeof lat === 'string') {
-            lat = lat.replace(',', '.');
-            lat = parseFloat(lat);
-          }
-          if (typeof lng === 'string') {
-            lng = lng.replace(',', '.');
-            lng = parseFloat(lng);
-          }
+          const lat = parseCoordinate(rowData.latitude);
+          const lng = parseCoordinate(rowData.longitude);
           
           const cto = {
             cid_rede: rowData.cid_rede || null,
@@ -6729,8 +6764,8 @@ async function processExcelStreaming(filePath, supabaseClient, existingCTOsMap =
             pon: rowData.pon || null,
             id_cto: rowData.id_cto || null,
             cto: rowData.cto || null,
-            latitude: (lat && !isNaN(lat)) ? lat : null,
-            longitude: (lng && !isNaN(lng)) ? lng : null,
+            latitude: lat,
+            longitude: lng,
             status_cto: rowData.status_cto || null,
             data_cadastro: parseDate(rowData.data_cadastro),
             portas: rowData.portas ? parseInt(rowData.portas) : null,
@@ -6740,10 +6775,9 @@ async function processExcelStreaming(filePath, supabaseClient, existingCTOsMap =
           };
           
           // Validar coordenadas
-          if (cto.latitude && cto.longitude && 
-              !isNaN(cto.latitude) && !isNaN(cto.longitude) &&
-              cto.latitude >= -90 && cto.latitude <= 90 &&
-              cto.longitude >= -180 && cto.longitude <= 180) {
+          if (lat !== null && lng !== null &&
+              lat >= -90 && lat <= 90 &&
+              lng >= -180 && lng <= 180) {
             totalValid++;
             
             // SEMPRE gerar chave_unica (mesmo no modo legado)
