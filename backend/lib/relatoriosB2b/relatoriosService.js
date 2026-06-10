@@ -59,7 +59,10 @@ export async function listRelatorios({ status, q, limit = 50, setorOrigem } = {}
   const isVisaoProjetos = setorOrigem === SETOR_ORIGEM.PROJETOS;
 
   if (setorOrigem === SETOR_ORIGEM.IMPLANTACAO) {
-    query = query.or('setor_origem.eq.implantacao,status.eq.em_implantacao');
+    // Setor implantação + em implantação + todos os finalizados (visíveis também no dash de Projetos)
+    query = query.or(
+      'setor_origem.eq.implantacao,status.eq.em_implantacao,status.eq.finalizado'
+    );
   } else if (!isVisaoProjetos && setorOrigem && Object.values(SETOR_ORIGEM).includes(setorOrigem)) {
     query = query.eq('setor_origem', setorOrigem);
   }
