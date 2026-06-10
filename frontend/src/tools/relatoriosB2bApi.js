@@ -101,8 +101,55 @@ export const SETOR_ORIGEM = {
   IMPLANTACAO: 'implantacao'
 };
 
-/** Disparado após salvar/atualizar relatório — dashboards escutam para recarregar a lista. */
+/** Disparado após salvar/atualizar/transferir relatório — dashboards escutam para recarregar a lista. */
 export const RELATORIOS_B2B_ATUALIZADOS_EVENT = 'relatorios-b2b-atualizados';
+
+const RELATORIOS_B2B_BC_NAME = 'relatorios-b2b-sync';
+/** @type {BroadcastChannel | null} */
+let relatoriosB2bBc = null;
+
+function getRelatoriosB2bBroadcastChannel() {
+  if (typeof BroadcastChannel === 'undefined') return null;
+  if (!relatoriosB2bBc) {
+    relatoriosB2bBc = new BroadcastChannel(RELATORIOS_B2B_BC_NAME);
+  }
+  return relatoriosB2bBc;
+}
+
+export function notifyRelatoriosB2bAtualizados() {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent(RELATORIOS_B2B_ATUALIZADOS_EVENT));
+  }
+  getRelatoriosB2bBroadcastChannel()?.postMessage({ type: RELATORIOS_B2B_ATUALIZADOS_EVENT });
+}
+
+/** Inscreve recarga dos dashboards (mesma aba + outras abas). Retorna função para cancelar. */
+export function subscribeRelatoriosB2bAtualizados(callback) {
+  if (typeof window === 'undefined') return () => {};
+
+  let dedupe = false;
+  const run = () => {
+    if (dedupe) return;
+    dedupe = true;
+    queueMicrotask(() => {
+      dedupe = false;
+      callback();
+    });
+  };
+
+  window.addEventListener(RELATORIOS_B2B_ATUALIZADOS_EVENT, run);
+
+  const bc = getRelatoriosB2bBroadcastChannel();
+  const onBc = (event) => {
+    if (event.data?.type === RELATORIOS_B2B_ATUALIZADOS_EVENT) run();
+  };
+  bc?.addEventListener('message', onBc);
+
+  return () => {
+    window.removeEventListener(RELATORIOS_B2B_ATUALIZADOS_EVENT, run);
+    bc?.removeEventListener('message', onBc);
+  };
+}
 
 export function statusLabelForList(status) {
   if (status === RELATORIO_STATUS.EM_IMPLANTACAO) return 'Em Implantação';
@@ -125,10 +172,4 @@ export function applyRelatorioListAction(relatorios, type, item) {
       ? { ...r, status: nextStatus, statusLabel: statusLabelForList(nextStatus) }
       : r
   );
-}
-
-export function notifyRelatoriosB2bAtualizados() {
-  if (typeof window !== 'undefined') {
-    window.dispatchEvent(new CustomEvent(RELATORIOS_B2B_ATUALIZADOS_EVENT));
-  }
 }
