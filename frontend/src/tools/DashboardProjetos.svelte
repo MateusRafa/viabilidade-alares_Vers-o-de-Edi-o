@@ -202,7 +202,10 @@
       } else if (type === 'finalizar') {
         await updateRelatorioB2b(currentUser, item.id, {
           status: RELATORIO_STATUS.FINALIZADO,
-          setorOrigem: SETOR_ORIGEM.PROJETOS
+          setorOrigem:
+            item.status === RELATORIO_STATUS.EM_IMPLANTACAO
+              ? SETOR_ORIGEM.IMPLANTACAO
+              : SETOR_ORIGEM.PROJETOS
         });
       } else if (type === 'excluir') {
         await deleteRelatorioB2b(currentUser, item.id);
