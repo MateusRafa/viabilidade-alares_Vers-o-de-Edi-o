@@ -66,6 +66,16 @@ const portalToolsMeta = [
     portalVisible: false
   },
   {
+    id: 'relatorio-de-construcao',
+    title: 'Relatório de Construção',
+    description:
+      'Formulário do relatório de construção vinculado ao projeto em implantação (prévia PDF e impressão)',
+    icon: '🏗️',
+    color: '#0D9488',
+    available: true,
+    portalVisible: false
+  },
+  {
     id: 'dashboard-projetos',
     title: 'Dashboard Projetos',
     description: 'Gerenciar relatórios técnicos B2B do setor de Projetos',
@@ -103,6 +113,7 @@ const TOOL_COMPONENT_FILES = {
   'dashboard-censup': './DashboardCensup.svelte',
   'formulario-engenharia': './FormularioEngenharia.svelte',
   'formulario-engenharia-implantacao': './FormularioEngenhariaImplantacao.svelte',
+  'relatorio-de-construcao': './RelatorioDeConstrucao.svelte',
   'dashboard-projetos': './DashboardProjetos.svelte',
   'dashboard-implantacao': './DashboardImplantacao.svelte',
   'ia-auditoria-diagramacao': './IaAuditoriaDiagramacao.svelte'
