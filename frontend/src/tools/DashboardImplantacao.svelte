@@ -349,9 +349,9 @@
   <InfoDialog
     open={finalizarInfoOpen}
     title="Finalizar Relatório"
-    message="Para finalizar o Relatório é necessário adicionar o Relatório de Construção"
+    message="Para finalizar o Relatório é necessário adicionar o Relatório de Construção."
     secondaryLabel="Retornar para o Dashboard"
-    primaryLabel="Adicionar Relatório de Construção"
+    primaryLabel="+ Relatório de Construção"
     on:secondary={handleFinalizarInfoRetornar}
     on:primary={handleFinalizarInfoAdicionarConstrucao}
   />
