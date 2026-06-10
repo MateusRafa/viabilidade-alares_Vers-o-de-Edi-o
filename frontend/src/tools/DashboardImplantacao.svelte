@@ -313,6 +313,7 @@
   {/if}
 
   <RelatoriosStatusQuadros
+    dashboardVariant="implantacao"
     relatorios={recentRelatorios}
     {searchQuery}
     onEditar={handleEditarRelatorio}
