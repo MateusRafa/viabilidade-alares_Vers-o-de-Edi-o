@@ -115,25 +115,6 @@
     }
   }
 
-  async function abrirFormularioPdf() {
-    if (isTransitionLoading) return;
-
-    if (typeof onOpenTool !== 'function') {
-      alert('Não foi possível abrir o formulário. Recarregue a página e tente novamente.');
-      return;
-    }
-
-    isTransitionLoading = true;
-    loadingMessage = 'Abrindo Relatório de Construção…';
-    try {
-      await tick();
-      await new Promise((resolve) => setTimeout(resolve, TRANSITION_LOADING_MS));
-      onOpenTool(FORMULARIO_TOOL_ID, { returnTo: RETURN_TOOL_ID });
-    } finally {
-      isTransitionLoading = false;
-    }
-  }
-
   async function abrirRelatorioComLoading(item, { mode = 'edit', loadingText = 'Abrindo relatório…' } = {}) {
     if (isTransitionLoading) return;
 
@@ -279,14 +260,6 @@
         disabled={isTransitionLoading}
       >
         Pesquisar
-      </button>
-      <button
-        type="button"
-        class="btn-primary"
-        on:click={abrirFormularioPdf}
-        disabled={isTransitionLoading}
-      >
-        Gerar PDF
       </button>
 
       {#if showSearch}
