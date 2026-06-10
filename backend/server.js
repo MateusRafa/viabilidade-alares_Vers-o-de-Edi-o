@@ -6227,8 +6227,9 @@ async function updateCTOsInBatches(supabaseClient, ctosToUpdate, progressCallbac
   let batchNumber = 0;
   const startTime = Date.now();
 
+  const UPDATE_CONCURRENCY = 40; // Paralelismo dentro de cada lote (id_cto não tem UNIQUE → sem upsert)
+
   const buildUpdateRecord = (cto) => ({
-    id_cto: cto.id_cto,
     cid_rede: cto.cid_rede,
     estado: cto.estado,
     pop: cto.pop,
@@ -6247,46 +6248,66 @@ async function updateCTOsInBatches(supabaseClient, ctosToUpdate, progressCallbac
     chave_unica: cto.chave_unica || generateChaveUnica(cto)
   });
 
-  const upsertBatchWithRetry = async (batch, batchNum, retryCount = 0) => {
-    const batchData = batch
-      .filter((cto) => cto.id_cto)
-      .map(buildUpdateRecord);
+  const updateSingleCTO = async (cto, retryCount = 0) => {
+    const { error } = await supabaseClient
+      .from('ctos')
+      .update(buildUpdateRecord(cto))
+      .eq('id_cto', cto.id_cto);
 
-    const skipped = batch.length - batchData.length;
+    if (!error) return { ok: true };
+
+    const isRetryable = error.message.includes('500')
+      || error.message.includes('timeout')
+      || error.message.includes('Cloudflare');
+
+    if (isRetryable && retryCount < MAX_RETRIES) {
+      await new Promise(resolve => setTimeout(resolve, (retryCount + 1) * 1000));
+      return updateSingleCTO(cto, retryCount + 1);
+    }
+
+    return { ok: false, error: error.message, id_cto: cto.id_cto };
+  };
+
+  const updateBatchConcurrent = async (batch, batchNum) => {
+    const validBatch = batch.filter((cto) => cto.id_cto);
+    const skipped = batch.length - validBatch.length;
+
     if (skipped > 0) {
       console.warn(`⚠️ [Upload] Lote ${batchNum}: ${skipped} CTO(s) sem id_cto ignorada(s)`);
     }
 
-    if (batchData.length === 0) {
+    if (validBatch.length === 0) {
       return { updated: 0, errors: skipped };
     }
 
-    try {
-      const { error, data } = await supabaseClient
-        .from('ctos')
-        .upsert(batchData, { onConflict: 'id_cto' })
-        .select('id_cto');
+    let batchUpdated = 0;
+    let batchErrors = skipped;
+    let taskIndex = 0;
 
-      if (error) {
-        if ((error.message.includes('500') || error.message.includes('timeout') || error.message.includes('Cloudflare')) && retryCount < MAX_RETRIES) {
-          const waitTime = (retryCount + 1) * 2000;
-          console.warn(`⚠️ [Upload] Erro temporário no lote ${batchNum} (tentativa ${retryCount + 1}/${MAX_RETRIES}). Aguardando ${waitTime}ms...`);
-          await new Promise(resolve => setTimeout(resolve, waitTime));
-          return upsertBatchWithRetry(batch, batchNum, retryCount + 1);
+    const worker = async () => {
+      while (taskIndex < validBatch.length) {
+        const currentIndex = taskIndex++;
+        const cto = validBatch[currentIndex];
+        const result = await updateSingleCTO(cto);
+
+        if (result.ok) {
+          batchUpdated++;
+        } else {
+          batchErrors++;
+          if (batchErrors <= 5) {
+            console.error(`❌ [Upload] Erro ao atualizar CTO ${result.id_cto}:`, result.error);
+          }
         }
-        throw error;
       }
+    };
 
-      return { updated: data ? data.length : batchData.length, errors: skipped };
-    } catch (err) {
-      if (retryCount < MAX_RETRIES && (err.message.includes('500') || err.message.includes('timeout') || err.message.includes('Cloudflare'))) {
-        const waitTime = (retryCount + 1) * 2000;
-        console.warn(`⚠️ [Upload] Erro temporário no lote ${batchNum} (tentativa ${retryCount + 1}/${MAX_RETRIES}). Aguardando ${waitTime}ms...`);
-        await new Promise(resolve => setTimeout(resolve, waitTime));
-        return upsertBatchWithRetry(batch, batchNum, retryCount + 1);
-      }
-      throw err;
-    }
+    const workers = Array.from(
+      { length: Math.min(UPDATE_CONCURRENCY, validBatch.length) },
+      () => worker()
+    );
+    await Promise.all(workers);
+
+    return { updated: batchUpdated, errors: batchErrors };
   };
   
   try {
@@ -6295,7 +6316,7 @@ async function updateCTOsInBatches(supabaseClient, ctosToUpdate, progressCallbac
       const batch = ctosToUpdate.slice(i, i + UPDATE_BATCH_SIZE);
 
       try {
-        const { updated, errors } = await upsertBatchWithRetry(batch, batchNumber);
+        const { updated, errors } = await updateBatchConcurrent(batch, batchNumber);
         totalUpdated += updated;
         totalErrors += errors;
 
