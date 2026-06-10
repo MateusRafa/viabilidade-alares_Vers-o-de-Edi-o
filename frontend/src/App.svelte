@@ -6,6 +6,7 @@
   import ToolWrapper from './components/ToolWrapper.svelte';
   import { getToolById } from './tools/toolsRegistry.js';
   import { getLockedBrowserTabTitle } from './tools/formularioPdfShared.js';
+  import { subscribeRelatoriosB2bAtualizados } from './tools/relatoriosB2bApi.js';
 
   // Helper para URL da API (suporta desenvolvimento e produção)
   const API_URL = import.meta.env.VITE_API_URL || '';
@@ -987,8 +988,13 @@
     };
     
     window.addEventListener('hashchange', handleHashChange);
+
+    const unsubscribeRelatorios = subscribeRelatoriosB2bAtualizados(() => {
+      bumpRelatoriosDashboardRefresh();
+    });
     
     return () => {
+      unsubscribeRelatorios();
       if (broadcastChannel) {
         broadcastChannel.close();
         broadcastChannel = null;
