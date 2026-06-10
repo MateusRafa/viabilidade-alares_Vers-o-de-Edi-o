@@ -8,6 +8,9 @@
   export let onImprimir = null;
   /** @type {(item: object) => void} */
   export let onTransferir = null;
+  /** Devolve relatório em implantação para edição (Em Análise no setor Implantação) */
+  /** @type {(item: object) => void} */
+  export let onTransferirParaEdicao = null;
   /** @type {(item: object) => void} */
   export let onFinalizar = null;
   /** @type {(item: object) => void} */
@@ -73,6 +76,10 @@
     return item.status === 'em_implantacao';
   }
 
+  function podeTransferirParaEdicao(item) {
+    return dashboardVariant === 'implantacao' && item.status === 'em_implantacao';
+  }
+
   function toggleMenu(itemId, event) {
     event?.stopPropagation();
     if (openMenuId === itemId) {
@@ -109,6 +116,12 @@
     event?.stopPropagation();
     closeMenu();
     onTransferir?.(item);
+  }
+
+  function handleTransferirParaEdicao(item, event) {
+    event?.stopPropagation();
+    closeMenu();
+    onTransferirParaEdicao?.(item);
   }
 
   function handleFinalizar(item, event) {
@@ -241,6 +254,16 @@
                             {/if}
                           </div>
                         {:else if podeFinalizarDireto(item)}
+                          {#if podeTransferirParaEdicao(item)}
+                            <button
+                              type="button"
+                              class="card-menu-item"
+                              role="menuitem"
+                              on:click={(e) => handleTransferirParaEdicao(item, e)}
+                            >
+                              Transferir
+                            </button>
+                          {/if}
                           <button
                             type="button"
                             class="card-menu-item"
