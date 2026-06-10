@@ -115,6 +115,17 @@ export function applyRelatorioListAction(relatorios, type, item) {
   if (type === 'excluir') {
     return relatorios.filter((r) => r.id !== item.id);
   }
+  if (type === 'transferirParaEdicao') {
+    return relatorios.map((r) =>
+      r.id === item.id
+        ? {
+            ...r,
+            status: RELATORIO_STATUS.EM_ANALISE,
+            statusLabel: statusLabelForList(RELATORIO_STATUS.EM_ANALISE)
+          }
+        : r
+    );
+  }
   const nextStatus =
     type === 'transferir' ? RELATORIO_STATUS.EM_IMPLANTACAO : RELATORIO_STATUS.FINALIZADO;
   return relatorios.map((r) =>
