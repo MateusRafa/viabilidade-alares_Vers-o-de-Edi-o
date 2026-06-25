@@ -310,6 +310,10 @@ export function normalizeFormData(data) {
     cabecalho: { ...base.cabecalho, ...data.cabecalho },
     passos,
     listaMaterial: { ...emptyListaMaterial(), ...data.listaMaterial },
+    listaMaterialImplantado: {
+      ...emptyListaMaterial(),
+      ...data.listaMaterialImplantado
+    },
     anexosPdf: normalizeAnexosPdf(data.anexosPdf)
   };
 }
@@ -337,6 +341,7 @@ export function defaultFormData() {
     cabecalho: emptyCabecalho(),
     passos: [emptyPasso()],
     listaMaterial: emptyListaMaterial(),
+    listaMaterialImplantado: emptyListaMaterial(),
     anexosPdf: []
   };
 }
@@ -1192,13 +1197,16 @@ function measureDescricaoImagensLayout(
 }
 
 /** Mede na prévia (passo em folha única para medição) quantas páginas de texto e se há página de imagem */
-export function measurePassoLayoutsFromDocument(doc, passos = []) {
+export function measurePassoLayoutsFromDocument(doc, passos = [], { pdfSectionKey } = {}) {
   if (!doc?.body) return passos.map((p) => defaultPassoLayout(p));
 
   return passos.map((passo, i) => {
     const hasImage = hasPassoImagens(passo);
     const passoNumero = i + 1;
-    const page = doc.querySelector(`.pdf-page-passo[data-passo-index="${i}"]`);
+    const pageSelector = pdfSectionKey
+      ? `.pdf-page-passo[data-pdf-section="${pdfSectionKey}"][data-passo-index="${i}"]`
+      : `.pdf-page-passo[data-passo-index="${i}"]`;
+    const page = doc.querySelector(pageSelector);
 
     if (!page) {
       return defaultPassoLayout(passo);
@@ -1537,6 +1545,17 @@ export async function loadAssinaturaSupervisorDataUrl(baseUrl = '') {
   return stripSignatureLightBackground(raw);
 }
 
+/** Assinatura na Lista de Material Implantado — carrega e remove fundo claro */
+export async function loadAssinaturaSupervisorImplantacaoDataUrl(baseUrl = '') {
+  const paths = BRAND.assinaturaImplantacaoSupervisorPaths || [
+    '/images/assinatura-supervisor-implantacao.png',
+    '/images/assinatura-supervisor-implantacao.svg'
+  ];
+  const raw = await loadAssetDataUrl(paths, baseUrl);
+  if (!raw) return '';
+  return stripSignatureLightBackground(raw);
+}
+
 function getLogoUrl(options = {}) {
   if (options.logoDataUrl) return options.logoDataUrl;
   return resolveAssetUrl(BRAND.logoPath, options.baseUrl || '');
@@ -1550,6 +1569,22 @@ function getCapaOndasUrl(options = {}) {
 function getAssinaturaSupervisorUrl(options = {}) {
   if (options.assinaturaSupervisorDataUrl) return options.assinaturaSupervisorDataUrl;
   const paths = BRAND.assinaturaSupervisorPaths || ['/images/assinatura-supervisor.png'];
+  const baseUrl = options.baseUrl || '';
+  for (const path of paths) {
+    const url = resolveAssetUrl(path, baseUrl);
+    if (url) return url;
+  }
+  return '';
+}
+
+function getAssinaturaSupervisorImplantacaoUrl(options = {}) {
+  if (options.assinaturaSupervisorImplantacaoDataUrl) {
+    return options.assinaturaSupervisorImplantacaoDataUrl;
+  }
+  const paths = BRAND.assinaturaImplantacaoSupervisorPaths || [
+    '/images/assinatura-supervisor-implantacao.png',
+    '/images/assinatura-supervisor-implantacao.svg'
+  ];
   const baseUrl = options.baseUrl || '';
   for (const path of paths) {
     const url = resolveAssetUrl(path, baseUrl);
@@ -1875,6 +1910,10 @@ export const FORMULARIO_PDF_STYLES = `
     padding-top: 0;
   }
   .pdf-page-lista-material .artwork-page-footer .capa-rodape {
+    display: none;
+  }
+  .pdf-page-passo.resoluta-projeto .artwork-page-footer .capa-rodape,
+  [data-pdf-section="passo-resoluta"] .artwork-page-footer .capa-rodape {
     display: none;
   }
   .artwork-page-num {
@@ -2632,9 +2671,11 @@ function buildPassoPageShell({
 
   const passoIndexAttr =
     passoIndex != null && passoIndex !== '' ? ` data-passo-index="${passoIndex}"` : '';
+  const pdfSectionKey = options.pdfSectionKey || `passo-${passoNumero}`;
+  const resolutaPageClass = pdfSectionKey === 'passo-resoluta' ? ' resoluta-projeto' : '';
 
   return `
-    <div class="pdf-page ${pageClass}" data-pdf-page="${pageNum}" data-pdf-section="passo-${passoNumero}"${passoIndexAttr}>
+    <div class="pdf-page ${pageClass}${resolutaPageClass}" data-pdf-page="${pageNum}" data-pdf-section="${pdfSectionKey}"${passoIndexAttr}>
       ${ondasImg}
       <div class="page-shell-artwork">
         <div class="capa-logo-wrap">
@@ -2711,12 +2752,16 @@ function buildPagePassoMeasure(passo, passoNumero, passoIndex, pageNum, options)
               }
             </div>`;
 
+  const tituloHtml = options.resolutaPageTitle
+    ? `<h2 class="page-title">${escapeHtml(options.resolutaPageTitle)}</h2>`
+    : `<h2 class="page-title">Passo ${passoNumero}° — ${escapeHtml(tituloPasso)}</h2>`;
+
   return buildPassoPageShell({
     pageNum,
     passoIndex,
     passoNumero,
     pageClass: 'pdf-page-passo pdf-page-passo-measure',
-    tituloHtml: `<h2 class="page-title">Passo ${passoNumero}° — ${escapeHtml(tituloPasso)}</h2>`,
+    tituloHtml,
     bodyHtml,
     options
   });
@@ -2754,12 +2799,16 @@ function buildPagePassoTextChunk(
               ${imageHtml}
             </div>`;
 
+  const tituloHtml = options.resolutaPageTitle
+    ? `<h2 class="page-title">${escapeHtml(options.resolutaPageTitle)}${escapeHtml(suffix)}</h2>`
+    : `<h2 class="page-title">Passo ${passoNumero}° — ${escapeHtml(tituloPasso)}${escapeHtml(suffix)}</h2>`;
+
   return buildPassoPageShell({
     pageNum,
     passoIndex: chunkIndex === 0 ? passoIndex : null,
     passoNumero,
     pageClass: 'pdf-page-passo pdf-page-passo-texto',
-    tituloHtml: `<h2 class="page-title">Passo ${passoNumero}° — ${escapeHtml(tituloPasso)}${escapeHtml(suffix)}</h2>`,
+    tituloHtml,
     bodyHtml,
     options
   });
@@ -2783,12 +2832,16 @@ function buildPagePassoImageOnly(
               ${buildPassoImagesBlock(imagePasso, passoNumero, { showLabel: false, imageIndices })}
             </div>`;
 
+  const tituloHtml = options.resolutaPageTitle
+    ? `<h2 class="page-title">${escapeHtml(options.resolutaPageTitle)}</h2>`
+    : `<h2 class="page-title">Passo ${passoNumero}° — ${escapeHtml(tituloPasso)}</h2>`;
+
   return buildPassoPageShell({
     pageNum,
     passoIndex: null,
     passoNumero,
     pageClass: 'pdf-page-passo pdf-page-passo-imagem',
-    tituloHtml: `<h2 class="page-title">Passo ${passoNumero}° — ${escapeHtml(tituloPasso)}</h2>`,
+    tituloHtml,
     bodyHtml,
     options
   });
@@ -2917,10 +2970,19 @@ function buildPassoPagesHtml(passo, passoNumero, passoIndex, startPageNum, optio
 }
 
 function buildSupervisorAssinaturaHtml(options = {}) {
-  const assinaturaUrl = getAssinaturaSupervisorUrl(options);
-  const nome = (BRAND.assinaturaCoordenadorNome || '').trim();
-  const cargo = (BRAND.assinaturaCoordenadorCargo || BRAND.supervisorCargo || '').trim();
-  const processed = !!options.assinaturaSupervisorDataUrl;
+  const isImplantacao = options.assinaturaVariant === 'implantacao';
+  const assinaturaUrl = isImplantacao
+    ? getAssinaturaSupervisorImplantacaoUrl(options)
+    : getAssinaturaSupervisorUrl(options);
+  const nome = isImplantacao
+    ? (BRAND.assinaturaImplantacaoCoordenadorNome || '').trim()
+    : (BRAND.assinaturaCoordenadorNome || '').trim();
+  const cargo = isImplantacao
+    ? (BRAND.assinaturaImplantacaoCoordenadorCargo || '').trim()
+    : (BRAND.assinaturaCoordenadorCargo || BRAND.supervisorCargo || '').trim();
+  const processed = isImplantacao
+    ? !!options.assinaturaSupervisorImplantacaoDataUrl
+    : !!options.assinaturaSupervisorDataUrl;
   const imgHtml = assinaturaUrl
     ? `<div class="lista-material-assinatura-graphic">
         <img class="lista-material-assinatura-img${processed ? ' lista-material-assinatura-img--processed' : ''}" src="${attrUrl(assinaturaUrl)}" alt="" aria-hidden="true" />
@@ -2953,28 +3015,55 @@ function buildListaMaterialConteudoHtml(material) {
   return `<${tag} class="${valueClass}">${valueHtml}</${tag}>`;
 }
 
-function buildPageListaMaterial(formData, pageNum, options = {}) {
+function resolveListaMaterialFromFormData(formData, field = 'listaMaterial') {
+  const raw = formData?.[field];
+  return {
+    ...emptyListaMaterial(),
+    ...(raw && typeof raw === 'object' ? raw : {})
+  };
+}
+
+/** Material implantado no payload de construção (com fallback legado em listaMaterial). */
+export function getListaMaterialImplantadoFromFormData(formData) {
+  const implantado = resolveListaMaterialFromFormData(formData, 'listaMaterialImplantado');
+  const legacy = resolveListaMaterialFromFormData(formData, 'listaMaterial');
+  if (!implantado.descricao?.trim() && legacy.descricao?.trim()) {
+    return legacy;
+  }
+  return implantado;
+}
+
+function buildPageListaMaterial(formData, pageNum, options = {}, pageConfig = {}) {
   const logoUrl = getLogoUrl(options);
   const ondasUrl = getCapaOndasUrl(options);
-  const material = formData.listaMaterial || emptyListaMaterial();
+  const title = pageConfig.title ?? 'Lista de Material';
+  const pdfSectionKey = pageConfig.pdfSectionKey ?? 'lista-material';
+  const material =
+    pageConfig.material ??
+    (pageConfig.materialField === 'listaMaterialImplantado'
+      ? getListaMaterialImplantadoFromFormData(formData)
+      : resolveListaMaterialFromFormData(formData, pageConfig.materialField ?? 'listaMaterial'));
   const ondasImg = ondasUrl
     ? `<img class="capa-ondas-svg" src="${attrUrl(ondasUrl)}" alt="" aria-hidden="true" />`
     : '';
 
   return `
-    <div class="pdf-page pdf-page-lista-material" data-pdf-page="${pageNum}" data-pdf-section="lista-material">
+    <div class="pdf-page pdf-page-lista-material" data-pdf-page="${pageNum}" data-pdf-section="${pdfSectionKey}">
       ${ondasImg}
       <div class="page-shell-artwork">
         <div class="capa-logo-wrap">
           ${logoUrl ? `<img class="capa-logo" src="${attrUrl(logoUrl)}" alt="${escapeHtml(BRAND.nome)}" />` : ''}
         </div>
         <div class="page-body-inner page-body-artwork">
-          <h2 class="page-title">Lista de Material</h2>
+          <h2 class="page-title">${escapeHtml(title)}</h2>
           <div class="page-content page-content-lista-material">
             <div class="lista-material-body">
               ${buildListaMaterialConteudoHtml(material)}
             </div>
-            ${buildSupervisorAssinaturaHtml(options)}
+            ${buildSupervisorAssinaturaHtml({
+              ...options,
+              assinaturaVariant: pageConfig.assinaturaVariant
+            })}
           </div>
         </div>
         ${buildArtworkPageFooter(pageNum, options.totalPages)}
@@ -3026,6 +3115,118 @@ export function buildPdfBodyHtml(formData, meta = {}, options = {}) {
       ${anexosHtml}
     </div>
   `;
+}
+
+/** Páginas do PDF de Construção: projeto (até lista de material) + Resoluta + anexos do projeto */
+export function getConstrucaoPdfPageCount(projetosFormData, resolutaFormData, options = {}) {
+  const projetosPassos = projetosFormData?.passos?.length ? projetosFormData.passos : [emptyPasso()];
+  const projetosLayouts =
+    options.projetosPassoLayouts || projetosPassos.map((p) => defaultPassoLayout(p));
+  let passoPages = 0;
+  projetosPassos.forEach((passo, i) => {
+    passoPages += countPassoPages(projetosLayouts[i] || defaultPassoLayout(passo));
+  });
+  const resolutaPasso = resolutaFormData?.passos?.[0] || emptyPasso();
+  const resolutaLayouts = options.resolutaPassoLayouts || [defaultPassoLayout(resolutaPasso)];
+  passoPages += countPassoPages(resolutaLayouts[0] || defaultPassoLayout(resolutaPasso));
+  return 2 + passoPages + 1 + 1 + countAnexoPdfPages(projetosFormData);
+}
+
+export function buildConstrucaoPdfBodyHtml(projetosFormData, resolutaFormData, meta = {}, options = {}) {
+  const totalPages =
+    options.totalPages ?? getConstrucaoPdfPageCount(projetosFormData, resolutaFormData, options);
+  const buildOpts = { ...options, totalPages };
+  const projetosPassos = projetosFormData?.passos?.length ? projetosFormData.passos : [emptyPasso()];
+  const projetosLayouts =
+    options.projetosPassoLayouts || projetosPassos.map((p) => defaultPassoLayout(p));
+
+  let pageNum = 2;
+  let projetosPassosHtml = '';
+  projetosPassos.forEach((passo, index) => {
+    const built = buildPassoPagesHtml(passo, index + 1, index, pageNum, {
+      ...buildOpts,
+      passoLayouts: projetosLayouts,
+      pdfSectionKey: undefined,
+      resolutaPageTitle: undefined
+    });
+    projetosPassosHtml += built.html;
+    pageNum = built.nextPageNum;
+  });
+
+  const listaMaterialHtml = buildPageListaMaterial(projetosFormData, pageNum + 1, buildOpts);
+  pageNum += 1;
+
+  const resolutaPasso = resolutaFormData?.passos?.[0] || emptyPasso();
+  const resolutaLayouts = options.resolutaPassoLayouts || [defaultPassoLayout(resolutaPasso)];
+  const resolutaBuilt = buildPassoPagesHtml(resolutaPasso, 1, 0, pageNum, {
+    ...buildOpts,
+    passoLayouts: resolutaLayouts,
+    pdfSectionKey: 'passo-resoluta',
+    resolutaPageTitle: 'Resoluta do Projeto'
+  });
+  const resolutaHtml = resolutaBuilt.html;
+  pageNum = resolutaBuilt.nextPageNum;
+
+  const listaMaterialImplantadoHtml = buildPageListaMaterial(resolutaFormData, pageNum + 1, buildOpts, {
+    material: getListaMaterialImplantadoFromFormData(resolutaFormData),
+    title: 'Lista de Material Implantado',
+    pdfSectionKey: 'lista-material-implantado',
+    assinaturaVariant: 'implantacao'
+  });
+  pageNum += 1;
+
+  let anexosHtml = '';
+  (projetosFormData.anexosPdf || []).forEach((anexo) => {
+    const images = anexo.pageImages || [];
+    const pageTotal = images.length;
+    images.forEach((imageDataUrl, pageIndex) => {
+      pageNum += 1;
+      anexosHtml += buildPageAnexoPdf({
+        pageNum,
+        totalPages,
+        anexoId: anexo.id,
+        anexoNome: anexo.nome,
+        pageIndex,
+        pageTotal,
+        imageDataUrl,
+        options: buildOpts
+      });
+    });
+  });
+
+  return `
+    <div class="pdf-document">
+      ${buildPageCapa(projetosFormData, buildOpts)}
+      ${buildPageCabecalho(projetosFormData, buildOpts)}
+      ${projetosPassosHtml}
+      ${listaMaterialHtml}
+      ${resolutaHtml}
+      ${listaMaterialImplantadoHtml}
+      ${anexosHtml}
+    </div>
+  `;
+}
+
+export function buildConstrucaoFullPdfHtml(projetosFormData, resolutaFormData, meta = {}, options = {}) {
+  const measureNonce = options.measureNonce ?? '';
+  const title = getEngineeringPdfDocumentTitle(projetosFormData);
+  const baseUrl = options.baseUrl || '';
+  const baseTag = baseUrl
+    ? `<base href="${escapeHtml(baseUrl.replace(/\/$/, '') + '/')}">`
+    : '';
+
+  return `<!DOCTYPE html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8">
+    ${baseTag}
+    <title>${escapeHtml(title)}</title>
+    <style>${FORMULARIO_PDF_STYLES}</style>
+  </head>
+  <body data-measure-nonce="${escapeHtml(measureNonce)}">
+    ${buildConstrucaoPdfBodyHtml(projetosFormData, resolutaFormData, meta, options)}
+  </body>
+</html>`;
 }
 
 export function buildFullPdfHtml(formData, meta = {}, options = {}) {
