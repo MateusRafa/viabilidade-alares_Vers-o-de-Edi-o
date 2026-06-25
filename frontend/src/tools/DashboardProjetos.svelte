@@ -63,7 +63,7 @@
     transferir: {
       title: 'Transferir para Em Implantação',
       message:
-        'Transferir este relatório para Em Implantação?\n\nApós a transferência, não será mais possível editá-lo.',
+        'Transferir este relatório para Em Implantação?\n\nAs seções de Projetos continuarão editáveis. A Resoluta do Projeto e a Lista de Material Implantado serão preenchidas pelo setor de Implantação.',
       confirmLabel: 'Transferir'
     },
     finalizar: {
