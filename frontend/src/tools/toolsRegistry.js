@@ -152,6 +152,32 @@ export function mergePermissionsWithRegistry(permissions = {}) {
   return merged;
 }
 
+/** Ferramentas internas acessíveis quando o dashboard pai está habilitado */
+const TOOL_ACCESS_VIA_PARENT = {
+  'relatorio-de-construcao': ['dashboard-implantacao'],
+  'formulario-engenharia-implantacao': ['dashboard-implantacao'],
+  'formulario-engenharia': ['dashboard-projetos']
+};
+
+/**
+ * Verifica se o usuário pode acessar uma ferramenta.
+ * Admin: sempre. Demais: flag explícita ou acesso via dashboard pai.
+ */
+export function canAccessTool(toolId, permissions = {}, { userTipo = 'user' } = {}) {
+  if ((userTipo || '').toLowerCase() === 'admin') return true;
+
+  const merged = mergePermissionsWithRegistry(permissions);
+
+  if (merged[toolId] === true) return true;
+
+  const parentIds = TOOL_ACCESS_VIA_PARENT[toolId];
+  if (parentIds?.some((parentId) => merged[parentId] === true)) {
+    return true;
+  }
+
+  return false;
+}
+
 /**
  * Payload completo para salvar no backend (todas as ferramentas com true/false)
  */
