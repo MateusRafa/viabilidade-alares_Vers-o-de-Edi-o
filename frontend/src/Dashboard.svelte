@@ -1,6 +1,6 @@
 <script>
   import { onMount } from 'svelte';
-  import { getAvailableTools, mergePermissionsWithRegistry } from './tools/toolsRegistry.js';
+  import { getAvailableTools, mergePermissionsWithRegistry, canAccessTool } from './tools/toolsRegistry.js';
   import { getApiUrl } from './config.js';
   import Config from './Config.svelte';
   
@@ -21,10 +21,7 @@
   
   // Lista de ferramentas do registry filtrada por permissão (false = oculta)
   $: tools = permissionsLoaded
-    ? getAvailableTools().filter((tool) => {
-        if (userTipo === 'admin') return true;
-        return userToolPermissions[tool.id] !== false;
-      })
+    ? getAvailableTools().filter((tool) => canAccessTool(tool.id, userToolPermissions, { userTipo }))
     : [];
   
   // Função para carregar permissões de ferramentas do usuário atual
