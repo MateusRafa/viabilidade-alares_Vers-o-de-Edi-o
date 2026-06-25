@@ -65,7 +65,9 @@
   }
 
   function podeEditar(item) {
-    return item.status === 'em_analise';
+    if (item.status === 'em_analise') return true;
+    if (dashboardVariant === 'projetos' && item.status === 'em_implantacao') return true;
+    return false;
   }
 
   function podeTransferirOuFinalizar(item) {
