@@ -175,6 +175,8 @@
   let savingPDF = false;
   let pdfError = '';
   let saveSuccessDialogOpen = false;
+  let gerarPdfDialogOpen = false;
+  let syncingRelatorioData = false;
   let relatorioSalvoId = null;
   let relatorioStatus = RELATORIO_STATUS.EM_ANALISE;
   let formReadonly = false;
@@ -1120,10 +1122,57 @@
     }
   }
 
+  const FORM_DATA_SYNC_KEYS = ['capa', 'cabecalho', 'passos', 'listaMaterial', 'anexosPdf'];
+
+  function mergeFormDataPreservandoEdicoesLocais(local, server) {
+    let persisted = normalizeFormData(defaultFormData());
+    try {
+      if (lastPersistedFormJson) {
+        persisted = normalizeFormData(JSON.parse(lastPersistedFormJson));
+      }
+    } catch {
+      /* ignore */
+    }
+
+    const serverNorm = normalizeFormData(server);
+    const localNorm = normalizeFormData(local);
+    const merged = { ...serverNorm };
+
+    for (const key of FORM_DATA_SYNC_KEYS) {
+      const localChanged = JSON.stringify(localNorm[key]) !== JSON.stringify(persisted[key]);
+      if (localChanged) {
+        merged[key] = localNorm[key];
+      }
+    }
+
+    return normalizeFormData(merged);
+  }
+
+  /** Busca no servidor alterações feitas em paralelo (outro usuário ou outra aba). */
+  async function sincronizarDadosRelatorio() {
+    const usuario = (currentUser || '').trim();
+    if (!usuario || !relatorioSalvoId) return;
+
+    const rel = await fetchRelatorioB2bById(usuario, relatorioSalvoId, {
+      payloadTipo: PAYLOAD_TIPO.PROJETOS
+    });
+
+    relatorioStatus = rel.status || relatorioStatus;
+    formReadonly = relatorioStatus === RELATORIO_STATUS.FINALIZADO;
+
+    if (rel.formData && Object.keys(rel.formData).length) {
+      formData = mergeFormDataPreservandoEdicoesLocais(formData, rel.formData);
+    }
+
+    applyPreviewHtml();
+    schedulePassoLayoutMeasure(true);
+    await flushPreviewRefresh();
+  }
+
   function aplicarRelatorioApi(rel) {
     relatorioSalvoId = rel.id;
     relatorioStatus = rel.status || RELATORIO_STATUS.EM_ANALISE;
-    formReadonly = relatorioStatus !== RELATORIO_STATUS.EM_ANALISE;
+    formReadonly = relatorioStatus === RELATORIO_STATUS.FINALIZADO;
 
     if (rel.formData) {
       formData = normalizeFormData(rel.formData);
@@ -1218,7 +1267,7 @@
     }
   }
 
-  async function persistRelatorio() {
+  async function persistRelatorio({ transferirImplantacao = false } = {}) {
     if (formReadonly) return;
 
     const usuario = (currentUser || '').trim();
@@ -1230,28 +1279,36 @@
     const saveOptions = {
       payload,
       payloadTipo: PAYLOAD_TIPO.PROJETOS,
-      status: relatorioStatus || RELATORIO_STATUS.EM_ANALISE,
-      setorOrigem: SETOR_ORIGEM.PROJETOS
+      status: transferirImplantacao
+        ? RELATORIO_STATUS.EM_IMPLANTACAO
+        : relatorioStatus || RELATORIO_STATUS.EM_ANALISE,
+      setorOrigem: transferirImplantacao ? SETOR_ORIGEM.IMPLANTACAO : SETOR_ORIGEM.PROJETOS
     };
 
     if (relatorioSalvoId) {
-      await updateRelatorioB2b(currentUser, relatorioSalvoId, saveOptions);
+      const atualizado = await updateRelatorioB2b(currentUser, relatorioSalvoId, saveOptions);
+      relatorioStatus = atualizado.status || saveOptions.status;
     } else {
       const criado = await createRelatorioB2b(currentUser, saveOptions);
       relatorioSalvoId = criado.id;
-      relatorioStatus = criado.status || RELATORIO_STATUS.EM_ANALISE;
+      relatorioStatus = criado.status || saveOptions.status;
     }
 
     notifyRelatoriosB2bAtualizados();
   }
 
   async function handleSalvarPdf() {
-    if (savingPDF || formReadonly) return;
+    if (savingPDF || formReadonly || syncingRelatorioData) return;
 
     savingPDF = true;
     pdfError = '';
 
     try {
+      await sincronizarDadosRelatorio();
+      if (formReadonly) {
+        pdfError = 'Este relatório foi finalizado e não pode mais ser editado.';
+        return;
+      }
       await persistRelatorio();
       formSavedViaSalvarButton = true;
       syncPersistedSnapshot();
@@ -1263,20 +1320,59 @@
     }
   }
 
-  async function handleGeneratePdf() {
+  async function solicitarGerarPdf() {
     if (!assetsReady) {
       pdfError = 'Aguarde o carregamento dos recursos do PDF antes de gerar.';
       return;
     }
-    if (generatingPDF || savingPDF) return;
+    if (generatingPDF || savingPDF || syncingRelatorioData) return;
+
+    pdfError = '';
+
+    if (formReadonly || relatorioStatus === RELATORIO_STATUS.EM_IMPLANTACAO) {
+      void executarGerarPdf({ transferirImplantacao: false });
+      return;
+    }
+
+    syncingRelatorioData = true;
+    try {
+      await sincronizarDadosRelatorio();
+      if (formReadonly) {
+        pdfError = 'Este relatório foi finalizado e não pode mais ser editado.';
+        return;
+      }
+      gerarPdfDialogOpen = true;
+    } catch (err) {
+      pdfError =
+        err?.message || 'Não foi possível atualizar os dados do relatório. Tente novamente.';
+    } finally {
+      syncingRelatorioData = false;
+    }
+  }
+
+  async function executarGerarPdf({ transferirImplantacao = false } = {}) {
+    if (!assetsReady) {
+      pdfError = 'Aguarde o carregamento dos recursos do PDF antes de gerar.';
+      return;
+    }
+    if (generatingPDF || savingPDF || syncingRelatorioData) return;
 
     generatingPDF = true;
     pdfError = '';
 
     try {
       if (!formReadonly) {
-        await persistRelatorio();
+        await sincronizarDadosRelatorio();
+        if (formReadonly) {
+          pdfError = 'Este relatório foi finalizado e não pode mais ser editado.';
+          return;
+        }
+        await persistRelatorio({ transferirImplantacao });
+        formSavedViaSalvarButton = true;
+        syncPersistedSnapshot();
       }
+
+      gerarPdfDialogOpen = false;
       await flushPreviewRefresh();
       const docTitle = getEngineeringPdfDocumentTitle(formData);
       const printHtml = buildFullPdfHtml(formData, {}, buildPreviewHtmlOptions());
@@ -1292,6 +1388,19 @@
     } finally {
       generatingPDF = false;
     }
+  }
+
+  function confirmGerarPdfSemImplantacao() {
+    void executarGerarPdf({ transferirImplantacao: false });
+  }
+
+  function confirmGerarPdfComImplantacao() {
+    void executarGerarPdf({ transferirImplantacao: true });
+  }
+
+  /** Impressão direta (ex.: menu Imprimir do dashboard) — salva e abre PDF sem diálogo. */
+  async function handleGeneratePdf() {
+    await executarGerarPdf({ transferirImplantacao: false });
   }
 
   onMount(async () => {
@@ -1829,7 +1938,7 @@
         {/if}
         {#if formReadonly}
           <p class="readonly-banner" role="status">
-            Este relatório não pode mais ser editado (transferido ou finalizado).
+            Este relatório não pode mais ser editado (finalizado).
           </p>
         {/if}
         <div class="form-actions-buttons">
@@ -1838,7 +1947,7 @@
               type="button"
               class="btn-generate-pdf"
               on:click={handleSalvarPdf}
-              disabled={savingPDF || generatingPDF}
+              disabled={savingPDF || generatingPDF || syncingRelatorioData}
             >
               {savingPDF ? 'Salvando…' : 'Salvar PDF'}
             </button>
@@ -1846,10 +1955,14 @@
           <button
             type="button"
             class="btn-generate-pdf"
-            on:click={handleGeneratePdf}
-            disabled={generatingPDF || savingPDF || !assetsReady}
+            on:click={solicitarGerarPdf}
+            disabled={generatingPDF || savingPDF || syncingRelatorioData || !assetsReady}
           >
-            {generatingPDF ? 'Abrindo impressão...' : 'Gerar PDF'}
+            {generatingPDF
+              ? 'Abrindo impressão...'
+              : syncingRelatorioData
+                ? 'Atualizando…'
+                : 'Gerar PDF'}
           </button>
         </div>
       </footer>
@@ -1904,6 +2017,18 @@
     <Loading currentMessage={loadingMessage} />
   </div>
 {/if}
+
+<InfoDialog
+  open={gerarPdfDialogOpen}
+  title="Gerar PDF"
+  message="Deseja enviar o Relatório para Implantação?
+
+Você pode Gerar o PDF sem enviar para implantação."
+  secondaryLabel="Gerar PDF"
+  primaryLabel="Enviar para Implantação"
+  on:secondary={confirmGerarPdfSemImplantacao}
+  on:primary={confirmGerarPdfComImplantacao}
+/>
 
 <InfoDialog
   open={saveSuccessDialogOpen}
