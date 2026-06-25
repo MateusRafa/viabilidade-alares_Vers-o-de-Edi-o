@@ -4,7 +4,7 @@
   import LogoutLoading from './LogoutLoading.svelte';
   import Dashboard from './Dashboard.svelte';
   import ToolWrapper from './components/ToolWrapper.svelte';
-  import { getToolById } from './tools/toolsRegistry.js';
+  import { getToolById, canAccessTool, mergePermissionsWithRegistry } from './tools/toolsRegistry.js';
   import { getLockedBrowserTabTitle } from './tools/formularioPdfShared.js';
   import { subscribeRelatoriosB2bAtualizados } from './tools/relatoriosB2bApi.js';
 
@@ -535,18 +535,18 @@
       if (response.ok) {
         const data = await response.json();
         if (data.success && data.permissions) {
-          userToolPermissions = data.permissions;
+          userToolPermissions = mergePermissionsWithRegistry(data.permissions);
           console.log('✅ [App] Permissões carregadas:', userToolPermissions);
         } else {
-          userToolPermissions = {};
+          userToolPermissions = mergePermissionsWithRegistry({});
         }
       } else {
         console.warn('⚠️ [App] Erro ao carregar permissões (status:', response.status, ')');
-        userToolPermissions = {};
+        userToolPermissions = mergePermissionsWithRegistry({});
       }
     } catch (err) {
       console.error('❌ [App] Erro ao carregar permissões de ferramentas:', err);
-      userToolPermissions = {};
+      userToolPermissions = mergePermissionsWithRegistry({});
     } finally {
       permissionsLoaded = true;
     }
@@ -554,12 +554,7 @@
 
   // Função para verificar se o usuário tem permissão para acessar uma ferramenta
   function hasToolPermission(toolId) {
-    // Admin tem acesso a todas as ferramentas
-    if (userTipo === 'admin') {
-      return true;
-    }
-    // Verificar se a ferramenta está explicitamente habilitada (true)
-    return userToolPermissions[toolId] === true;
+    return canAccessTool(toolId, userToolPermissions, { userTipo });
   }
 
   // Função para selecionar uma ferramenta do Dashboard
@@ -593,7 +588,9 @@
    * @param {string} toolId
    * @param {{ returnTo?: string, relatorioId?: string, mode?: 'edit'|'print' }} [options]
    */
-  function handleOpenTool(toolId, options = {}) {
+  async function handleOpenTool(toolId, options = {}) {
+    await loadUserToolPermissions();
+
     const tool = getToolById(toolId);
 
     if (!tool || !tool.available) {
