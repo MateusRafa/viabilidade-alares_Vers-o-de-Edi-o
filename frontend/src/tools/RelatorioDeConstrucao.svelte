@@ -11,17 +11,17 @@
     defaultFormData,
     normalizeFormData,
     emptyPasso,
+    emptyListaMaterial,
     defaultPassoLayout,
     measurePassoLayoutsFromDocument,
     getPassoLayoutWarnings,
-    CABECALHO_FIELDS,
-    getCabecalhoFieldsForDisplay,
-    buildFullPdfHtml,
+    buildConstrucaoFullPdfHtml,
     getEngineeringPdfDocumentTitle,
     printPdfHtmlNamed,
     loadLogoDataUrl,
     loadCapaOndasDataUrl,
     loadAssinaturaSupervisorDataUrl,
+    loadAssinaturaSupervisorImplantacaoDataUrl,
     waitForPrintImages,
     sanitizeRichHtml,
     MAX_ANEXO_PDF_MB,
@@ -60,10 +60,15 @@
 
   const DASHBOARD_IMPLANTACAO_ID = 'dashboard-implantacao';
   const TRANSITION_LOADING_MS = 2000;
+  const RESOLUTA_SECTION_ID = 'resoluta';
+  const LISTA_MATERIAL_IMPLANTADO_SECTION_ID = 'listaMaterialImplantado';
+  const RESOLUTA_TITULO_PASSO = 'Resoluta do Projeto';
 
   let isTransitionLoading = false;
   let loadingMessage = '';
   let exitWithoutSaveDialogOpen = false;
+  let finalizarDialogOpen = false;
+  let syncingProjetosData = false;
   /** Snapshot do formulário após Salvar PDF ou carregar — Gerar PDF não atualiza. */
   let lastPersistedFormJson = '';
   /** Só true após Salvar PDF ou ao abrir relatório já existente para edição. */
@@ -146,8 +151,27 @@
 
   let projetistaUserDefaultApplied = false;
 
+  function normalizeResolutaFormData(data) {
+    const base = normalizeFormData(data);
+    const primeiro = base.passos?.[0] ? { ...base.passos[0] } : emptyPasso();
+    if (!primeiro.tituloPasso?.trim()) {
+      primeiro.tituloPasso = RESOLUTA_TITULO_PASSO;
+    }
+
+    const listaMaterialImplantado = {
+      ...emptyListaMaterial(),
+      ...(base.listaMaterialImplantado || {})
+    };
+    const legacyListaMaterial = base.listaMaterial?.descricao?.trim();
+    if (!listaMaterialImplantado.descricao?.trim() && legacyListaMaterial) {
+      listaMaterialImplantado.descricao = base.listaMaterial.descricao;
+    }
+
+    return { ...base, passos: [primeiro], listaMaterialImplantado };
+  }
+
   function createInitialFormData(user = '') {
-    const data = normalizeFormData(defaultFormData());
+    const data = normalizeResolutaFormData(defaultFormData());
     const name = (user ?? '').trim();
     if (!name) return data;
     projetistaUserDefaultApplied = true;
@@ -173,6 +197,9 @@
   }
 
   let formData = createInitialFormData(currentUser);
+  /** Conteúdo do projeto (somente leitura na prévia) — payload_projetos */
+  let projetosFormData = normalizeFormData(defaultFormData());
+  let projetosPassoLayouts = [];
 
   $: applyProjetistaDefault(currentUser);
   let generatingPDF = false;
@@ -184,15 +211,13 @@
   let relatorioStatus = RELATORIO_STATUS.EM_ANALISE;
   let formReadonly = false;
   let expandedSections = {
-    capa: false,
-    cabecalho: false,
-    'passo-0': false,
-    listaMaterial: false,
-    anexosPdf: false
+    [RESOLUTA_SECTION_ID]: true,
+    [LISTA_MATERIAL_IMPLANTADO_SECTION_ID]: false
   };
   let logoDataUrl = '';
   let capaOndasDataUrl = '';
   let assinaturaSupervisorDataUrl = '';
+  let assinaturaSupervisorImplantacaoDataUrl = '';
   let assetsReady = false;
   let passoImageInput;
   let anexoPdfInput;
@@ -233,7 +258,7 @@
   /** HTML do iframe oculto só para medição de quebra de página */
   let measureHtml = '';
   /** Seção do formulário em edição — prévia volta para a página correspondente */
-  let previewFocusAnchor = 'capa';
+  let previewFocusAnchor = 'resoluta';
   /** Restaura rolagem da prévia após atualização automática (mesma seção em edição) */
   let previewScrollRestore = null;
   /** Ao digitar descrição longa, rolar para a última folha de texto do passo */
@@ -241,7 +266,6 @@
   /** Ignora eventos load antigos do iframe quando várias atualizações seguidas */
   let previewApplyGeneration = 0;
 
-  $: cabecalhoFieldsVisible = getCabecalhoFieldsForDisplay(formData.cabecalho);
 
   $: previewBaseUrl = typeof window !== 'undefined' ? window.location.origin : '';
   $: layoutsForPreview =
@@ -268,11 +292,15 @@
 
   $: formPreviewKey = assetsReady
     ? JSON.stringify({
-        capa: formData.capa,
-        cabecalho: formData.cabecalho,
-        passos: formData.passos,
-        listaMaterial: formData.listaMaterial,
-        anexosPdf: (formData.anexosPdf || []).map((a) => [a.id, a.pageImages?.length || 0])
+        projetos: {
+          capa: projetosFormData.capa,
+          cabecalho: projetosFormData.cabecalho,
+          passos: projetosFormData.passos,
+          listaMaterial: projetosFormData.listaMaterial,
+          anexosPdf: (projetosFormData.anexosPdf || []).map((a) => [a.id, a.pageImages?.length || 0])
+        },
+        resoluta: formData.passos,
+        listaMaterialImplantado: formData.listaMaterialImplantado?.descricao ?? ''
       })
     : '';
 
@@ -282,10 +310,19 @@
       logoDataUrl,
       capaOndasDataUrl,
       assinaturaSupervisorDataUrl,
-      passoLayouts: layoutsForPreview,
+      assinaturaSupervisorImplantacaoDataUrl,
+      projetosPassoLayouts,
+      resolutaPassoLayouts: layoutsForPreview,
       measurePassoLayout,
       measureNonce
     };
+  }
+
+  function buildConstrucaoPreviewHtml(options = {}) {
+    return buildConstrucaoFullPdfHtml(projetosFormData, formData, {}, {
+      ...buildPreviewHtmlOptions(options),
+      ...options
+    });
   }
 
   function syncPreviewFocusFromTarget(target) {
@@ -293,12 +330,17 @@
 
     const editor = target.closest('.rich-editor[data-passo-index]');
     if (editor) {
-      previewFocusAnchor = `passo:${editor.dataset.passoIndex ?? '0'}`;
+      previewFocusAnchor = 'resoluta';
       return true;
     }
     const editorApos = target.closest('.rich-editor[data-desc-apos-id]');
     if (editorApos) {
-      previewFocusAnchor = `passo:${editorApos.dataset.passoIndex ?? '0'}`;
+      previewFocusAnchor = 'resoluta';
+      return true;
+    }
+
+    if (target.closest('[data-editor="materialImplantado"]')) {
+      previewFocusAnchor = 'listaMaterialImplantado';
       return true;
     }
 
@@ -311,8 +353,8 @@
     if (!box) return false;
 
     const anchor = box.dataset.previewAnchor;
-    if (anchor === 'passo') {
-      previewFocusAnchor = `passo:${box.dataset.passoIndex ?? '0'}`;
+    if (anchor === 'passo' || anchor === 'resoluta') {
+      previewFocusAnchor = 'resoluta';
     } else {
       previewFocusAnchor = anchor;
     }
@@ -342,6 +384,12 @@
     if (previewFocusAnchor === 'cabecalho') {
       return doc.querySelector('.pdf-page-cabecalho');
     }
+    if (previewFocusAnchor === 'listaMaterialImplantado') {
+      return (
+        doc.querySelector('[data-pdf-section="lista-material-implantado"]') ||
+        doc.querySelector('.pdf-page-lista-material-implantado')
+      );
+    }
     if (previewFocusAnchor === 'listaMaterial') {
       return (
         doc.querySelector('[data-pdf-section="lista-material"]') ||
@@ -356,6 +404,12 @@
         return doc.querySelector(`[data-pdf-section="anexo-${anexoId}"]`);
       }
       return doc.querySelector('.pdf-page-anexo');
+    }
+    if (previewFocusAnchor === 'resoluta') {
+      const resolutaPages = doc.querySelectorAll('[data-pdf-section="passo-resoluta"]');
+      if (resolutaPages.length) {
+        return preferTail ? resolutaPages[resolutaPages.length - 1] : resolutaPages[0];
+      }
     }
     if (previewFocusAnchor.startsWith('passo:')) {
       const passoIndex = previewFocusAnchor.split(':')[1];
@@ -414,7 +468,7 @@
     if (!assetsReady) return;
     capturePreviewScroll();
     previewApplyGeneration += 1;
-    previewHtmlDisplayed = buildFullPdfHtml(formData, {}, buildPreviewHtmlOptions());
+    previewHtmlDisplayed = buildConstrucaoPreviewHtml();
   }
 
   function schedulePreviewRefresh(immediate = false) {
@@ -465,7 +519,9 @@
       requestAnimationFrame(() => requestAnimationFrame(resolve));
     });
 
-    const next = measurePassoLayoutsFromDocument(doc, formData.passos);
+    const next = measurePassoLayoutsFromDocument(doc, formData.passos, {
+      pdfSectionKey: 'passo-resoluta'
+    });
     const changed = JSON.stringify(next) !== JSON.stringify(passoLayouts);
 
     if (changed) {
@@ -484,14 +540,10 @@
     clearTimeout(measureDebounceTimer);
     measureDebounceTimer = setTimeout(
       () => {
-        measureHtml = buildFullPdfHtml(
-          formData,
-          {},
-          buildPreviewHtmlOptions({
-            measurePassoLayout: true,
-            measureNonce: `${measurePassoKey}-m`
-          })
-        );
+        measureHtml = buildConstrucaoPreviewHtml({
+          measurePassoLayout: true,
+          measureNonce: `${measurePassoKey}-m`
+        });
       },
       immediate ? 0 : MEASURE_DEBOUNCE_MS
     );
@@ -535,6 +587,18 @@
       ...formData,
       passos: formData.passos.map((p, i) => (i === index ? { ...p, ...patch } : p))
     };
+  }
+
+  function updateListaMaterialImplantado(patch) {
+    formData = {
+      ...formData,
+      listaMaterialImplantado: {
+        ...emptyListaMaterial(),
+        ...(formData.listaMaterialImplantado || {}),
+        ...patch
+      }
+    };
+    schedulePreviewRefresh();
   }
 
   function updateListaMaterial(patch) {
@@ -869,6 +933,15 @@
     });
   }
 
+  function syncMaterialImplantadoDescricaoEditor(el) {
+    if (!el) return;
+    const html = sanitizeRichHtml(el.innerHTML);
+    const atual = formData.listaMaterialImplantado?.descricao ?? '';
+    if (html !== atual) {
+      updateListaMaterialImplantado({ descricao: html });
+    }
+  }
+
   function syncMaterialDescricaoEditor(el) {
     if (!el) return;
     const html = sanitizeRichHtml(el.innerHTML);
@@ -891,7 +964,9 @@
       document.execCommand('insertText', false, plain);
     }
     const target = event.currentTarget;
-    if (target?.dataset?.editor === 'material') {
+    if (target?.dataset?.editor === 'materialImplantado') {
+      syncMaterialImplantadoDescricaoEditor(target);
+    } else if (target?.dataset?.editor === 'material') {
       syncMaterialDescricaoEditor(target);
     } else if (target?.dataset?.descAposId) {
       syncDescricaoAposEditor(
@@ -905,26 +980,16 @@
   }
 
   function handlePassoDescricaoInput(passoIndex, event) {
-    previewFocusAnchor = `passo:${passoIndex}`;
+    previewFocusAnchor = 'resoluta';
     previewPreferTailScroll = true;
     syncDescricaoEditor(passoIndex, event.currentTarget);
     schedulePassoLayoutMeasure();
   }
 
   function handlePassoDescricaoAposInput(passoIndex, blockId, event) {
-    previewFocusAnchor = `passo:${passoIndex}`;
+    previewFocusAnchor = 'resoluta';
     previewPreferTailScroll = true;
     syncDescricaoAposEditor(passoIndex, blockId, event.currentTarget);
-    schedulePassoLayoutMeasure();
-  }
-
-  function updatePassoBlocoTituloImagem(passoIndex, blockId, tituloImagem) {
-    const blocks = getPassoDescricoesAposImagem(formData.passos[passoIndex]);
-    updatePasso(passoIndex, {
-      descricoesAposImagem: blocks.map((b) =>
-        b.id === blockId ? { ...b, tituloImagem } : b
-      )
-    });
     schedulePassoLayoutMeasure();
   }
 
@@ -969,6 +1034,12 @@
     schedulePassoLayoutMeasure(true);
   }
 
+  function handleMaterialImplantadoDescricaoInput(event) {
+    previewFocusAnchor = 'listaMaterialImplantado';
+    previewPreferTailScroll = true;
+    syncMaterialImplantadoDescricaoEditor(event.currentTarget);
+  }
+
   function handleMaterialDescricaoInput(event) {
     previewPreferTailScroll = true;
     syncMaterialDescricaoEditor(event.currentTarget);
@@ -1009,6 +1080,21 @@
     }
   }
 
+  async function initMaterialImplantadoDescricaoEditor() {
+    const el = descricaoEditorEls.materialImplantado;
+    if (!el || isDescricaoEditorFocused('materialImplantado')) return;
+
+    const html = formData.listaMaterialImplantado?.descricao || '';
+    if (!descricaoEditorReady.materialImplantado) {
+      el.innerHTML = html;
+      descricaoEditorReady.materialImplantado = true;
+      return;
+    }
+    if (!richHtmlEquivalent(el.innerHTML, html)) {
+      el.innerHTML = html;
+    }
+  }
+
   async function initMaterialDescricaoEditor() {
     const el = descricaoEditorEls.material;
     if (!el || isDescricaoEditorFocused('material')) return;
@@ -1024,27 +1110,19 @@
     }
   }
 
-  /** Só reidrata editores ao expandir passos ou mudar quantidade — não a cada tecla na descrição. */
-  $: passoEditorsHydrateKey = `${formData.passos.length}|${Object.entries(expandedSections)
-    .filter(([id, open]) => open && id.startsWith('passo-'))
-    .map(([id]) => id)
-    .join(',')}`;
-
-  $: if (passoEditorsHydrateKey) {
-    formData.passos.forEach((passo, passoIndex) => {
-      if (expandedSections[passoSectionId(passoIndex)]) {
-        tick().then(() => {
-          initDescricaoEditor(passoIndex);
-          getPassoDescricoesAposImagem(passo).forEach((block) => {
-            initDescricaoAposEditor(passoIndex, block.id);
-          });
-        });
-      }
+  /** Reidrata editores ao expandir a Resoluta. */
+  $: if (expandedSections[RESOLUTA_SECTION_ID] && formData.passos[0]) {
+    tick().then(() => {
+      initDescricaoEditor(0);
+      getPassoDescricoesAposImagem(formData.passos[0]).forEach((block) => {
+        initDescricaoAposEditor(0, block.id);
+      });
     });
   }
 
-  $: if (expandedSections.listaMaterial) {
-    tick().then(initMaterialDescricaoEditor);
+  /** Reidrata editor ao expandir a Lista de Material Implantado. */
+  $: if (expandedSections[LISTA_MATERIAL_IMPLANTADO_SECTION_ID]) {
+    tick().then(() => initMaterialImplantadoDescricaoEditor());
   }
 
   function removePassoImagem(passoIndex, imagemId) {
@@ -1125,15 +1203,44 @@
     }
   }
 
+  function aplicarDadosProjetosDoRelatorio(rel) {
+    if (rel.formDataProjetos && Object.keys(rel.formDataProjetos).length) {
+      projetosFormData = normalizeFormData(rel.formDataProjetos);
+    } else if (rel.payloadProjetos && Object.keys(rel.payloadProjetos).length) {
+      projetosFormData = normalizeFormData(rel.payloadProjetos);
+    }
+    projetosPassoLayouts = (projetosFormData.passos || []).map((p) => defaultPassoLayout(p));
+  }
+
+  /** Busca no servidor as alterações feitas pelo setor de Projetos em paralelo. */
+  async function sincronizarDadosProjetos() {
+    const usuario = (currentUser || '').trim();
+    if (!usuario || !relatorioSalvoId) return;
+
+    const rel = await fetchRelatorioB2bById(usuario, relatorioSalvoId, {
+      payloadTipo: PAYLOAD_TIPO.IMPLANTACAO
+    });
+    aplicarDadosProjetosDoRelatorio(rel);
+    applyPreviewHtml();
+    schedulePassoLayoutMeasure(true);
+    await flushPreviewRefresh();
+  }
+
   function aplicarRelatorioApi(rel) {
     relatorioSalvoId = rel.id;
-    relatorioStatus = rel.status || RELATORIO_STATUS.EM_ANALISE;
-    formReadonly = relatorioStatus !== RELATORIO_STATUS.EM_ANALISE;
+    relatorioStatus = rel.status || RELATORIO_STATUS.EM_IMPLANTACAO;
+    formReadonly = relatorioStatus === RELATORIO_STATUS.FINALIZADO;
 
+    aplicarDadosProjetosDoRelatorio(rel);
     if (rel.formData) {
-      formData = normalizeFormData(rel.formData);
+      formData = normalizeResolutaFormData(rel.formData);
       projetistaUserDefaultApplied = true;
     }
+
+    expandedSections = {
+      [RESOLUTA_SECTION_ID]: !formReadonly,
+      [LISTA_MATERIAL_IMPLANTADO_SECTION_ID]: !formReadonly
+    };
 
     applyPreviewHtml();
     schedulePassoLayoutMeasure(true);
@@ -1165,16 +1272,18 @@
             })
           : Promise.resolve(null);
 
-      const [rel, logo, ondas, assinatura] = await Promise.all([
+      const [rel, logo, ondas, assinatura, assinaturaImplantacao] = await Promise.all([
         relatorioPromise,
         loadLogoDataUrl(origin),
         loadCapaOndasDataUrl(origin),
-        loadAssinaturaSupervisorDataUrl(origin)
+        loadAssinaturaSupervisorDataUrl(origin),
+        loadAssinaturaSupervisorImplantacaoDataUrl(origin)
       ]);
 
       logoDataUrl = logo;
       capaOndasDataUrl = ondas;
       assinaturaSupervisorDataUrl = assinatura;
+      assinaturaSupervisorImplantacaoDataUrl = assinaturaImplantacao;
       assetsReady = true;
 
       if (rel) {
@@ -1223,40 +1332,46 @@
     }
   }
 
-  async function persistRelatorio() {
-    if (formReadonly) return;
+  async function persistRelatorio({ finalize = false } = {}) {
+    if (formReadonly && !finalize) return;
 
     const usuario = (currentUser || '').trim();
     if (!usuario) {
       throw new Error('Usuário não identificado. Faça login novamente.');
     }
 
-    const payload = normalizeFormData(formData);
+    const payload = normalizeResolutaFormData(formData);
     const saveOptions = {
       payload,
       payloadTipo: PAYLOAD_TIPO.IMPLANTACAO,
-      status: relatorioStatus || RELATORIO_STATUS.EM_ANALISE,
+      status: finalize
+        ? RELATORIO_STATUS.FINALIZADO
+        : relatorioStatus || RELATORIO_STATUS.EM_IMPLANTACAO,
       setorOrigem: SETOR_ORIGEM.IMPLANTACAO
     };
 
     if (relatorioSalvoId) {
-      await updateRelatorioB2b(currentUser, relatorioSalvoId, saveOptions);
+      const atualizado = await updateRelatorioB2b(currentUser, relatorioSalvoId, saveOptions);
+      if (finalize) {
+        relatorioStatus = atualizado.status || RELATORIO_STATUS.FINALIZADO;
+      }
     } else {
       const criado = await createRelatorioB2b(currentUser, saveOptions);
       relatorioSalvoId = criado.id;
-      relatorioStatus = criado.status || RELATORIO_STATUS.EM_ANALISE;
+      relatorioStatus = criado.status || (finalize ? RELATORIO_STATUS.FINALIZADO : RELATORIO_STATUS.EM_ANALISE);
     }
 
     notifyRelatoriosB2bAtualizados();
   }
 
   async function handleSalvarPdf() {
-    if (savingPDF || formReadonly) return;
+    if (savingPDF || formReadonly || syncingProjetosData) return;
 
     savingPDF = true;
     pdfError = '';
 
     try {
+      await sincronizarDadosProjetos();
       await persistRelatorio();
       formSavedViaSalvarButton = true;
       syncPersistedSnapshot();
@@ -1265,6 +1380,68 @@
       pdfError = err?.message || 'Não foi possível salvar o relatório. Tente novamente.';
     } finally {
       savingPDF = false;
+    }
+  }
+
+  async function solicitarFinalizar() {
+    if (!assetsReady) {
+      pdfError = 'Aguarde o carregamento dos recursos do PDF antes de finalizar.';
+      return;
+    }
+    if (generatingPDF || savingPDF || syncingProjetosData) return;
+
+    if (formReadonly) {
+      void handleGeneratePdf();
+      return;
+    }
+
+    syncingProjetosData = true;
+    pdfError = '';
+
+    try {
+      await sincronizarDadosProjetos();
+      finalizarDialogOpen = true;
+    } catch (err) {
+      pdfError =
+        err?.message || 'Não foi possível atualizar os dados do projeto. Tente novamente.';
+    } finally {
+      syncingProjetosData = false;
+    }
+  }
+
+  function closeFinalizarDialog() {
+    if (generatingPDF) return;
+    finalizarDialogOpen = false;
+  }
+
+  async function confirmFinalizarRelatorio() {
+    if (generatingPDF || savingPDF || formReadonly) return;
+
+    generatingPDF = true;
+    pdfError = '';
+
+    try {
+      await sincronizarDadosProjetos();
+      await persistRelatorio({ finalize: true });
+      formReadonly = true;
+      formSavedViaSalvarButton = true;
+      syncPersistedSnapshot();
+      finalizarDialogOpen = false;
+
+      await flushPreviewRefresh();
+      const docTitle = getEngineeringPdfDocumentTitle(projetosFormData);
+      const printHtml = buildConstrucaoPreviewHtml();
+      const result = await printPdfHtmlNamed(printHtml, { title: docTitle });
+      if (!result.success) {
+        pdfError =
+          result.error === 'popup_blocked'
+            ? 'Relatório finalizado, mas não foi possível abrir a impressão. Permita pop-ups e tente de novo.'
+            : 'Relatório finalizado, mas não foi possível abrir a impressão. Tente novamente.';
+      }
+    } catch (err) {
+      pdfError = err?.message || 'Não foi possível finalizar o relatório. Tente novamente.';
+    } finally {
+      generatingPDF = false;
     }
   }
 
@@ -1283,8 +1460,8 @@
         await persistRelatorio();
       }
       await flushPreviewRefresh();
-      const docTitle = getEngineeringPdfDocumentTitle(formData);
-      const printHtml = buildFullPdfHtml(formData, {}, buildPreviewHtmlOptions());
+      const docTitle = getEngineeringPdfDocumentTitle(projetosFormData);
+      const printHtml = buildConstrucaoPreviewHtml();
       const result = await printPdfHtmlNamed(printHtml, { title: docTitle });
       if (!result.success) {
         pdfError =
@@ -1365,103 +1542,6 @@
         on:focusin|capture={handleFormPreviewActivity}
         on:input|capture={handleFormPreviewActivity}
       >
-        <!-- Box: Capa -->
-        <section class="form-box" class:expanded={expandedSections.capa} data-preview-anchor="capa">
-          <button
-            type="button"
-            class="form-box-header"
-            on:click={() => toggleSection('capa')}
-            aria-expanded={expandedSections.capa}
-          >
-            <span class="form-box-title">Capa</span>
-            <span class="chevron" class:open={expandedSections.capa}>▼</span>
-          </button>
-          {#if expandedSections.capa}
-            <div class="form-box-body">
-              <label class="field">
-                <span>Título</span>
-                <input
-                  type="text"
-                  bind:value={formData.capa.titulo}
-                  placeholder="Ex: Planejamento e Engenharia de Redes FTTx"
-                />
-              </label>
-              <label class="field">
-                <span>Cliente / Projeto</span>
-                <input
-                  type="text"
-                  bind:value={formData.capa.clienteProjeto}
-                  placeholder="Ex: SICRED CAMBARÁ (ENGT-46557)"
-                />
-              </label>
-              <label class="field">
-                <span>Data</span>
-                <input
-                  type="text"
-                  bind:value={formData.capa.data}
-                  placeholder="Ex: 04 de Fevereiro - 2026"
-                />
-              </label>
-              <label class="field">
-                <span>Cidade</span>
-                <input
-                  type="text"
-                  bind:value={formData.capa.cidade}
-                  placeholder="Ex: Cambará – PR"
-                />
-              </label>
-            </div>
-          {/if}
-        </section>
-
-        <!-- Box: Informações do projeto -->
-        <section class="form-box" class:expanded={expandedSections.cabecalho} data-preview-anchor="cabecalho">
-          <button
-            type="button"
-            class="form-box-header"
-            on:click={() => toggleSection('cabecalho')}
-            aria-expanded={expandedSections.cabecalho}
-          >
-            <span class="form-box-title">Informações do projeto</span>
-            <span class="chevron" class:open={expandedSections.cabecalho}>▼</span>
-          </button>
-          {#if expandedSections.cabecalho}
-            <div class="form-box-body form-box-body-cabecalho">
-              {#each cabecalhoFieldsVisible as field (field.key)}
-                <label class="field">
-                  <span>{field.label}</span>
-                  {#if field.multiline}
-                    <textarea
-                      rows="3"
-                      bind:value={formData.cabecalho[field.key]}
-                      placeholder={field.placeholder}
-                    ></textarea>
-                  {:else if field.options?.length}
-                    <input
-                      type="text"
-                      class="field-combobox"
-                      list="cabecalho-{field.key}-opcoes"
-                      bind:value={formData.cabecalho[field.key]}
-                      placeholder={field.placeholder}
-                    />
-                    <datalist id="cabecalho-{field.key}-opcoes">
-                      {#each field.options as opcao (opcao)}
-                        <option value={opcao}></option>
-                      {/each}
-                    </datalist>
-                  {:else}
-                    <input
-                      type="text"
-                      bind:value={formData.cabecalho[field.key]}
-                      placeholder={field.placeholder}
-                    />
-                  {/if}
-                </label>
-              {/each}
-            </div>
-          {/if}
-        </section>
-
         <input
           bind:this={passoImageInput}
           type="file"
@@ -1473,69 +1553,33 @@
           aria-hidden="true"
         />
 
-        {#each formData.passos as passo, passoIndex (passoIndex)}
-          {@const sectionId = passoSectionId(passoIndex)}
+        {#if formData.passos[0]}
+          {@const passo = formData.passos[0]}
+          {@const passoIndex = 0}
           {@const editorKey = descricaoEditorKey(passoIndex)}
           {@const uploadCtx = { type: 'passo', index: passoIndex }}
-          {@const isLastPasso = passoIndex === formData.passos.length - 1}
-          {@const canRemovePasso = passoIndex >= 1}
           <section
-            class="form-box"
-            class:expanded={expandedSections[sectionId]}
-            data-preview-anchor="passo"
+            class="form-box form-box-resoluta"
+            class:expanded={expandedSections[RESOLUTA_SECTION_ID]}
+            data-preview-anchor="resoluta"
             data-passo-index={passoIndex}
           >
-            <div class="form-box-header-row">
-              <button
-                type="button"
-                class="form-box-header"
-                on:click={() => toggleSection(sectionId)}
-                aria-expanded={expandedSections[sectionId]}
-              >
-                <span class="form-box-title"
-                  >Passo {passoIndex + 1}° — {passo.tituloPasso || 'XXXXX'}</span
-                >
-                <span class="chevron" class:open={expandedSections[sectionId]}>▼</span>
-              </button>
-              {#if canRemovePasso}
-                <button
-                  type="button"
-                  class="btn-remove-passo"
-                  title="Remover Passo {passoIndex + 1}°"
-                  aria-label="Remover este passo"
-                  on:click|stopPropagation={() => removePasso(passoIndex)}
-                >
-                  −
-                </button>
-              {/if}
-              {#if isLastPasso}
-                <button
-                  type="button"
-                  class="btn-add-passo"
-                  title="Adicionar Passo {passoIndex + 2}°"
-                  aria-label="Adicionar próximo passo"
-                  on:click|stopPropagation={addPasso}
-                >
-                  +
-                </button>
-              {/if}
-            </div>
-            {#if expandedSections[sectionId]}
-              <div class="form-box-body">
-                <label class="field">
-                  <span>Nome do passo (substitui XXXXX)</span>
-                  <input
-                    type="text"
-                    value={passo.tituloPasso}
-                    on:input={(e) => updatePasso(passoIndex, { tituloPasso: e.currentTarget.value })}
-                    placeholder="XXXXX"
-                  />
-                </label>
-                <label class="field">
+            <button
+              type="button"
+              class="form-box-header"
+              on:click={() => toggleSection(RESOLUTA_SECTION_ID)}
+              aria-expanded={expandedSections[RESOLUTA_SECTION_ID]}
+            >
+              <span class="form-box-title">Resoluta do Projeto</span>
+              <span class="chevron" class:open={expandedSections[RESOLUTA_SECTION_ID]}>▼</span>
+            </button>
+            {#if expandedSections[RESOLUTA_SECTION_ID]}
+            <div class="form-box-body">
+                <label class="field field-descricao-resoluta">
                   <span>Descrição</span>
                   <div
                     use:registerDescricaoEditor={{ key: editorKey }}
-                    class="rich-editor"
+                    class="rich-editor rich-editor-resoluta"
                     contenteditable="true"
                     role="textbox"
                     aria-multiline="true"
@@ -1551,15 +1595,6 @@
                       syncDescricaoEditor(passoIndex, e.currentTarget);
                     }}
                   ></div>
-                </label>
-                <label class="field">
-                  <span>Título da seção de Imagens</span>
-                  <input
-                    type="text"
-                    value={passo.tituloImagem || 'Imagem'}
-                    on:input={(e) => updatePasso(passoIndex, { tituloImagem: e.currentTarget.value })}
-                    placeholder="Imagem"
-                  />
                 </label>
                 <div class="field field-upload">
                   <div
@@ -1641,16 +1676,6 @@
                         }}
                       ></div>
                     </label>
-                    <label class="field">
-                      <span>Título da seção de Imagens</span>
-                      <input
-                        type="text"
-                        value={block.tituloImagem || 'Imagem'}
-                        on:input={(e) =>
-                          updatePassoBlocoTituloImagem(passoIndex, block.id, e.currentTarget.value)}
-                        placeholder="Imagem"
-                      />
-                    </label>
                     <div class="field field-upload">
                       <div
                         class="upload-box"
@@ -1723,119 +1748,58 @@
                   + Adicionar descrição abaixo das imagens
                 </button>
               </div>
-              {#each passoLayoutWarnings.filter((w) => w.passoIndex === passoIndex) as w (w.message)}
-                <p class="passo-layout-warning" role="status">{w.message}</p>
-              {/each}
+            {#each passoLayoutWarnings.filter((w) => w.passoIndex === passoIndex) as w (w.message)}
+              <p class="passo-layout-warning" role="status">{w.message}</p>
+            {/each}
             {/if}
           </section>
-        {/each}
 
-        <!-- Box: Lista de Material -->
-        <section class="form-box" class:expanded={expandedSections.listaMaterial} data-preview-anchor="listaMaterial">
-          <button
-            type="button"
-            class="form-box-header"
-            on:click={() => toggleSection('listaMaterial')}
-            aria-expanded={expandedSections.listaMaterial}
+          <section
+            class="form-box form-box-lista-implantado"
+            class:expanded={expandedSections[LISTA_MATERIAL_IMPLANTADO_SECTION_ID]}
+            data-preview-anchor="listaMaterialImplantado"
           >
-            <span class="form-box-title">Lista de Material</span>
-            <span class="chevron" class:open={expandedSections.listaMaterial}>▼</span>
-          </button>
-          {#if expandedSections.listaMaterial}
+            <button
+              type="button"
+              class="form-box-header"
+              on:click={() => toggleSection(LISTA_MATERIAL_IMPLANTADO_SECTION_ID)}
+              aria-expanded={expandedSections[LISTA_MATERIAL_IMPLANTADO_SECTION_ID]}
+            >
+              <span class="form-box-title">Lista de Material Implantado</span>
+              <span class="chevron" class:open={expandedSections[LISTA_MATERIAL_IMPLANTADO_SECTION_ID]}>▼</span>
+            </button>
+            {#if expandedSections[LISTA_MATERIAL_IMPLANTADO_SECTION_ID]}
             <div class="form-box-body">
               <label class="field">
                 <span>Descrição</span>
                 <div
-                  use:registerDescricaoEditor={{ key: 'material' }}
-                  class="rich-editor"
+                  use:registerDescricaoEditor={{ key: 'materialImplantado' }}
+                  class="rich-editor rich-editor-lista-implantado"
                   contenteditable="true"
                   role="textbox"
                   aria-multiline="true"
-                  data-editor="material"
-                  data-placeholder="Descrição da lista de material"
+                  data-editor="materialImplantado"
+                  data-placeholder="Descrição da lista de material implantado"
                   on:focus={() => {
-                    focusedDescricaoEditorKey = 'material';
+                    focusedDescricaoEditorKey = 'materialImplantado';
                   }}
-                  on:input={handleMaterialDescricaoInput}
+                  on:input={handleMaterialImplantadoDescricaoInput}
                   on:paste={handleDescricaoPaste}
                   on:blur={(e) => {
                     focusedDescricaoEditorKey = null;
-                    syncMaterialDescricaoEditor(e.currentTarget);
+                    syncMaterialImplantadoDescricaoEditor(e.currentTarget);
                   }}
                 ></div>
               </label>
             </div>
-          {/if}
-        </section>
-
-        <!-- Box: Anexos PDF -->
-        <section class="form-box" class:expanded={expandedSections.anexosPdf} data-preview-anchor="anexosPdf">
-          <button
-            type="button"
-            class="form-box-header"
-            on:click={() => toggleSection('anexosPdf')}
-            aria-expanded={expandedSections.anexosPdf}
-          >
-            <span class="form-box-title">Anexos PDF</span>
-            <span class="chevron" class:open={expandedSections.anexosPdf}>▼</span>
-          </button>
-          {#if expandedSections.anexosPdf}
-            <div class="form-box-body form-box-body-anexos">
-              <p class="anexos-pdf-hint">
-                Cada PDF anexado vira páginas na prévia e no PDF final, após a Lista de Material. Até
-                {MAX_ANEXO_PDF_MB} MB por arquivo (o limite é o tamanho do arquivo, não a quantidade de páginas).
-                Não é possível editar o conteúdo dos anexos.
-              </p>
-
-              {#each formData.anexosPdf as anexo, anexoIndex (anexo.id)}
-                <div class="anexo-pdf-item">
-                  <div class="anexo-pdf-item-header">
-                    <span class="anexo-pdf-item-nome" title={anexo.nome}>{anexo.nome}</span>
-                    <span class="anexo-pdf-item-meta"
-                      >{anexo.pageImages.length} página{anexo.pageImages.length === 1 ? '' : 's'}</span
-                    >
-                  </div>
-                  <button
-                    type="button"
-                    class="btn-remove-anexo"
-                    on:click={() => removeAnexoPdf(anexoIndex)}
-                  >
-                    Remover anexo
-                  </button>
-                </div>
-              {/each}
-
-              <input
-                bind:this={anexoPdfInput}
-                type="file"
-                class="file-input-hidden"
-                accept="application/pdf,.pdf"
-                on:change={handleAnexoPdfSelected}
-                tabindex="-1"
-                aria-hidden="true"
-              />
-
-              <button
-                type="button"
-                class="btn-add-anexo-pdf"
-                on:click={triggerAnexoPdfPicker}
-                disabled={processingAnexoPdf}
-              >
-                {processingAnexoPdf ? 'Processando PDF…' : '+ Adicionar PDF anexo'}
-              </button>
-            </div>
-          {/if}
-        </section>
+            {/if}
+          </section>
+        {/if}
       </div>
 
       <footer class="form-actions">
         {#if pdfError}
           <p class="pdf-error" role="alert">{pdfError}</p>
-        {/if}
-        {#if formReadonly}
-          <p class="readonly-banner" role="status">
-            Este relatório não pode mais ser editado (transferido ou finalizado).
-          </p>
         {/if}
         <div class="form-actions-buttons">
           {#if !formReadonly}
@@ -1843,18 +1807,18 @@
               type="button"
               class="btn-generate-pdf"
               on:click={handleSalvarPdf}
-              disabled={savingPDF || generatingPDF}
+              disabled={savingPDF || generatingPDF || syncingProjetosData}
             >
-              {savingPDF ? 'Salvando…' : 'Salvar PDF'}
+              {savingPDF ? 'Salvando…' : 'Salvar Relatório'}
             </button>
           {/if}
           <button
             type="button"
             class="btn-generate-pdf"
-            on:click={handleGeneratePdf}
-            disabled={generatingPDF || savingPDF || !assetsReady}
+            on:click={solicitarFinalizar}
+            disabled={generatingPDF || savingPDF || syncingProjetosData || !assetsReady}
           >
-            {generatingPDF ? 'Abrindo impressão...' : 'Gerar PDF'}
+            {generatingPDF ? 'Finalizando…' : syncingProjetosData ? 'Atualizando…' : 'Finalizar'}
           </button>
         </div>
       </footer>
@@ -1918,6 +1882,19 @@
   primaryLabel="Voltar ao Dashboard"
   on:secondary={() => (saveSuccessDialogOpen = false)}
   on:primary={() => executarVoltarParaDashboardImplantacao()}
+/>
+
+<ConfirmDialog
+  open={finalizarDialogOpen}
+  title="Finalizar Relatório"
+  message="Deseja Finalizar o Relatório?
+
+Após finalizar não será possível editar o Relatório."
+  confirmLabel="Finalizar"
+  cancelLabel="Cancelar"
+  loading={generatingPDF || syncingProjetosData}
+  on:confirm={confirmFinalizarRelatorio}
+  on:cancel={closeFinalizarDialog}
 />
 
 <ConfirmDialog
@@ -2001,7 +1978,7 @@ Tem certeza que deseja sair sem salvar o arquivo?"
     width: 4px;
   }
 
-  /* Rolagem entre os boxes (Capa, Informações, Passo 1) */
+  /* Área do formulário — box Resoluta ocupa toda a altura até os botões */
   .form-scroll {
     flex: 1;
     min-height: 0;
@@ -2038,6 +2015,53 @@ Tem certeza que deseja sair sem salvar o arquivo?"
 
   .form-box.expanded {
     max-height: min(58vh, 540px);
+  }
+
+  .form-box-resoluta {
+    flex-shrink: 0;
+  }
+
+  .form-box-lista-implantado {
+    flex-shrink: 0;
+  }
+
+  .form-box-lista-implantado .rich-editor-lista-implantado {
+    resize: vertical;
+    overflow: auto;
+    min-height: 8rem;
+    height: 12rem;
+    max-height: 50vh;
+  }
+
+  .form-box-resoluta.expanded {
+    flex: 1 1 auto;
+    min-height: 0;
+    max-height: none;
+  }
+
+  .form-box-resoluta.expanded .form-box-body {
+    flex: 1;
+    max-height: none;
+  }
+
+  .form-box-header-static {
+    cursor: default;
+  }
+
+  .form-box-header-static:hover {
+    filter: none;
+  }
+
+  .form-box-resoluta .field-descricao-resoluta {
+    flex: 0 0 auto;
+  }
+
+  .form-box-resoluta .rich-editor {
+    resize: vertical;
+    overflow: auto;
+    min-height: 8rem;
+    height: 14rem;
+    max-height: 70vh;
   }
 
   .form-box-header-row {
@@ -2460,6 +2484,7 @@ Tem certeza que deseja sair sem salvar o arquivo?"
   }
 
   .form-actions {
+    flex-shrink: 0;
     padding: 1rem;
     border-top: 1px solid #e2e8f0;
     background: #f8fafc;
