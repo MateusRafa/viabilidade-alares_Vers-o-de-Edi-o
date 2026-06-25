@@ -101,11 +101,13 @@ export async function getRelatorioById(id, { payloadTipo = PAYLOAD_TIPO.PROJETOS
   const column = payloadColumnForTipo(payloadTipo);
   const rawPayload = data[column] || {};
   const formData = await hydrateFormPayloadAssets(supabase, rawPayload);
+  const formDataProjetos = await hydrateFormPayloadAssets(supabase, data.payload_projetos || {});
 
   return {
     ...rowToListItem(data),
     payloadTipo,
     formData,
+    formDataProjetos,
     payloadProjetos: data.payload_projetos || {},
     payloadImplantacao: data.payload_implantacao || {}
   };
@@ -190,18 +192,28 @@ export async function updateRelatorio(id, { usuario, payload, payloadTipo, statu
   }
 
   if (payload && payloadTipo) {
-    if (existing.status !== RELATORIO_STATUS.EM_ANALISE) {
+    const column = payloadColumnForTipo(payloadTipo);
+    const canEditProjetosPayload =
+      existing.status === RELATORIO_STATUS.EM_ANALISE ||
+      existing.status === RELATORIO_STATUS.EM_IMPLANTACAO;
+    const canEditImplantacaoPayload =
+      existing.status === RELATORIO_STATUS.EM_IMPLANTACAO &&
+      payloadTipo === PAYLOAD_TIPO.IMPLANTACAO;
+
+    if (!canEditProjetosPayload && !canEditImplantacaoPayload) {
       const err = new Error('Relatório não pode ser editado neste status.');
       err.statusCode = 403;
       throw err;
     }
 
-    const meta = extractSearchMetaFromPayload(payload);
-    patch.titulo = meta.titulo;
-    patch.cliente_projeto = meta.cliente_projeto;
-    patch.cidade = meta.cidade;
-    patch.projetista = meta.projetista;
-    const column = payloadColumnForTipo(payloadTipo);
+    if (payloadTipo === PAYLOAD_TIPO.PROJETOS) {
+      const meta = extractSearchMetaFromPayload(payload);
+      patch.titulo = meta.titulo;
+      patch.cliente_projeto = meta.cliente_projeto;
+      patch.cidade = meta.cidade;
+      patch.projetista = meta.projetista;
+    }
+
     patch[column] = await persistFormPayloadAssets(supabase, id, payload);
   }
 
