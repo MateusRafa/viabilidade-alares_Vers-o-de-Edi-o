@@ -8442,11 +8442,26 @@
   .viabilidade-content.embedded {
     height: 100%;
     min-height: 0;
+    width: 100%;
+    max-width: 100%;
   }
 
   .viabilidade-content.embedded .main-layout {
     height: 100%;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
     padding-bottom: 1rem;
+  }
+
+  .viabilidade-content.workbench-mode .search-panel {
+    min-width: 0 !important;
+    width: min(100%, 300px) !important;
+    max-width: 100% !important;
+  }
+
+  .viabilidade-content.workbench-mode .main-layout {
+    overflow: hidden;
   }
 
   .viabilidade-content.embedded .main-area {
