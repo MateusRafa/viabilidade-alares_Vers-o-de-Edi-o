@@ -285,20 +285,11 @@
 </script>
 
 <div class="workbench">
-  <header class="wb-header">
-    <div class="wb-title-wrap">
-      <h1>Preencher Relatório</h1>
-      {#if chamado?.pedido}
-        <span class="wb-pedido">Pedido {chamado.pedido}</span>
-      {/if}
+  {#if chamado?.pedido}
+    <div class="wb-pedido-bar">
+      <span class="wb-pedido">Pedido {chamado.pedido}</span>
     </div>
-    <div class="wb-header-actions">
-      {#if statusMsg}
-        <span class="wb-status">{statusMsg}</span>
-      {/if}
-      <button type="button" class="wb-close" on:click={fecharWorkbench} aria-label="Fechar">×</button>
-    </div>
-  </header>
+  {/if}
 
   {#if error}
     <p class="wb-error" role="alert">{error}</p>
@@ -403,56 +394,19 @@
     color: #1f2937;
   }
 
-  .wb-header {
+  .wb-pedido-bar {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: 1rem;
-    padding: 0.85rem 1rem;
-    background: linear-gradient(135deg, #7b68ee 0%, #6495ed 100%);
-    color: #fff;
+    padding: 0.45rem 1rem;
+    background: #f3f4f8;
+    border-bottom: 1px solid #e5e7eb;
     flex-shrink: 0;
-  }
-
-  .wb-title-wrap {
-    display: flex;
-    align-items: baseline;
-    gap: 0.75rem;
-    min-width: 0;
-  }
-
-  .wb-header h1 {
-    margin: 0;
-    font-size: 1.05rem;
-    font-weight: 700;
   }
 
   .wb-pedido {
     font-size: 0.82rem;
-    opacity: 0.92;
-  }
-
-  .wb-header-actions {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-  }
-
-  .wb-status {
-    font-size: 0.78rem;
-    opacity: 0.95;
-  }
-
-  .wb-close {
-    border: none;
-    background: rgba(255, 255, 255, 0.18);
-    color: #fff;
-    width: 32px;
-    height: 32px;
-    border-radius: 8px;
-    font-size: 1.4rem;
-    line-height: 1;
-    cursor: pointer;
+    font-weight: 700;
+    color: #4c1d95;
   }
 
   .wb-error {
