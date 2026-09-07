@@ -369,6 +369,7 @@
               <svelte:component
                 this={ViabilidadeAlares}
                 embedded={true}
+                workbenchMode={true}
                 mapDomId="censup-workbench-map"
                 currentUser={usuario}
                 initialAddress={mapAddress}
