@@ -299,27 +299,27 @@
     <aside class="wb-form-pane">
       <form class="wb-form" on:submit|preventDefault={salvarRelatorio}>
         <label>
-          <span>1. Número do ALA *</span>
+          <span>1. Número do ALA</span>
           <input bind:value={form.numeroALA} inputmode="numeric" placeholder="Digite apenas números" />
         </label>
         <label>
-          <span>2. Cidade *</span>
+          <span>2. Cidade</span>
           <input bind:value={form.cidade} />
         </label>
         <label>
-          <span>3. Endereço Completo *</span>
+          <span>3. Endereço Completo</span>
           <input bind:value={form.enderecoCompleto} />
         </label>
         <label>
-          <span>4. Número do Endereço *</span>
+          <span>4. Número do Endereço</span>
           <input bind:value={form.numeroEndereco} />
         </label>
         <label>
-          <span>5. CEP do Endereço *</span>
+          <span>5. CEP do Endereço</span>
           <input bind:value={form.cep} />
         </label>
         <label>
-          <span>6. Tabulação Final *</span>
+          <span>6. Tabulação Final</span>
           <select bind:value={form.tabulacaoFinal}>
             <option value="">Selecione uma opção</option>
             {#each tabulacoes as tab}
@@ -334,7 +334,7 @@
           {/if}
         </label>
         <label>
-          <span>7. Projetista *</span>
+          <span>7. Projetista</span>
           <input bind:value={form.projetista} readonly />
         </label>
 
@@ -350,7 +350,6 @@
     </aside>
 
     <section class="wb-map-pane">
-      <div class="wb-map-label">8. Mapa interativo *</div>
       {#if loading}
         <div class="wb-map-placeholder">Carregando mapa…</div>
       {:else if mapAddress || (mapLat != null && mapLng != null)}
@@ -379,7 +378,6 @@
             : 'Informe o usuário no painel ao lado para iniciar.'}
         </div>
       {/if}
-      <p class="wb-map-hint">Mapa arrastável e editável — ajuste rotas/CTOs se necessário.</p>
     </section>
   </div>
 </div>
@@ -389,7 +387,9 @@
     display: flex;
     flex-direction: column;
     width: 100%;
+    max-width: 100%;
     height: 100%;
+    overflow: hidden;
     background: #ffffff;
     color: #1f2937;
   }
@@ -421,29 +421,34 @@
   .wb-body {
     flex: 1;
     min-height: 0;
+    width: 100%;
+    max-width: 100%;
     display: grid;
-    grid-template-columns: minmax(300px, 380px) 1fr;
+    grid-template-columns: minmax(0, 300px) minmax(0, 1fr);
     gap: 0;
+    overflow: hidden;
   }
 
   .wb-form-pane {
     border-right: 1px solid #e5e7eb;
     overflow: auto;
-    padding: 0.9rem 1rem 1.25rem;
+    padding: 0.55rem 0.65rem 0.75rem;
     background: #fafbff;
+    min-width: 0;
+    max-width: 100%;
   }
 
   .wb-form {
     display: flex;
     flex-direction: column;
-    gap: 0.75rem;
+    gap: 0.4rem;
   }
 
   .wb-form label {
     display: flex;
     flex-direction: column;
-    gap: 0.3rem;
-    font-size: 0.78rem;
+    gap: 0.18rem;
+    font-size: 0.68rem;
     font-weight: 600;
     color: #374151;
   }
@@ -451,12 +456,14 @@
   .wb-form input,
   .wb-form select {
     border: 1px solid #d1d5db;
-    border-radius: 8px;
-    padding: 0.55rem 0.65rem;
-    font-size: 0.88rem;
+    border-radius: 6px;
+    padding: 0.32rem 0.45rem;
+    font-size: 0.75rem;
     font-weight: 500;
+    line-height: 1.25;
     color: #111827;
     background: #fff;
+    min-height: 1.7rem;
   }
 
   .wb-form input[readonly] {
@@ -464,6 +471,7 @@
   }
 
   .hint {
+    font-size: 0.62rem;
     font-weight: 500;
     color: #7b68ee;
   }
@@ -471,16 +479,16 @@
   .wb-actions {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.5rem;
-    margin-top: 0.5rem;
+    gap: 0.35rem;
+    margin-top: 0.25rem;
   }
 
   .btn-primary,
   .btn-secondary {
     border: none;
-    border-radius: 8px;
-    padding: 0.65rem 0.9rem;
-    font-size: 0.85rem;
+    border-radius: 6px;
+    padding: 0.4rem 0.65rem;
+    font-size: 0.72rem;
     font-weight: 600;
     cursor: pointer;
   }
@@ -506,21 +514,14 @@
     min-height: 0;
     display: flex;
     flex-direction: column;
-    padding: 0.75rem;
+    padding: 0.45rem;
     background: #eef1f8;
-  }
-
-  .wb-map-label {
-    font-size: 0.78rem;
-    font-weight: 600;
-    color: #374151;
-    margin-bottom: 0.4rem;
   }
 
   .wb-map-host {
     flex: 1;
     min-height: 0;
-    border-radius: 12px;
+    border-radius: 10px;
     overflow: hidden;
     border: 1px solid #d1d5db;
     background: #fff;
@@ -528,7 +529,21 @@
 
   .wb-map-host :global(.viabilidade-content.embedded) {
     height: 100%;
-    min-height: 420px;
+    min-height: 0;
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .wb-map-host :global(.viabilidade-content.embedded .main-layout) {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+  }
+
+  .wb-map-host :global(.viabilidade-content.embedded .search-panel) {
+    min-width: 0 !important;
+    width: min(100%, 320px) !important;
+    max-width: 100% !important;
   }
 
   .wb-map-placeholder {
@@ -536,29 +551,25 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    border-radius: 12px;
+    border-radius: 10px;
     border: 1px dashed #cbd5e1;
     color: #64748b;
     background: #fff;
+    padding: 1rem;
+    text-align: center;
+    font-size: 0.8rem;
   }
 
-  .wb-map-hint {
-    margin: 0.45rem 0 0;
-    font-size: 0.72rem;
-    color: #6b7280;
-    font-style: italic;
-  }
-
-  @media (max-width: 900px) {
+  @media (max-width: 640px) {
     .wb-body {
       grid-template-columns: 1fr;
-      grid-template-rows: auto 1fr;
+      grid-template-rows: minmax(180px, 40%) minmax(0, 1fr);
     }
 
     .wb-form-pane {
       border-right: none;
       border-bottom: 1px solid #e5e7eb;
-      max-height: 42vh;
+      max-height: none;
     }
   }
 </style>
