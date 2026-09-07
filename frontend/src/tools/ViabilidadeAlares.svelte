@@ -16,6 +16,12 @@
   export let onSettingsRequest = null; // Callback para quando configurações são solicitadas
   /** Quando true, roda embutida (ex.: Portal CENSUP) sem tela cheia própria. */
   export let embedded = false;
+  /**
+   * Layout exclusivo do Workbench (extensão Agenda).
+   * Use sempre com embedded=true. Nunca altere o visual padrão
+   * do Viabilidade Alares fora de blocos class:workbench-mode / if workbenchMode.
+   */
+  export let workbenchMode = false;
   /** Endereço inicial para busca automática (modo embutido). */
   export let initialAddress = '';
   /** Latitude inicial (modo embutido). */
@@ -7136,12 +7142,12 @@
 
 <!-- Tela de Loading -->
 {#if isLoading}
-  <div class="loading-fullscreen" class:embedded class:theme-dark={isDarkTheme}>
+  <div class="loading-fullscreen" class:embedded class:workbench-mode={workbenchMode} class:theme-dark={isDarkTheme}>
     <Loading currentMessage={loadingMessage} />
   </div>
 {:else}
 <!-- Conteúdo da Ferramenta de Viabilidade -->
-<div class="viabilidade-content" class:embedded class:theme-dark={isDarkTheme}>
+<div class="viabilidade-content" class:embedded class:workbench-mode={workbenchMode} class:theme-dark={isDarkTheme}>
   <div class="main-layout">
     <!-- Painel de Busca -->
     <aside class="search-panel" class:minimized={isSearchPanelMinimized} style="width: {isSearchPanelMinimized ? '60px' : sidebarWidthStyle} !important; flex: 0 0 auto;">
@@ -8453,6 +8459,23 @@
     inset: 0;
     width: 100%;
     height: 100%;
+  }
+
+  /*
+   * ============================================================
+   * WORKBENCH ONLY — extensão Agenda (workbenchMode=true)
+   * Alterações de mapa / tabela de equipamentos ficam AQUI.
+   * O Viabilidade Alares standalone e o Portal (embedded sem
+   * workbenchMode) NÃO usam estas regras.
+   * ============================================================
+   */
+  .viabilidade-content.workbench-mode .map-container {
+    /* ex.: min-height / flex do mapa só no Workbench */
+  }
+
+  .viabilidade-content.workbench-mode .results-table-container,
+  .viabilidade-content.workbench-mode .empty-state {
+    /* ex.: altura / colunas / tipografia da tabela só no Workbench */
   }
 
   .tabulacao-container {
