@@ -416,10 +416,12 @@
     flex-direction: column;
     width: 100%;
     max-width: 100%;
+    min-width: 0;
     height: 100%;
     overflow: hidden;
     background: #eef1f8;
     color: #1f2937;
+    box-sizing: border-box;
   }
 
   .wb-error {
@@ -429,11 +431,13 @@
     color: #b91c1c;
     font-size: 0.85rem;
     flex-shrink: 0;
+    box-sizing: border-box;
   }
 
   .wb-body {
     flex: 1;
     min-height: 0;
+    min-width: 0;
     width: 100%;
     max-width: 100%;
     display: flex;
@@ -442,14 +446,18 @@
     padding: 0.45rem;
     overflow: hidden;
     background: #eef1f8;
+    box-sizing: border-box;
   }
 
   .wb-form-pane {
     flex: 0 1 auto;
+    align-self: stretch;
+    width: auto;
     min-width: 0;
     max-width: 100%;
     max-height: 48%;
-    overflow: auto;
+    overflow-x: hidden;
+    overflow-y: auto;
     display: flex;
     flex-direction: column;
     gap: 0.4rem;
@@ -458,6 +466,7 @@
     border: 1px solid #d1d5db;
     border-radius: 10px;
     box-shadow: none;
+    box-sizing: border-box;
   }
 
   .wb-form-pane.minimized {
@@ -473,14 +482,17 @@
     justify-content: space-between;
     gap: 0.35rem;
     flex-shrink: 0;
+    min-width: 0;
     min-height: 28px;
     padding: 0.3rem 0.45rem;
+    box-sizing: border-box;
   }
 
   .wb-form-pane.minimized .wb-form-toolbar {
     flex-direction: row;
     justify-content: space-between;
     width: 100%;
+    max-width: 100%;
   }
 
   .wb-form-toolbar-title {
@@ -488,6 +500,10 @@
     font-weight: 700;
     color: #7b68ee;
     line-height: 1.2;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .wb-form-pane.minimized .wb-form-toolbar-title {
@@ -511,6 +527,7 @@
     align-items: center;
     justify-content: center;
     flex-shrink: 0;
+    box-sizing: border-box;
   }
 
   .wb-pane-toggle:hover {
@@ -593,28 +610,40 @@
 
   .wb-map-pane {
     flex: 1 1 auto;
+    align-self: stretch;
     min-width: 0;
     min-height: 0;
+    width: auto;
+    max-width: 100%;
     display: flex;
     flex-direction: column;
     padding: 0;
     background: transparent;
+    box-sizing: border-box;
+    overflow: hidden;
   }
 
   .wb-map-host {
     flex: 1;
+    min-width: 0;
     min-height: 0;
+    width: 100%;
+    max-width: 100%;
     border-radius: 0;
     overflow: hidden;
     border: none;
     background: transparent;
+    box-sizing: border-box;
   }
 
   .wb-map-host :global(.viabilidade-content.embedded) {
     height: 100%;
     min-height: 0;
+    min-width: 0;
     width: 100%;
     max-width: 100%;
+    box-sizing: border-box;
+    overflow: hidden;
   }
 
   .wb-map-host :global(.viabilidade-content.workbench-mode .main-layout) {
@@ -623,6 +652,8 @@
     min-width: 0;
     height: 100%;
     padding: 0;
+    box-sizing: border-box;
+    overflow: hidden;
   }
 
   .wb-map-host :global(.viabilidade-content.workbench-mode .search-panel),
@@ -636,7 +667,18 @@
     flex-direction: column;
     height: 100%;
     min-height: 0;
+    min-width: 0;
+    max-width: 100%;
     overflow: hidden;
+    box-sizing: border-box;
+  }
+
+  .wb-map-host :global(.viabilidade-content.workbench-mode .results-table-container),
+  .wb-map-host :global(.viabilidade-content.workbench-mode .empty-state),
+  .wb-map-host :global(.viabilidade-content.workbench-mode .map-container) {
+    max-width: 100% !important;
+    min-width: 0 !important;
+    box-sizing: border-box !important;
   }
 
   .wb-map-placeholder {
