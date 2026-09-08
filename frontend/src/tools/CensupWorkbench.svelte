@@ -285,12 +285,6 @@
 </script>
 
 <div class="workbench">
-  {#if chamado?.pedido}
-    <div class="wb-pedido-bar">
-      <span class="wb-pedido">Pedido {chamado.pedido}</span>
-    </div>
-  {/if}
-
   {#if error}
     <p class="wb-error" role="alert">{error}</p>
   {/if}
@@ -392,21 +386,6 @@
     overflow: hidden;
     background: #ffffff;
     color: #1f2937;
-  }
-
-  .wb-pedido-bar {
-    display: flex;
-    align-items: center;
-    padding: 0.45rem 1rem;
-    background: #f3f4f8;
-    border-bottom: 1px solid #e5e7eb;
-    flex-shrink: 0;
-  }
-
-  .wb-pedido {
-    font-size: 0.82rem;
-    font-weight: 700;
-    color: #4c1d95;
   }
 
   .wb-error {
