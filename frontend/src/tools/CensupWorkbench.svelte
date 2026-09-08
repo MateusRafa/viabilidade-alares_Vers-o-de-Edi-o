@@ -34,9 +34,18 @@
     projetista: ''
   };
 
-  $: mapLat = chamado?.localizacao?.lat ?? chamado?.mapaCoords?.lat ?? null;
-  $: mapLng = chamado?.localizacao?.lng ?? chamado?.mapaCoords?.lng ?? null;
   $: mapAddress = form.enderecoCompleto || chamado?.endereco?.completo || '';
+  $: originalMapAddress = chamado?.endereco?.completo || '';
+  // Se o usuário editar o endereço, prioriza geocode por texto (não as coords antigas)
+  $: addressWasEdited =
+    !!(form.enderecoCompleto || '').trim() &&
+    (form.enderecoCompleto || '').trim() !== (originalMapAddress || '').trim();
+  $: mapLat = addressWasEdited
+    ? null
+    : chamado?.localizacao?.lat ?? chamado?.mapaCoords?.lat ?? null;
+  $: mapLng = addressWasEdited
+    ? null
+    : chamado?.localizacao?.lng ?? chamado?.mapaCoords?.lng ?? null;
 
   function postToParent(type, payload = {}) {
     try {
@@ -347,7 +356,7 @@
       {#if loading}
         <div class="wb-map-placeholder">Carregando mapa…</div>
       {:else if mapAddress || (mapLat != null && mapLng != null)}
-        {#key `${chamadoId}:${mapLat ?? ''}:${mapLng ?? ''}:${mapAddress}`}
+        {#key chamadoId || 'sem-chamado'}
           <div class="wb-map-host">
             {#if ViabilidadeAlares}
               <svelte:component
@@ -500,10 +509,10 @@
   .wb-map-host {
     flex: 1;
     min-height: 0;
-    border-radius: 10px;
+    border-radius: 0;
     overflow: hidden;
-    border: 1px solid #d1d5db;
-    background: #fff;
+    border: none;
+    background: transparent;
   }
 
   .wb-map-host :global(.viabilidade-content.embedded) {
