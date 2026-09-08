@@ -25,6 +25,10 @@
   let tabulacoes = [];
   let sugeridaOriginal = '';
   let formMinimized = false;
+  /** Coords da casinha (mapa) — evita re-geocode por texto ao sync do form. */
+  let pinCoords = null;
+  let reanaliseTimer = null;
+  let reanalyzing = false;
 
   let form = {
     numeroALA: '',
@@ -32,22 +36,38 @@
     enderecoCompleto: '',
     numeroEndereco: '',
     cep: '',
+    coordenadas: '',
     tabulacaoFinal: '',
     projetista: ''
   };
 
   $: mapAddress = form.enderecoCompleto || chamado?.endereco?.completo || '';
   $: originalMapAddress = chamado?.endereco?.completo || '';
-  // Se o usuário editar o endereço, prioriza geocode por texto (não as coords antigas)
+  // Edição manual do texto (sem pin da casinha) → geocode por endereço
   $: addressWasEdited =
+    pinCoords == null &&
     !!(form.enderecoCompleto || '').trim() &&
     (form.enderecoCompleto || '').trim() !== (originalMapAddress || '').trim();
-  $: mapLat = addressWasEdited
-    ? null
-    : chamado?.localizacao?.lat ?? chamado?.mapaCoords?.lat ?? null;
-  $: mapLng = addressWasEdited
-    ? null
-    : chamado?.localizacao?.lng ?? chamado?.mapaCoords?.lng ?? null;
+  $: mapLat =
+    pinCoords?.lat ??
+    (addressWasEdited ? null : chamado?.localizacao?.lat ?? chamado?.mapaCoords?.lat ?? null);
+  $: mapLng =
+    pinCoords?.lng ??
+    (addressWasEdited ? null : chamado?.localizacao?.lng ?? chamado?.mapaCoords?.lng ?? null);
+
+  function formatCoords(lat, lng) {
+    if (lat == null || lng == null || Number.isNaN(Number(lat)) || Number.isNaN(Number(lng))) {
+      return '';
+    }
+    return `${Number(lat).toFixed(6)}, ${Number(lng).toFixed(6)}`;
+  }
+
+  function coordsFromChamado(item) {
+    const lat = item?.localizacao?.lat ?? item?.mapaCoords?.lat ?? null;
+    const lng = item?.localizacao?.lng ?? item?.mapaCoords?.lng ?? null;
+    if (lat == null || lng == null) return null;
+    return { lat: Number(lat), lng: Number(lng) };
+  }
 
   function postToParent(type, payload = {}) {
     try {
@@ -66,21 +86,110 @@
 
   function fillFormFromChamado(item) {
     const end = item?.endereco || {};
+    const coords = coordsFromChamado(item);
     form = {
       numeroALA: String(item?.pedido || '').replace(/\D/g, ''),
       cidade: end.cidade || item?.cidade || '',
       enderecoCompleto: end.completo || '',
       numeroEndereco: end.numero || '',
       cep: end.cep || '',
+      coordenadas: coords ? formatCoords(coords.lat, coords.lng) : form.coordenadas || '',
       tabulacaoFinal: item?.tabulacaoFinal || '',
       projetista: usuario || item?.viabilidadeResumo?.projetista || ''
     };
+    if (coords) pinCoords = coords;
     sugeridaOriginal = item?.tabulacaoFinal || item?.analiseIa?.tabulacaoSugerida || '';
+  }
+
+  /** Usuário digitou no endereço — solta o pin para o mapa poder geocodificar o texto. */
+  function onEnderecoManualInput() {
+    pinCoords = null;
+  }
+
+  /**
+   * Callback da Viabilidade (casinha): atualiza Informações + CEP do mapa + coords
+   * e reanalisa tabulação com as novas coordenadas.
+   */
+  function onClientLocationFromMap(payload = {}) {
+    const coords = payload.coords || {};
+    const address = payload.address || {};
+    const lat = Number(coords.lat);
+    const lng = Number(coords.lng);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+
+    pinCoords = { lat, lng };
+    form.coordenadas = formatCoords(lat, lng);
+
+    if (address.enderecoCompleto) {
+      form.enderecoCompleto = address.enderecoCompleto;
+    }
+    if (address.cidade) {
+      form.cidade = address.cidade;
+    }
+    if (address.numero) {
+      form.numeroEndereco = address.numero;
+    }
+    // CEP do geocode do mapa (mais confiável que o da Agenda)
+    if (address.cep) {
+      form.cep = address.cep;
+    }
+
+    form = form; // reatividade
+    scheduleReanaliseTabulacao();
+  }
+
+  function scheduleReanaliseTabulacao() {
+    if (!chamadoId || !usuario || !pinCoords) return;
+    if (reanaliseTimer) clearTimeout(reanaliseTimer);
+    reanaliseTimer = setTimeout(() => {
+      void reanalisarTabulacaoAposCasinha();
+    }, 900);
+  }
+
+  async function reanalisarTabulacaoAposCasinha() {
+    if (!chamadoId || !usuario || !pinCoords) return;
+    reanalyzing = true;
+    statusMsg = 'Recalculando tabulação pela nova posição…';
+    try {
+      const analyzed = await analisarPortalCensupChamado(usuario, chamadoId, {
+        force: true,
+        lat: pinCoords.lat,
+        lng: pinCoords.lng,
+        endereco: {
+          completo: form.enderecoCompleto || undefined,
+          cidade: form.cidade || undefined,
+          numero: form.numeroEndereco || undefined,
+          cep: form.cep || undefined
+        }
+      });
+      if (analyzed?.chamado) {
+        chamado = analyzed.chamado;
+        const tab =
+          chamado.tabulacaoFinal ||
+          chamado.analiseIa?.tabulacaoSugerida ||
+          '';
+        if (tab) {
+          form.tabulacaoFinal = tab;
+          sugeridaOriginal = chamado.analiseIa?.tabulacaoSugerida || tab;
+        }
+        // Mantém endereço/CEP/coords já vindos do mapa (não sobrescrever com Agenda)
+        const end = chamado.endereco || {};
+        if (!form.cep && end.cep) form.cep = end.cep;
+        form = form;
+      }
+      statusMsg = 'Tabulação atualizada pela posição da casinha';
+    } catch (err) {
+      console.warn('[Workbench] Reanálise:', err?.message || err);
+      statusMsg = 'Posição atualizada (falha ao recalcular tabulação)';
+    } finally {
+      reanalyzing = false;
+    }
   }
 
   async function loadChamado(id) {
     loading = true;
     error = '';
+    pinCoords = null;
     statusMsg = 'Carregando chamado…';
     try {
       chamado = await fetchPortalCensupChamadoById(usuario, id);
@@ -129,6 +238,7 @@
         enderecoCompleto: seed.enderecoCompleto || seed.endereco?.completo || '',
         numeroEndereco: seed.numeroEndereco || seed.endereco?.numero || '',
         cep: seed.cep || seed.endereco?.cep || '',
+        coordenadas: form.coordenadas || '',
         tabulacaoFinal: seed.tabulacaoFinal || '',
         projetista: usuario || seed.projetista || ''
       };
@@ -159,6 +269,9 @@
       enderecoCompleto: form.enderecoCompleto.trim(),
       numeroEndereco: form.numeroEndereco.trim(),
       cep: form.cep.trim(),
+      coordenadas: (form.coordenadas || '').trim(),
+      latitude: pinCoords?.lat ?? null,
+      longitude: pinCoords?.lng ?? null,
       tabulacaoFinal: form.tabulacaoFinal.trim(),
       projetista: form.projetista.trim(),
       tabulacaoSugeridaOriginal: sugeridaOriginal || null
@@ -284,6 +397,7 @@
 
   onDestroy(() => {
     window.removeEventListener('message', onMessage);
+    if (reanaliseTimer) clearTimeout(reanaliseTimer);
   });
 </script>
 
@@ -328,7 +442,7 @@
         </label>
         <label>
           <span>3. Endereço Completo</span>
-          <input bind:value={form.enderecoCompleto} />
+          <input bind:value={form.enderecoCompleto} on:input={onEnderecoManualInput} />
         </label>
         <label>
           <span>4. Número do Endereço</span>
@@ -336,10 +450,14 @@
         </label>
         <label>
           <span>5. CEP do Endereço</span>
-          <input bind:value={form.cep} />
+          <input bind:value={form.cep} placeholder="Preenchido pelo mapa quando disponível" />
         </label>
         <label>
-          <span>6. Tabulação Final</span>
+          <span>6. Coordenadas (Lat/Lon)</span>
+          <input bind:value={form.coordenadas} readonly placeholder="Ajuste a casinha no mapa" />
+        </label>
+        <label>
+          <span>7. Tabulação Final</span>
           <select bind:value={form.tabulacaoFinal}>
             <option value="">Selecione uma opção</option>
             {#each tabulacoes as tab}
@@ -350,11 +468,15 @@
             {/if}
           </select>
           {#if sugeridaOriginal}
-            <small class="hint">Sugestão automática: {sugeridaOriginal}</small>
+            <small class="hint">
+              Sugestão automática: {sugeridaOriginal}{reanalyzing ? ' (recalculando…)' : ''}
+            </small>
+          {:else if reanalyzing}
+            <small class="hint">Recalculando tabulação…</small>
           {/if}
         </label>
         <label>
-          <span>7. Projetista</span>
+          <span>8. Projetista</span>
           <input bind:value={form.projetista} readonly />
         </label>
 
@@ -387,6 +509,7 @@
                 initialAddress={mapAddress}
                 initialLat={mapLat}
                 initialLng={mapLng}
+                onClientLocationChange={onClientLocationFromMap}
               />
             {:else}
               <div class="wb-map-placeholder">Carregando mapa…</div>
