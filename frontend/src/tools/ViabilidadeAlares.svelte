@@ -1745,8 +1745,22 @@
   // Inicializar ferramenta quando o componente é montado
   onMount(async () => {
     try {
+      // Workbench (extensão): só mapa + tabela — sem painel de busca
+      if (workbenchMode) {
+        isSearchPanelMinimized = true;
+        isMapMinimized = false;
+        isListMinimized = false;
+      }
+
       // Carregar preferências de redimensionamento
       loadResizePreferences();
+
+      // Preferências locais não podem quebrar o layout do Workbench
+      if (workbenchMode) {
+        isSearchPanelMinimized = true;
+        isMapMinimized = false;
+        isListMinimized = false;
+      }
       
       // Adicionar handler para Ctrl+C
       document.addEventListener('keydown', handleCopyKeydown);
@@ -8454,16 +8468,6 @@
     padding-bottom: 1rem;
   }
 
-  .viabilidade-content.workbench-mode .search-panel {
-    min-width: 0 !important;
-    width: min(100%, 300px) !important;
-    max-width: 100% !important;
-  }
-
-  .viabilidade-content.workbench-mode .main-layout {
-    overflow: hidden;
-  }
-
   .viabilidade-content.embedded .main-area {
     height: 100%;
     overflow-y: auto;
@@ -8479,18 +8483,103 @@
   /*
    * ============================================================
    * WORKBENCH ONLY — extensão Agenda (workbenchMode=true)
-   * Alterações de mapa / tabela de equipamentos ficam AQUI.
-   * O Viabilidade Alares standalone e o Portal (embedded sem
-   * workbenchMode) NÃO usam estas regras.
+   * Só mapa (em cima) + tabela de equipamentos (embaixo).
+   * Painel de busca escondido — coords/endereço vêm do Workbench.
+   * Standalone e Portal (sem workbenchMode) não usam estas regras.
    * ============================================================
    */
+  .viabilidade-content.workbench-mode {
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
+    background: #ffffff;
+  }
+
+  .viabilidade-content.workbench-mode .main-layout {
+    display: flex !important;
+    flex-direction: column !important;
+    height: 100% !important;
+    min-height: 0 !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    padding: 0 !important;
+    gap: 0 !important;
+    overflow: hidden !important;
+  }
+
+  .viabilidade-content.workbench-mode .search-panel,
+  .viabilidade-content.workbench-mode .resize-handle-vertical {
+    display: none !important;
+  }
+
+  .viabilidade-content.workbench-mode .main-area {
+    display: flex !important;
+    flex-direction: column !important;
+    flex: 1 1 auto !important;
+    min-height: 0 !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    height: 100% !important;
+    overflow: hidden !important;
+    gap: 0.5rem !important;
+    padding: 0.35rem !important;
+  }
+
   .viabilidade-content.workbench-mode .map-container {
-    /* ex.: min-height / flex do mapa só no Workbench */
+    flex: 1 1 58% !important;
+    min-height: 180px !important;
+    max-height: none !important;
+    height: auto !important;
+    width: 100% !important;
+    margin: 0 !important;
+    overflow: hidden !important;
+    display: flex !important;
+    flex-direction: column !important;
+  }
+
+  .viabilidade-content.workbench-mode .map-container.minimized {
+    flex: 0 0 auto !important;
+    min-height: 44px !important;
+  }
+
+  .viabilidade-content.workbench-mode .map-container .map {
+    flex: 1 1 auto !important;
+    min-height: 140px !important;
+    height: 100% !important;
+  }
+
+  .viabilidade-content.workbench-mode .map-container .minimize-button,
+  .viabilidade-content.workbench-mode .results-table-container .minimize-button,
+  .viabilidade-content.workbench-mode .empty-state .minimize-button,
+  .viabilidade-content.workbench-mode .resize-handle-horizontal {
+    display: none !important;
   }
 
   .viabilidade-content.workbench-mode .results-table-container,
   .viabilidade-content.workbench-mode .empty-state {
-    /* ex.: altura / colunas / tipografia da tabela só no Workbench */
+    flex: 0 1 42% !important;
+    min-height: 140px !important;
+    max-height: 46% !important;
+    height: auto !important;
+    width: 100% !important;
+    margin: 0 !important;
+    overflow: auto !important;
+  }
+
+  .viabilidade-content.workbench-mode .results-table-container.minimized,
+  .viabilidade-content.workbench-mode .empty-state.minimized {
+    flex: 0 0 auto !important;
+    min-height: 44px !important;
+    max-height: none !important;
+  }
+
+  .viabilidade-content.workbench-mode .tabulacao-container {
+    display: none !important;
+  }
+
+  .viabilidade-content.workbench-mode .map-header h3,
+  .viabilidade-content.workbench-mode .table-header h3 {
+    font-size: 0.85rem !important;
   }
 
   .tabulacao-container {
