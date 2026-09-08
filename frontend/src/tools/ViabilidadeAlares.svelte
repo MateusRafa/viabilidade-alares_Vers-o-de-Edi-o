@@ -7728,12 +7728,18 @@
 
       <!-- Tabela de Resultados -->
       {#if ctosRua.length > 0}
-        <div class="results-table-container" class:minimized={isListMinimized} style="flex: {isListMinimized ? '0 0 auto' : '1 1 auto'}; min-height: {isListMinimized ? '60px' : '200px'};">
+        <div
+          class="results-table-container"
+          class:minimized={isListMinimized}
+          style={workbenchMode
+            ? undefined
+            : `flex: ${isListMinimized ? '0 0 auto' : '1 1 auto'}; min-height: ${isListMinimized ? '60px' : '200px'};`}
+        >
           <div class="table-header">
             {#if !workbenchMode}
               <h3>Tabela de Equipamentos Encontrados - {ctosRua.length} Equipamentos Encontrados</h3>
             {:else}
-              <span class="workbench-table-spacer" aria-hidden="true"></span>
+              <span class="workbench-table-label">Equipamentos</span>
             {/if}
             <div class="table-header-buttons">
               <button 
@@ -7742,17 +7748,17 @@
                 on:click={async () => {
                   isListMinimized = !isListMinimized;
                   
-                  // Limpar estilos inline para respeitar o estado reativo
-                  const listElement = document.querySelector('.results-table-container, .empty-state');
-                  if (listElement) {
-                    if (isListMinimized) {
-                      // Quando minimizar, garantir que os estilos inline sejam removidos
-                      listElement.style.flex = '';
-                      listElement.style.minHeight = '';
-                    } else {
-                      // Quando expandir, aplicar estilos padrão
-                      listElement.style.flex = '1 1 auto';
-                      listElement.style.minHeight = '200px';
+                  if (!workbenchMode) {
+                    // Limpar estilos inline para respeitar o estado reativo
+                    const listElement = document.querySelector('.results-table-container, .empty-state');
+                    if (listElement) {
+                      if (isListMinimized) {
+                        listElement.style.flex = '';
+                        listElement.style.minHeight = '';
+                      } else {
+                        listElement.style.flex = '1 1 auto';
+                        listElement.style.minHeight = '200px';
+                      }
                     }
                   }
                   
@@ -7896,12 +7902,18 @@
           {/if}
         </div>
       {:else if !isLoading && !error}
-        <div class="empty-state" class:minimized={isListMinimized} style="flex: {isListMinimized ? '0 0 auto' : '1 1 auto'}; min-height: {isListMinimized ? '60px' : '200px'};">
+        <div
+          class="empty-state"
+          class:minimized={isListMinimized}
+          style={workbenchMode
+            ? undefined
+            : `flex: ${isListMinimized ? '0 0 auto' : '1 1 auto'}; min-height: ${isListMinimized ? '60px' : '200px'};`}
+        >
           <div class="table-header">
             {#if !workbenchMode}
               <h3>Tabela de Equipamentos Encontrados - Nenhum Equipamento Pesquisado</h3>
             {:else}
-              <span class="workbench-table-spacer" aria-hidden="true"></span>
+              <span class="workbench-table-label">Equipamentos</span>
             {/if}
             <div class="table-header-buttons">
               <button 
@@ -7910,17 +7922,16 @@
                 on:click={async () => {
                   isListMinimized = !isListMinimized;
                   
-                  // Limpar estilos inline para respeitar o estado reativo
-                  const listElement = document.querySelector('.results-table-container, .empty-state');
-                  if (listElement) {
-                    if (isListMinimized) {
-                      // Quando minimizar, garantir que os estilos inline sejam removidos
-                      listElement.style.flex = '';
-                      listElement.style.minHeight = '';
-                    } else {
-                      // Quando expandir, aplicar estilos padrão
-                      listElement.style.flex = '1 1 auto';
-                      listElement.style.minHeight = '200px';
+                  if (!workbenchMode) {
+                    const listElement = document.querySelector('.results-table-container, .empty-state');
+                    if (listElement) {
+                      if (isListMinimized) {
+                        listElement.style.flex = '';
+                        listElement.style.minHeight = '';
+                      } else {
+                        listElement.style.flex = '1 1 auto';
+                        listElement.style.minHeight = '200px';
+                      }
                     }
                   }
                   
@@ -8677,13 +8688,22 @@
   }
 
   .viabilidade-content.workbench-mode .table-header {
-    justify-content: flex-end !important;
-    min-height: 36px !important;
+    justify-content: space-between !important;
+    align-items: center !important;
+    min-height: 28px !important;
+    margin: 0 !important;
     padding: 0.3rem 0.45rem !important;
   }
 
   .viabilidade-content.workbench-mode .table-header h3 {
     display: none !important;
+  }
+
+  .viabilidade-content.workbench-mode .workbench-table-label {
+    font-size: 0.72rem;
+    font-weight: 700;
+    color: #7b68ee;
+    line-height: 1.2;
   }
 
   .viabilidade-content.workbench-mode .workbench-table-spacer {
@@ -8706,13 +8726,26 @@
     border-radius: 10px !important;
     background: #ffffff !important;
     box-shadow: none !important;
+    padding: 0 !important;
   }
 
+  /* Minimizado = mesma barra compacta do box Informações */
   .viabilidade-content.workbench-mode .results-table-container.minimized,
   .viabilidade-content.workbench-mode .empty-state.minimized {
     flex: 0 0 auto !important;
-    min-height: 44px !important;
+    flex-grow: 0 !important;
+    flex-shrink: 0 !important;
+    height: auto !important;
+    min-height: 0 !important;
     max-height: none !important;
+    overflow: hidden !important;
+    padding: 0 !important;
+  }
+
+  .viabilidade-content.workbench-mode .results-table-container.minimized .table-header,
+  .viabilidade-content.workbench-mode .empty-state.minimized .table-header {
+    margin-bottom: 0 !important;
+    border-bottom: none !important;
   }
 
   .viabilidade-content.workbench-mode .tabulacao-container {
