@@ -30,6 +30,15 @@
   export let initialLng = null;
   /** id do elemento do mapa — único quando embutido para não conflitar com outras tools. */
   export let mapDomId = 'map';
+  /**
+   * Workbench only: notifica o pai quando a casinha muda (busca ou drag).
+   * Payload: { source, coords: {lat,lng}, address: clientAddressData }
+   */
+  export let onClientLocationChange = null;
+
+  /** Workbench: chave da última localização aplicada (evita loop form↔mapa). */
+  let lastWorkbenchLocKey = '';
+  let workbenchSearchTimer = null;
 
   $: isDarkTheme = embedded && $theme === 'dark';
 
@@ -1168,6 +1177,31 @@
       reportForm.numeroEndereco = clientAddressData.numero;
       reportForm.cep = clientAddressData.cep;
     }
+
+    emitClientLocationChange('geocode');
+  }
+
+  /** Workbench: avisa o formulário Informações (endereço/CEP/coords). */
+  function emitClientLocationChange(source = 'update') {
+    if (!workbenchMode) return;
+    if (typeof onClientLocationChange !== 'function') return;
+    if (!clientCoords || clientCoords.lat == null || clientCoords.lng == null) return;
+
+    // Evita o sync reativo do Workbench re-buscar a mesma posição
+    lastWorkbenchLocKey = `c:${Number(clientCoords.lat)},${Number(clientCoords.lng)}`;
+
+    try {
+      onClientLocationChange({
+        source,
+        coords: {
+          lat: Number(clientCoords.lat),
+          lng: Number(clientCoords.lng)
+        },
+        address: { ...clientAddressData }
+      });
+    } catch (err) {
+      console.warn('[Workbench] onClientLocationChange:', err);
+    }
   }
 
   // Função para determinar a cor do marcador baseada na porcentagem de ocupação (pct_ocup)
@@ -1570,9 +1604,6 @@
   }
 
   /** Workbench: se o usuário alterar o endereço no formulário, atualiza o mapa. */
-  let lastWorkbenchLocKey = '';
-  let workbenchSearchTimer = null;
-
   function scheduleWorkbenchLocationSync() {
     if (!workbenchMode) return;
     if (workbenchSearchTimer) clearTimeout(workbenchSearchTimer);
@@ -2797,13 +2828,25 @@
             if (searchMode === 'address') {
               addressInput = bestResult.formatted_address || '';
             }
+          } else if (workbenchMode) {
+            emitClientLocationChange('drag');
           }
         } catch (err) {
           console.error('Erro ao atualizar endereço:', err);
+          if (workbenchMode) emitClientLocationChange('drag');
         }
 
         // Limpar CTOs e rotas anteriores quando o cliente move o marcador
         clearCTOs();
+
+        // Workbench: rebusca CTOs na nova posição (standalone mantém só limpeza)
+        if (workbenchMode) {
+          try {
+            await searchCTOs();
+          } catch (ctoErr) {
+            console.warn('[Workbench] Rebusca de CTOs após drag:', ctoErr);
+          }
+        }
 
         // Atualizar conteúdo do InfoWindow com endereço e coordenadas
         if (clientInfoWindow) {
