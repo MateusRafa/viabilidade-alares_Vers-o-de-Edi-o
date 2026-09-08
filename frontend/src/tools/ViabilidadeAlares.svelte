@@ -6102,8 +6102,14 @@
   /**
    * WORKBENCH ONLY — captura o mapa em tamanho fixo temporário (casinha + CTOs + rotas)
    * sem alterar o fluxo standalone de captureMapAutomatically / openReportModal.
+   *
+   * Importante: estilos do workbench usam !important; a captura precisa setProperty(..., 'important').
    */
   async function captureMapForWorkbench() {
+    if (!map || !clientCoords) {
+      throw new Error('Mapa não está pronto para captura');
+    }
+
     const mapContainer = document.querySelector(
       '.viabilidade-content.workbench-mode .map-container'
     );
@@ -6112,66 +6118,249 @@
     const CAPTURE_H = 720;
 
     const prevListMin = isListMinimized;
-    const prevCenter = map?.getCenter?.()
+    const prevCenter = map.getCenter()
       ? { lat: map.getCenter().lat(), lng: map.getCenter().lng() }
       : null;
-    const prevZoom = map?.getZoom?.() ?? null;
-    const prevContainerCss = mapContainer ? mapContainer.style.cssText : '';
-    const prevMapCss = mapEl ? mapEl.style.cssText : '';
+    const prevZoom = map.getZoom();
+    const prevMapOptions = {
+      mapTypeControl: true,
+      streetViewControl: true,
+      fullscreenControl: true,
+      zoomControl: true,
+      scaleControl: false,
+      rotateControl: false
+    };
+
+    const containerProps = [
+      'position',
+      'left',
+      'top',
+      'width',
+      'height',
+      'min-height',
+      'max-height',
+      'min-width',
+      'max-width',
+      'margin',
+      'z-index',
+      'overflow',
+      'border',
+      'border-radius',
+      'background',
+      'box-shadow',
+      'display',
+      'flex-direction',
+      'flex',
+      'order'
+    ];
+    const mapProps = ['width', 'height', 'min-height', 'max-height', 'visibility', 'opacity', 'display'];
+
+    const savedContainer = {};
+    const savedMapEl = {};
+    if (mapContainer) {
+      for (const p of containerProps) savedContainer[p] = mapContainer.style.getPropertyValue(p);
+    }
+    if (mapEl) {
+      for (const p of mapProps) savedMapEl[p] = mapEl.style.getPropertyValue(p);
+    }
+
+    const applyImportant = (el, prop, value) => {
+      if (el) el.style.setProperty(prop, value, 'important');
+    };
 
     try {
       isListMinimized = true;
       await tick();
 
+      // Esconder controles do Google Maps no print
+      try {
+        map.setOptions({
+          mapTypeControl: false,
+          streetViewControl: false,
+          fullscreenControl: false,
+          zoomControl: false,
+          scaleControl: false,
+          rotateControl: false,
+          clickableIcons: false
+        });
+      } catch {
+        // ignore
+      }
+
+      if (clientInfoWindow) {
+        try {
+          clientInfoWindow.close();
+        } catch {
+          // ignore
+        }
+      }
+
       if (mapContainer) {
-        // Overlay fixo: enquadramento estável independente do box redimensionável
-        mapContainer.style.cssText = [
-          'position: fixed',
-          'left: 0',
-          'top: 0',
-          `width: ${CAPTURE_W}px`,
-          `height: ${CAPTURE_H}px`,
-          `min-height: ${CAPTURE_H}px`,
-          'max-height: none',
-          'margin: 0',
-          'z-index: 2147483000',
-          'overflow: hidden',
-          'border: none',
-          'border-radius: 0',
-          'background: #ffffff',
-          'box-shadow: none',
-          'display: flex',
-          'flex-direction: column'
-        ].join(';');
+        applyImportant(mapContainer, 'position', 'fixed');
+        applyImportant(mapContainer, 'left', '0');
+        applyImportant(mapContainer, 'top', '0');
+        applyImportant(mapContainer, 'width', `${CAPTURE_W}px`);
+        applyImportant(mapContainer, 'height', `${CAPTURE_H}px`);
+        applyImportant(mapContainer, 'min-height', `${CAPTURE_H}px`);
+        applyImportant(mapContainer, 'max-height', 'none');
+        applyImportant(mapContainer, 'min-width', `${CAPTURE_W}px`);
+        applyImportant(mapContainer, 'max-width', `${CAPTURE_W}px`);
+        applyImportant(mapContainer, 'margin', '0');
+        applyImportant(mapContainer, 'z-index', '2147483000');
+        applyImportant(mapContainer, 'overflow', 'hidden');
+        applyImportant(mapContainer, 'border', 'none');
+        applyImportant(mapContainer, 'border-radius', '0');
+        applyImportant(mapContainer, 'background', '#ffffff');
+        applyImportant(mapContainer, 'box-shadow', 'none');
+        applyImportant(mapContainer, 'display', 'flex');
+        applyImportant(mapContainer, 'flex-direction', 'column');
+        applyImportant(mapContainer, 'flex', '0 0 auto');
       }
+
       if (mapEl) {
-        mapEl.style.width = '100%';
-        mapEl.style.height = `${CAPTURE_H}px`;
-        mapEl.style.minHeight = `${CAPTURE_H}px`;
-        mapEl.style.visibility = 'visible';
-        mapEl.style.opacity = '1';
-        mapEl.style.display = 'block';
+        applyImportant(mapEl, 'width', `${CAPTURE_W}px`);
+        applyImportant(mapEl, 'height', `${CAPTURE_H}px`);
+        applyImportant(mapEl, 'min-height', `${CAPTURE_H}px`);
+        applyImportant(mapEl, 'max-height', `${CAPTURE_H}px`);
+        applyImportant(mapEl, 'visibility', 'visible');
+        applyImportant(mapEl, 'opacity', '1');
+        applyImportant(mapEl, 'display', 'block');
       }
 
-      if (map && google?.maps) {
-        google.maps.event.trigger(map, 'resize');
+      google.maps.event.trigger(map, 'resize');
+      await waitMapIdleWorkbench(2000);
+      await new Promise((r) => setTimeout(r, 200));
+
+      // Bounds: cliente + CTOs + pontos das rotas
+      const bounds = new google.maps.LatLngBounds();
+      bounds.extend(clientCoords);
+      if (ctos?.length) {
+        ctos.forEach((cto) => {
+          if (cto?.latitude != null && cto?.longitude != null) {
+            bounds.extend({ lat: cto.latitude, lng: cto.longitude });
+          }
+        });
       }
+      if (routes?.length) {
+        for (const polyline of routes) {
+          try {
+            const path = polyline.getPath?.();
+            if (!path) continue;
+            const len = path.getLength();
+            // Amostrar pontos da rota para não travar em paths muito longos
+            const step = Math.max(1, Math.floor(len / 40));
+            for (let i = 0; i < len; i += step) {
+              bounds.extend(path.getAt(i));
+            }
+            if (len > 0) bounds.extend(path.getAt(len - 1));
+          } catch {
+            // ignore rota inválida
+          }
+        }
+      }
+
+      // Padding generoso — evita cortar casinha/CTOs nas bordas
+      map.fitBounds(bounds, {
+        top: 90,
+        right: 90,
+        bottom: 90,
+        left: 90
+      });
+      await waitMapIdleWorkbench(2000);
+      await new Promise((r) => setTimeout(r, 250));
+
+      // Afasta 1 nível de zoom para margem de segurança (evita crop do zoom agressivo)
+      const fittedZoom = map.getZoom();
+      if (fittedZoom != null && fittedZoom > 14) {
+        map.setZoom(fittedZoom - 1);
+        await waitMapIdleWorkbench(1500);
+      }
+
+      // Tempo extra para tiles de satélite
+      await new Promise((r) => setTimeout(r, 700));
       await waitMapIdleWorkbench(1500);
-      await new Promise((r) => setTimeout(r, 120));
 
-      // Reutiliza a captura existente (fitBounds + CTOs + rotas + html2canvas)
-      return await captureMapAutomatically();
+      if (!mapEl) {
+        throw new Error('Elemento do mapa não encontrado');
+      }
+
+      for (let i = 0; i < 3; i++) {
+        await new Promise((r) => requestAnimationFrame(r));
+        void mapEl.offsetHeight;
+      }
+
+      const canvas = await html2canvas(mapEl, {
+        useCORS: true,
+        allowTaint: false,
+        backgroundColor: '#ffffff',
+        scale: 2,
+        logging: false,
+        timeout: 25000,
+        imageTimeout: 12000,
+        removeContainer: true,
+        foreignObjectRendering: false,
+        ignoreElements: (el) => {
+          if (!el) return false;
+          const cls = typeof el.className === 'string' ? el.className : el.className?.baseVal || '';
+          if (
+            cls.includes('gmnoprint') ||
+            cls.includes('gm-bundled-control') ||
+            cls.includes('gm-fullscreen-control') ||
+            cls.includes('gm-svpc') ||
+            cls.includes('gm-style-cc')
+          ) {
+            return true;
+          }
+          // Botões Mapa/Satélite e controles
+          if (el.getAttribute?.('controlwidth') != null || el.getAttribute?.('controlheight') != null) {
+            return true;
+          }
+          return false;
+        },
+        onclone: (clonedDoc) => {
+          if (clonedDoc.body) {
+            clonedDoc.body.style.background = '#ffffff';
+          }
+          const clonedMap = clonedDoc.getElementById(mapDomId);
+          if (clonedMap) {
+            clonedMap.style.visibility = 'visible';
+            clonedMap.style.opacity = '1';
+            clonedMap.style.display = 'block';
+            clonedMap.style.background = '#ffffff';
+          }
+        }
+      });
+
+      return canvas.toDataURL('image/png', 1.0);
     } finally {
       isListMinimized = prevListMin;
-      if (mapContainer) mapContainer.style.cssText = prevContainerCss;
-      if (mapEl) mapEl.style.cssText = prevMapCss;
-      await tick();
-      if (map && google?.maps) {
-        google.maps.event.trigger(map, 'resize');
-        if (prevCenter) map.setCenter(prevCenter);
-        if (prevZoom != null) map.setZoom(prevZoom);
-        await waitMapIdleWorkbench(1200);
+
+      if (mapContainer) {
+        for (const p of containerProps) {
+          const v = savedContainer[p];
+          if (v) mapContainer.style.setProperty(p, v);
+          else mapContainer.style.removeProperty(p);
+        }
       }
+      if (mapEl) {
+        for (const p of mapProps) {
+          const v = savedMapEl[p];
+          if (v) mapEl.style.setProperty(p, v);
+          else mapEl.style.removeProperty(p);
+        }
+      }
+
+      try {
+        map.setOptions(prevMapOptions);
+      } catch {
+        // ignore
+      }
+
+      await tick();
+      google.maps.event.trigger(map, 'resize');
+      if (prevCenter) map.setCenter(prevCenter);
+      if (prevZoom != null) map.setZoom(prevZoom);
+      await waitMapIdleWorkbench(1200);
     }
   }
 
