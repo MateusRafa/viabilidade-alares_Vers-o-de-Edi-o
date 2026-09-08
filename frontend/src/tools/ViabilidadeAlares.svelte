@@ -7768,7 +7768,11 @@
                 aria-label={isListMinimized ? 'Expandir tabela' : 'Minimizar tabela'}
                 title={isListMinimized ? 'Expandir' : 'Minimizar'}
               >
-                {isListMinimized ? '⬆️' : '⬇️'}
+                {#if workbenchMode}
+                  {isListMinimized ? '▾' : '▴'}
+                {:else}
+                  {isListMinimized ? '⬆️' : '⬇️'}
+                {/if}
               </button>
             </div>
           </div>
@@ -7932,7 +7936,11 @@
                 aria-label={isListMinimized ? 'Expandir tabela' : 'Minimizar tabela'}
                 title={isListMinimized ? 'Expandir' : 'Minimizar'}
               >
-                {isListMinimized ? '⬆️' : '⬇️'}
+                {#if workbenchMode}
+                  {isListMinimized ? '▾' : '▴'}
+                {:else}
+                  {isListMinimized ? '⬆️' : '⬇️'}
+                {/if}
               </button>
             </div>
           </div>
@@ -8602,8 +8610,9 @@
     background: transparent !important;
   }
 
-  /* Box só do mapa (sem título) */
+  /* Box só do mapa (sem título) — abaixo da tabela */
   .viabilidade-content.workbench-mode .map-container {
+    order: 2;
     flex: 1 1 58% !important;
     min-height: 180px !important;
     max-height: none !important;
@@ -8643,6 +8652,28 @@
   .viabilidade-content.workbench-mode .results-table-container .minimize-button,
   .viabilidade-content.workbench-mode .empty-state .minimize-button {
     display: inline-flex !important;
+    align-items: center;
+    justify-content: center;
+    width: 28px !important;
+    height: 28px !important;
+    min-width: 28px !important;
+    padding: 0 !important;
+    border: 1px solid #d1d5db !important;
+    border-radius: 8px !important;
+    background: #ffffff !important;
+    color: #4b5563 !important;
+    font-size: 0.85rem !important;
+    font-weight: 400 !important;
+    line-height: 1 !important;
+    box-shadow: none !important;
+    opacity: 1 !important;
+  }
+
+  .viabilidade-content.workbench-mode .results-table-container .minimize-button:hover,
+  .viabilidade-content.workbench-mode .empty-state .minimize-button:hover {
+    border-color: #a78bfa !important;
+    color: #7b68ee !important;
+    background: #f5f3ff !important;
   }
 
   .viabilidade-content.workbench-mode .table-header {
@@ -8660,12 +8691,13 @@
     min-width: 0;
   }
 
-  /* Tabela fora do box do mapa */
+  /* Tabela acima do mapa */
   .viabilidade-content.workbench-mode .results-table-container,
   .viabilidade-content.workbench-mode .empty-state {
-    flex: 0 1 42% !important;
-    min-height: 140px !important;
-    max-height: 46% !important;
+    order: 1;
+    flex: 0 1 38% !important;
+    min-height: 120px !important;
+    max-height: 42% !important;
     height: auto !important;
     width: 100% !important;
     margin: 0 !important;
