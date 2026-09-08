@@ -23,6 +23,7 @@
   let statusMsg = '';
   let tabulacoes = [];
   let sugeridaOriginal = '';
+  let formMinimized = false;
 
   let form = {
     numeroALA: '',
@@ -298,8 +299,31 @@
     <p class="wb-error" role="alert">{error}</p>
   {/if}
 
-  <div class="wb-body">
-    <aside class="wb-form-pane">
+  <div class="wb-body" class:form-collapsed={formMinimized}>
+    <aside class="wb-form-pane" class:minimized={formMinimized}>
+      <div class="wb-form-toolbar">
+        <span class="wb-form-toolbar-title">{formMinimized ? 'Informações' : 'Informações do chamado'}</span>
+        <button
+          type="button"
+          class="wb-pane-toggle"
+          on:click={() => {
+            formMinimized = !formMinimized;
+            // Dá tempo ao layout redimensionar e pede resize do mapa embutido
+            setTimeout(() => {
+              try {
+                window.dispatchEvent(new Event('resize'));
+              } catch {
+                // ignore
+              }
+            }, 120);
+          }}
+          title={formMinimized ? 'Expandir formulário' : 'Minimizar formulário'}
+          aria-label={formMinimized ? 'Expandir formulário' : 'Minimizar formulário'}
+        >
+          {formMinimized ? '▾' : '▴'}
+        </button>
+      </div>
+      {#if !formMinimized}
       <form class="wb-form" on:submit|preventDefault={salvarRelatorio}>
         <label>
           <span>1. Número do ALA</span>
@@ -350,6 +374,7 @@
           </button>
         </div>
       </form>
+      {/if}
     </aside>
 
     <section class="wb-map-pane">
@@ -417,13 +442,78 @@
     overflow: hidden;
   }
 
+  .wb-body.form-collapsed {
+    grid-template-columns: minmax(0, 44px) minmax(0, 1fr);
+  }
+
   .wb-form-pane {
     border-right: 1px solid #e5e7eb;
     overflow: auto;
-    padding: 0.55rem 0.65rem 0.75rem;
+    padding: 0.45rem 0.55rem 0.75rem;
     background: #fafbff;
     min-width: 0;
     max-width: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+
+  .wb-form-pane.minimized {
+    overflow: hidden;
+    padding: 0.35rem 0.25rem;
+    align-items: center;
+  }
+
+  .wb-form-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.35rem;
+    flex-shrink: 0;
+    min-height: 28px;
+  }
+
+  .wb-form-pane.minimized .wb-form-toolbar {
+    flex-direction: column;
+    justify-content: flex-start;
+    width: 100%;
+  }
+
+  .wb-form-toolbar-title {
+    font-size: 0.72rem;
+    font-weight: 700;
+    color: #7b68ee;
+    line-height: 1.2;
+  }
+
+  .wb-form-pane.minimized .wb-form-toolbar-title {
+    writing-mode: vertical-rl;
+    transform: rotate(180deg);
+    font-size: 0.68rem;
+    letter-spacing: 0.04em;
+    margin-top: 0.35rem;
+  }
+
+  .wb-pane-toggle {
+    width: 28px;
+    height: 28px;
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    background: #ffffff;
+    color: #4b5563;
+    font-size: 0.85rem;
+    line-height: 1;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+
+  .wb-pane-toggle:hover {
+    border-color: #a78bfa;
+    color: #7b68ee;
+    background: #f5f3ff;
   }
 
   .wb-form {
@@ -564,10 +654,31 @@
       grid-template-rows: minmax(180px, 40%) minmax(0, 1fr);
     }
 
+    .wb-body.form-collapsed {
+      grid-template-columns: 1fr;
+      grid-template-rows: auto minmax(0, 1fr);
+    }
+
     .wb-form-pane {
       border-right: none;
       border-bottom: 1px solid #e5e7eb;
       max-height: none;
+    }
+
+    .wb-form-pane.minimized {
+      align-items: stretch;
+      padding: 0.3rem 0.45rem;
+    }
+
+    .wb-form-pane.minimized .wb-form-toolbar {
+      flex-direction: row;
+      justify-content: space-between;
+    }
+
+    .wb-form-pane.minimized .wb-form-toolbar-title {
+      writing-mode: horizontal-tb;
+      transform: none;
+      margin-top: 0;
     }
   }
 </style>
