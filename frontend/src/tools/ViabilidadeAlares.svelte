@@ -7730,7 +7730,11 @@
       {#if ctosRua.length > 0}
         <div class="results-table-container" class:minimized={isListMinimized} style="flex: {isListMinimized ? '0 0 auto' : '1 1 auto'}; min-height: {isListMinimized ? '60px' : '200px'};">
           <div class="table-header">
-            <h3>Tabela de Equipamentos Encontrados - {ctosRua.length} Equipamentos Encontrados</h3>
+            {#if !workbenchMode}
+              <h3>Tabela de Equipamentos Encontrados - {ctosRua.length} Equipamentos Encontrados</h3>
+            {:else}
+              <span class="workbench-table-spacer" aria-hidden="true"></span>
+            {/if}
             <div class="table-header-buttons">
               <button 
                 class="minimize-button" 
@@ -7890,7 +7894,11 @@
       {:else if !isLoading && !error}
         <div class="empty-state" class:minimized={isListMinimized} style="flex: {isListMinimized ? '0 0 auto' : '1 1 auto'}; min-height: {isListMinimized ? '60px' : '200px'};">
           <div class="table-header">
-            <h3>Tabela de Equipamentos Encontrados - Nenhum Equipamento Pesquisado</h3>
+            {#if !workbenchMode}
+              <h3>Tabela de Equipamentos Encontrados - Nenhum Equipamento Pesquisado</h3>
+            {:else}
+              <span class="workbench-table-spacer" aria-hidden="true"></span>
+            {/if}
             <div class="table-header-buttons">
               <button 
                 class="minimize-button" 
@@ -8628,10 +8636,28 @@
   }
 
   .viabilidade-content.workbench-mode .map-container .minimize-button,
-  .viabilidade-content.workbench-mode .results-table-container .minimize-button,
-  .viabilidade-content.workbench-mode .empty-state .minimize-button,
   .viabilidade-content.workbench-mode .resize-handle-horizontal {
     display: none !important;
+  }
+
+  .viabilidade-content.workbench-mode .results-table-container .minimize-button,
+  .viabilidade-content.workbench-mode .empty-state .minimize-button {
+    display: inline-flex !important;
+  }
+
+  .viabilidade-content.workbench-mode .table-header {
+    justify-content: flex-end !important;
+    min-height: 36px !important;
+    padding: 0.3rem 0.45rem !important;
+  }
+
+  .viabilidade-content.workbench-mode .table-header h3 {
+    display: none !important;
+  }
+
+  .viabilidade-content.workbench-mode .workbench-table-spacer {
+    flex: 1;
+    min-width: 0;
   }
 
   /* Tabela fora do box do mapa */
