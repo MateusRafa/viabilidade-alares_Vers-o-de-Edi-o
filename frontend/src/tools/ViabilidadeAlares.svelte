@@ -8629,6 +8629,8 @@
     max-height: none !important;
     height: auto !important;
     width: 100% !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
     margin: 0 !important;
     overflow: hidden !important;
     display: flex !important;
@@ -8637,6 +8639,7 @@
     border-radius: 10px !important;
     background: #ffffff !important;
     box-shadow: none !important;
+    box-sizing: border-box !important;
   }
 
   .viabilidade-content.workbench-mode .map-header {
@@ -8720,6 +8723,8 @@
     max-height: 42% !important;
     height: auto !important;
     width: 100% !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
     margin: 0 !important;
     overflow: auto !important;
     border: 1px solid #d1d5db !important;
@@ -8727,6 +8732,7 @@
     background: #ffffff !important;
     box-shadow: none !important;
     padding: 0 !important;
+    box-sizing: border-box !important;
   }
 
   /* Minimizado = mesma barra compacta do box Informações */
