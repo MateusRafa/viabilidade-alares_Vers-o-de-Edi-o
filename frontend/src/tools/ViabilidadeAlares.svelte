@@ -6077,6 +6077,164 @@
     }
   }
 
+  /** Aguarda idle do Google Maps (uso interno workbench). */
+  async function waitMapIdleWorkbench(timeoutMs = 2000) {
+    if (!map || !google?.maps) {
+      await new Promise((r) => setTimeout(r, 300));
+      return;
+    }
+    await new Promise((resolve) => {
+      const idleListener = google.maps.event.addListener(map, 'idle', () => {
+        google.maps.event.removeListener(idleListener);
+        resolve();
+      });
+      setTimeout(() => {
+        try {
+          google.maps.event.removeListener(idleListener);
+        } catch {
+          // ignore
+        }
+        resolve();
+      }, timeoutMs);
+    });
+  }
+
+  /**
+   * WORKBENCH ONLY — captura o mapa em tamanho fixo temporário (casinha + CTOs + rotas)
+   * sem alterar o fluxo standalone de captureMapAutomatically / openReportModal.
+   */
+  async function captureMapForWorkbench() {
+    const mapContainer = document.querySelector(
+      '.viabilidade-content.workbench-mode .map-container'
+    );
+    const mapEl = getMapElement();
+    const CAPTURE_W = 1200;
+    const CAPTURE_H = 720;
+
+    const prevListMin = isListMinimized;
+    const prevCenter = map?.getCenter?.()
+      ? { lat: map.getCenter().lat(), lng: map.getCenter().lng() }
+      : null;
+    const prevZoom = map?.getZoom?.() ?? null;
+    const prevContainerCss = mapContainer ? mapContainer.style.cssText : '';
+    const prevMapCss = mapEl ? mapEl.style.cssText : '';
+
+    try {
+      isListMinimized = true;
+      await tick();
+
+      if (mapContainer) {
+        // Overlay fixo: enquadramento estável independente do box redimensionável
+        mapContainer.style.cssText = [
+          'position: fixed',
+          'left: 0',
+          'top: 0',
+          `width: ${CAPTURE_W}px`,
+          `height: ${CAPTURE_H}px`,
+          `min-height: ${CAPTURE_H}px`,
+          'max-height: none',
+          'margin: 0',
+          'z-index: 2147483000',
+          'overflow: hidden',
+          'border: none',
+          'border-radius: 0',
+          'background: #ffffff',
+          'box-shadow: none',
+          'display: flex',
+          'flex-direction: column'
+        ].join(';');
+      }
+      if (mapEl) {
+        mapEl.style.width = '100%';
+        mapEl.style.height = `${CAPTURE_H}px`;
+        mapEl.style.minHeight = `${CAPTURE_H}px`;
+        mapEl.style.visibility = 'visible';
+        mapEl.style.opacity = '1';
+        mapEl.style.display = 'block';
+      }
+
+      if (map && google?.maps) {
+        google.maps.event.trigger(map, 'resize');
+      }
+      await waitMapIdleWorkbench(1500);
+      await new Promise((r) => setTimeout(r, 120));
+
+      // Reutiliza a captura existente (fitBounds + CTOs + rotas + html2canvas)
+      return await captureMapAutomatically();
+    } finally {
+      isListMinimized = prevListMin;
+      if (mapContainer) mapContainer.style.cssText = prevContainerCss;
+      if (mapEl) mapEl.style.cssText = prevMapCss;
+      await tick();
+      if (map && google?.maps) {
+        google.maps.event.trigger(map, 'resize');
+        if (prevCenter) map.setCenter(prevCenter);
+        if (prevZoom != null) map.setZoom(prevZoom);
+        await waitMapIdleWorkbench(1200);
+      }
+    }
+  }
+
+  /**
+   * WORKBENCH ONLY — chamado pelo CensupWorkbench (botão Informações).
+   * Prefill com dados do formulário, captura mapa e gera o mesmo PDF da Viabilidade.
+   * Não altera openReportModal() / exportToPDF() usados na ferramenta standalone.
+   */
+  export async function generateWorkbenchReport(formData = {}) {
+    if (!workbenchMode) {
+      throw new Error('generateWorkbenchReport só está disponível no Workbench');
+    }
+    if (!map || !clientCoords) {
+      throw new Error('Aguarde o mapa localizar o endereço do chamado.');
+    }
+
+    const alaDigits = String(formData.numeroALA || '').replace(/\D/g, '');
+    reportForm.numeroALA = alaDigits ? `ALA-${alaDigits}` : '';
+    reportForm.cidade = String(formData.cidade || '').trim();
+    reportForm.enderecoCompleto = String(formData.enderecoCompleto || '').trim();
+    reportForm.numeroEndereco = String(formData.numeroEndereco || '').trim();
+    reportForm.cep = String(formData.cep || '').trim();
+    reportForm.tabulacaoFinal = String(formData.tabulacaoFinal || '').trim();
+    reportForm.projetista = String(formData.projetista || currentUser || '').trim();
+    reportFormErrors = {};
+    mapPreviewImage = '';
+    error = null;
+    capturingMap = true;
+
+    if (clientInfoWindow) {
+      try {
+        clientInfoWindow.close();
+      } catch {
+        // ignore
+      }
+    }
+
+    try {
+      mapPreviewImage = await captureMapForWorkbench();
+
+      if (!validateReportForm()) {
+        showReportModal = true;
+        const missing = getMissingRequiredFields();
+        throw new Error(
+          missing.length
+            ? `Preencha em Informações: ${missing.join(', ')}`
+            : 'Preencha os campos obrigatórios em Informações antes de gerar o PDF.'
+        );
+      }
+
+      await exportToPDF();
+
+      if (showPopupInstructions) {
+        showReportModal = true;
+        throw new Error('Pop-up bloqueado. Permita pop-ups para este site e tente de novo.');
+      }
+
+      return { success: true };
+    } finally {
+      capturingMap = false;
+    }
+  }
+
 
   // Função para lidar com entrada do número do ALA (apenas números)
   function handleNumeroALAInput(event) {
