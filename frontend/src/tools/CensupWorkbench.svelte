@@ -513,16 +513,26 @@
     max-width: 100%;
   }
 
-  .wb-map-host :global(.viabilidade-content.embedded .main-layout) {
+  .wb-map-host :global(.viabilidade-content.workbench-mode .main-layout) {
     width: 100%;
     max-width: 100%;
     min-width: 0;
+    height: 100%;
+    padding: 0;
   }
 
-  .wb-map-host :global(.viabilidade-content.embedded .search-panel) {
-    min-width: 0 !important;
-    width: min(100%, 320px) !important;
-    max-width: 100% !important;
+  .wb-map-host :global(.viabilidade-content.workbench-mode .search-panel),
+  .wb-map-host :global(.viabilidade-content.workbench-mode .resize-handle-vertical),
+  .wb-map-host :global(.viabilidade-content.workbench-mode .resize-handle-horizontal) {
+    display: none !important;
+  }
+
+  .wb-map-host :global(.viabilidade-content.workbench-mode .main-area) {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
   }
 
   .wb-map-placeholder {
