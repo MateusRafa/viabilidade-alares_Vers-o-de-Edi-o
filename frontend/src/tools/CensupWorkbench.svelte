@@ -9,6 +9,7 @@
 
   // Import dinâmico — evita ciclo com registry/Config no bundle principal
   let ViabilidadeAlares = null;
+  let viabilidadeRef = null;
 
   const MSG_SOURCE = 'censup-workbench';
   const PARENT_SOURCE = 'censup-extension';
@@ -187,24 +188,16 @@
       error = 'Chamado não carregado.';
       return;
     }
+    if (!viabilidadeRef || typeof viabilidadeRef.generateWorkbenchReport !== 'function') {
+      error = 'Mapa ainda carregando. Aguarde a localização e tente de novo.';
+      return;
+    }
     generating = true;
     error = '';
-    statusMsg = 'Gerando relatório…';
+    statusMsg = 'Capturando mapa e gerando PDF…';
     try {
-      const response = await fetch(
-        getApiUrl(`/api/portal-censup/chamados/${encodeURIComponent(chamadoId)}/relatorio`),
-        {
-          method: 'POST',
-          headers: authHeaders(),
-          body: JSON.stringify({ ...buildReportPayload(), persist: false })
-        }
-      );
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok || !data.success) {
-        throw new Error(data.error || `Falha ao gerar relatório (${response.status})`);
-      }
-      openPdfHtml(data.pdfHtml);
-      statusMsg = 'PDF gerado';
+      await viabilidadeRef.generateWorkbenchReport(buildReportPayload());
+      statusMsg = 'PDF gerado (modelo Viabilidade Alares)';
       postToParent('REPORT_GENERATED', { chamadoId });
     } catch (err) {
       error = err?.message || String(err);
@@ -386,6 +379,7 @@
             {#if ViabilidadeAlares}
               <svelte:component
                 this={ViabilidadeAlares}
+                bind:this={viabilidadeRef}
                 embedded={true}
                 workbenchMode={true}
                 mapDomId="censup-workbench-map"
