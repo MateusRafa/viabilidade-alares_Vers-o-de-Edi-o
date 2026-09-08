@@ -1549,6 +1549,10 @@
 
     if (!hasCoords && !hasAddress) return;
 
+    lastWorkbenchLocKey = hasCoords
+      ? `c:${Number(initialLat)},${Number(initialLng)}`
+      : `a:${(initialAddress || '').trim().toLowerCase()}`;
+
     if (hasCoords) {
       searchMode = 'coordinates';
       coordinatesInput = `${Number(initialLat)}, ${Number(initialLng)}`;
@@ -1563,6 +1567,65 @@
     } catch (err) {
       console.warn('Pré-busca inicial falhou:', err);
     }
+  }
+
+  /** Workbench: se o usuário alterar o endereço no formulário, atualiza o mapa. */
+  let lastWorkbenchLocKey = '';
+  let workbenchSearchTimer = null;
+
+  function scheduleWorkbenchLocationSync() {
+    if (!workbenchMode) return;
+    if (workbenchSearchTimer) clearTimeout(workbenchSearchTimer);
+    workbenchSearchTimer = setTimeout(() => {
+      void syncWorkbenchLocationFromProps();
+    }, 650);
+  }
+
+  async function syncWorkbenchLocationFromProps() {
+    if (!workbenchMode || isLoading) return;
+    if (!map || !googleMapsLoaded) return;
+
+    const hasCoords =
+      initialLat != null &&
+      initialLng != null &&
+      !Number.isNaN(Number(initialLat)) &&
+      !Number.isNaN(Number(initialLng));
+    const address = (initialAddress || '').trim();
+    const hasAddress = !!address;
+
+    if (!hasCoords && !hasAddress) return;
+
+    const key = hasCoords
+      ? `c:${Number(initialLat)},${Number(initialLng)}`
+      : `a:${address.toLowerCase()}`;
+    if (key === lastWorkbenchLocKey) return;
+    lastWorkbenchLocKey = key;
+
+    if (hasCoords) {
+      searchMode = 'coordinates';
+      coordinatesInput = `${Number(initialLat)}, ${Number(initialLng)}`;
+    } else {
+      searchMode = 'address';
+      addressInput = address;
+    }
+
+    await tick();
+    try {
+      await searchClientLocation();
+      if (map && google?.maps) {
+        google.maps.event.trigger(map, 'resize');
+      }
+    } catch (err) {
+      console.warn('[Workbench] Atualização de localização falhou:', err);
+    }
+  }
+
+  $: if (workbenchMode) {
+    // Dependências reativas dos props vindos do CensupWorkbench
+    void initialAddress;
+    void initialLat;
+    void initialLng;
+    scheduleWorkbenchLocationSync();
   }
 
   // Função para limpar estado da ferramenta
@@ -1794,6 +1857,10 @@
     if (loadingDotsInterval) {
       clearInterval(loadingDotsInterval);
       loadingDotsInterval = null;
+    }
+    if (workbenchSearchTimer) {
+      clearTimeout(workbenchSearchTimer);
+      workbenchSearchTimer = null;
     }
     cleanup();
   });
@@ -8492,7 +8559,7 @@
     height: 100%;
     min-height: 0;
     overflow: hidden;
-    background: #ffffff;
+    background: transparent;
   }
 
   .viabilidade-content.workbench-mode .main-layout {
@@ -8505,6 +8572,7 @@
     padding: 0 !important;
     gap: 0 !important;
     overflow: hidden !important;
+    background: transparent !important;
   }
 
   .viabilidade-content.workbench-mode .search-panel,
@@ -8521,10 +8589,12 @@
     max-width: 100% !important;
     height: 100% !important;
     overflow: hidden !important;
-    gap: 0.5rem !important;
-    padding: 0.35rem !important;
+    gap: 0.55rem !important;
+    padding: 0 !important;
+    background: transparent !important;
   }
 
+  /* Box só do mapa (sem título) */
   .viabilidade-content.workbench-mode .map-container {
     flex: 1 1 58% !important;
     min-height: 180px !important;
@@ -8535,6 +8605,14 @@
     overflow: hidden !important;
     display: flex !important;
     flex-direction: column !important;
+    border: 1px solid #d1d5db !important;
+    border-radius: 10px !important;
+    background: #ffffff !important;
+    box-shadow: none !important;
+  }
+
+  .viabilidade-content.workbench-mode .map-header {
+    display: none !important;
   }
 
   .viabilidade-content.workbench-mode .map-container.minimized {
@@ -8544,8 +8622,9 @@
 
   .viabilidade-content.workbench-mode .map-container .map {
     flex: 1 1 auto !important;
-    min-height: 140px !important;
+    min-height: 160px !important;
     height: 100% !important;
+    border-radius: 10px !important;
   }
 
   .viabilidade-content.workbench-mode .map-container .minimize-button,
@@ -8555,6 +8634,7 @@
     display: none !important;
   }
 
+  /* Tabela fora do box do mapa */
   .viabilidade-content.workbench-mode .results-table-container,
   .viabilidade-content.workbench-mode .empty-state {
     flex: 0 1 42% !important;
@@ -8564,6 +8644,10 @@
     width: 100% !important;
     margin: 0 !important;
     overflow: auto !important;
+    border: 1px solid #d1d5db !important;
+    border-radius: 10px !important;
+    background: #ffffff !important;
+    box-shadow: none !important;
   }
 
   .viabilidade-content.workbench-mode .results-table-container.minimized,
