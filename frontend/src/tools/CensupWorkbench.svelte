@@ -466,8 +466,11 @@
 
     loading = false;
     chamado = null;
+    equipamentos = [];
+    mapPreviewImage = '';
+    capturingMapPreview = false;
     error = '';
-    statusMsg = 'Aguardando sincronização de um chamado…';
+    statusMsg = 'Mapa pronto — sincronize um chamado para preencher o formulário';
   }
 
   function buildReportPayload() {
@@ -706,7 +709,7 @@
               <p class="wb-preview-hint">
                 O mapa foi capturado automaticamente com todas as CTOs encontradas e suas rotas visíveis.
               </p>
-            {:else if mapAddress || (mapLat != null && mapLng != null)}
+            {:else if chamadoId && (mapAddress || (mapLat != null && mapLng != null))}
               <div class="wb-preview-loading">
                 <p>Aguardando mapa e equipamentos para gerar a prévia…</p>
               </div>
@@ -782,7 +785,7 @@
               </div>
             {:else}
               <p class="wb-equip-empty">
-                {mapAddress || (mapLat != null && mapLng != null)
+                {chamadoId
                   ? 'Nenhum equipamento encontrado para este chamado.'
                   : 'Sincronize um chamado na Agenda para carregar os equipamentos aqui.'}
               </p>
@@ -802,37 +805,27 @@
       ></div>
 
       <section class="wb-map-pane" class:collapsed={mapCollapsed}>
-        {#if loading}
-          <div class="wb-map-placeholder">Carregando mapa…</div>
-        {:else if mapAddress || (mapLat != null && mapLng != null)}
-          {#key chamadoId || 'sem-chamado'}
+        {#if ViabilidadeAlares}
+          {#key chamadoId || 'idle-map'}
             <div class="wb-map-host">
-              {#if ViabilidadeAlares}
-                <svelte:component
-                  this={ViabilidadeAlares}
-                  bind:this={viabilidadeRef}
-                  embedded={true}
-                  workbenchMode={true}
-                  mapDomId="censup-workbench-map"
-                  currentUser={usuario}
-                  initialAddress={mapAddress}
-                  initialLat={mapLat}
-                  initialLng={mapLng}
-                  onClientLocationChange={onClientLocationFromMap}
-                  onMapPreviewChange={onMapPreviewFromViabilidade}
-                  onEquipamentosChange={onEquipamentosFromViabilidade}
-                />
-              {:else}
-                <div class="wb-map-placeholder">Carregando mapa…</div>
-              {/if}
+              <svelte:component
+                this={ViabilidadeAlares}
+                bind:this={viabilidadeRef}
+                embedded={true}
+                workbenchMode={true}
+                mapDomId="censup-workbench-map"
+                currentUser={usuario}
+                initialAddress={mapAddress}
+                initialLat={mapLat}
+                initialLng={mapLng}
+                onClientLocationChange={chamadoId ? onClientLocationFromMap : null}
+                onMapPreviewChange={chamadoId ? onMapPreviewFromViabilidade : null}
+                onEquipamentosChange={onEquipamentosFromViabilidade}
+              />
             </div>
           {/key}
         {:else}
-          <div class="wb-map-placeholder">
-            {usuario
-              ? 'Sincronize um chamado na Agenda para carregar o mapa e a tabulação aqui.'
-              : 'Informe o usuário no painel ao lado para iniciar.'}
-          </div>
+          <div class="wb-map-placeholder">Carregando mapa…</div>
         {/if}
       </section>
     </div>
