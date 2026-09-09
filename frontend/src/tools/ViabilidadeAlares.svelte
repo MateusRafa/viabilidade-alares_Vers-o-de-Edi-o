@@ -35,10 +35,16 @@
    * Payload: { source, coords: {lat,lng}, address: clientAddressData }
    */
   export let onClientLocationChange = null;
+  /**
+   * Workbench only: notifica prévia do mapa ({ capturing, image }).
+   */
+  export let onMapPreviewChange = null;
 
   /** Workbench: chave da última localização aplicada (evita loop form↔mapa). */
   let lastWorkbenchLocKey = '';
   let workbenchSearchTimer = null;
+  let workbenchPreviewTimer = null;
+  let workbenchPreviewToken = 0;
 
   $: isDarkTheme = embedded && $theme === 'dark';
 
@@ -1893,6 +1899,10 @@
       clearTimeout(workbenchSearchTimer);
       workbenchSearchTimer = null;
     }
+    if (workbenchPreviewTimer) {
+      clearTimeout(workbenchPreviewTimer);
+      workbenchPreviewTimer = null;
+    }
     cleanup();
   });
 
@@ -2843,6 +2853,7 @@
         if (workbenchMode) {
           try {
             await searchCTOs();
+            scheduleWorkbenchMapPreview();
           } catch (ctoErr) {
             console.warn('[Workbench] Rebusca de CTOs após drag:', ctoErr);
           }
@@ -2862,6 +2873,10 @@
 
       // Buscar CTOs automaticamente após localizar o cliente
       await searchCTOs();
+
+      if (workbenchMode) {
+        scheduleWorkbenchMapPreview();
+      }
 
     } catch (err) {
       console.error('❌ Erro completo:', err);
@@ -6407,9 +6422,71 @@
     }
   }
 
+  function notifyMapPreviewChange(capturing, image = '') {
+    if (!workbenchMode || typeof onMapPreviewChange !== 'function') return;
+    try {
+      onMapPreviewChange({ capturing: !!capturing, image: image || '' });
+    } catch (err) {
+      console.warn('[Workbench] onMapPreviewChange:', err);
+    }
+  }
+
+  /** Workbench: agenda captura da prévia (casinha + CTOs + rotas), sem abrir modal. */
+  function scheduleWorkbenchMapPreview() {
+    if (!workbenchMode) return;
+    if (workbenchPreviewTimer) clearTimeout(workbenchPreviewTimer);
+    workbenchPreviewTimer = setTimeout(() => {
+      void refreshWorkbenchMapPreview();
+    }, 700);
+  }
+
+  /**
+   * WORKBENCH ONLY — captura prévia do mapa (mesmo método do PDF).
+   * Não altera openReportModal / captureMapAutomatically do standalone.
+   */
+  export async function refreshWorkbenchMapPreview() {
+    if (!workbenchMode) return null;
+    if (!map || !clientCoords) {
+      notifyMapPreviewChange(false, '');
+      return null;
+    }
+
+    const token = ++workbenchPreviewToken;
+    capturingMap = true;
+    mapPreviewImage = '';
+    notifyMapPreviewChange(true, '');
+
+    if (clientInfoWindow) {
+      try {
+        clientInfoWindow.close();
+      } catch {
+        // ignore
+      }
+    }
+
+    try {
+      const image = await captureMapForWorkbench();
+      if (token !== workbenchPreviewToken) return null;
+      mapPreviewImage = image;
+      notifyMapPreviewChange(false, image);
+      return image;
+    } catch (err) {
+      console.warn('[Workbench] Prévia do mapa:', err);
+      if (token === workbenchPreviewToken) {
+        mapPreviewImage = '';
+        notifyMapPreviewChange(false, '');
+      }
+      return null;
+    } finally {
+      if (token === workbenchPreviewToken) {
+        capturingMap = false;
+      }
+    }
+  }
+
   /**
    * WORKBENCH ONLY — chamado pelo CensupWorkbench (botão Informações).
-   * Prefill com dados do formulário, captura mapa e gera o mesmo PDF da Viabilidade.
+   * Prefill com dados do formulário, usa prévia já capturada (ou captura) e gera o PDF.
    * Não altera openReportModal() / exportToPDF() usados na ferramenta standalone.
    */
   export async function generateWorkbenchReport(formData = {}) {
@@ -6429,9 +6506,7 @@
     reportForm.tabulacaoFinal = String(formData.tabulacaoFinal || '').trim();
     reportForm.projetista = String(formData.projetista || currentUser || '').trim();
     reportFormErrors = {};
-    mapPreviewImage = '';
     error = null;
-    capturingMap = true;
 
     if (clientInfoWindow) {
       try {
@@ -6442,7 +6517,21 @@
     }
 
     try {
-      mapPreviewImage = await captureMapForWorkbench();
+      // Reutiliza prévia se já existir; senão captura agora
+      if (!mapPreviewImage) {
+        capturingMap = true;
+        notifyMapPreviewChange(true, '');
+        try {
+          mapPreviewImage = await captureMapForWorkbench();
+          notifyMapPreviewChange(false, mapPreviewImage);
+        } finally {
+          capturingMap = false;
+        }
+      }
+
+      if (!mapPreviewImage) {
+        throw new Error('Não foi possível capturar a prévia do mapa. Aguarde o mapa carregar e tente de novo.');
+      }
 
       if (!validateReportForm()) {
         showReportModal = true;
