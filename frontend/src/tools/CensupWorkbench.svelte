@@ -32,7 +32,10 @@
   let mapCollapsed = false;
   let splitDragging = false;
   let splitEl = null;
+  let equipPaneEl = null;
   let splitResizeRaf = 0;
+  let splitStartY = 0;
+  let splitStartEquipHeight = 0;
   /** Coords da casinha (mapa) — evita re-geocode por texto ao sync do form. */
   let pinCoords = null;
   let reanaliseTimer = null;
@@ -78,12 +81,15 @@
     return h;
   }
 
-  function applySplitFromClientY(clientY) {
+  function onSplitPointerMove(e) {
+    if (!splitDragging) return;
+    e.preventDefault();
     if (!splitEl) return;
-    const rect = splitEl.getBoundingClientRect();
-    if (rect.height < EQUIP_HEADER_H + HANDLE_H + MAP_COLLAPSED_H) return;
-    const raw = clientY - rect.top;
-    equipPaneHeightPx = clampEquipHeight(raw, rect.height);
+    const splitRect = splitEl.getBoundingClientRect();
+    if (splitRect.height < EQUIP_HEADER_H + HANDLE_H + MAP_COLLAPSED_H) return;
+    const deltaY = e.clientY - splitStartY;
+    const nextHeight = splitStartEquipHeight + deltaY;
+    equipPaneHeightPx = clampEquipHeight(nextHeight, splitRect.height);
     if (splitResizeRaf) cancelAnimationFrame(splitResizeRaf);
     splitResizeRaf = requestAnimationFrame(() => {
       try {
@@ -92,12 +98,6 @@
         // ignore
       }
     });
-  }
-
-  function onSplitPointerMove(e) {
-    if (!splitDragging) return;
-    e.preventDefault();
-    applySplitFromClientY(e.clientY);
   }
 
   function endSplitDrag() {
@@ -118,7 +118,12 @@
   function startSplitDrag(e) {
     if (e.button != null && e.button !== 0) return;
     e.preventDefault();
+    if (!splitEl || !equipPaneEl) return;
+    const splitRect = splitEl.getBoundingClientRect();
+    if (splitRect.height < EQUIP_HEADER_H + HANDLE_H + MAP_COLLAPSED_H) return;
     splitDragging = true;
+    splitStartY = e.clientY;
+    splitStartEquipHeight = equipPaneEl.getBoundingClientRect().height;
     try {
       document.body.style.cursor = 'row-resize';
       document.body.style.userSelect = 'none';
@@ -128,7 +133,6 @@
     window.addEventListener('pointermove', onSplitPointerMove);
     window.addEventListener('pointerup', endSplitDrag);
     window.addEventListener('pointercancel', endSplitDrag);
-    applySplitFromClientY(e.clientY);
   }
 
   function reclampEquipToSplit() {
@@ -667,6 +671,7 @@
     <div class="wb-split" bind:this={splitEl}>
       <aside
         class="wb-equip-pane"
+        bind:this={equipPaneEl}
         class:collapsed={equipCollapsed}
         style={equipPaneStyle()}
       >
