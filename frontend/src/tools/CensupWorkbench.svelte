@@ -299,11 +299,10 @@
   }
 
   function openInfoModal() {
-    if (!chamadoId) {
-      error = 'Sincronize um chamado na Agenda para preencher o relatório.';
-      return;
-    }
     error = '';
+    // Prévia só é capturada ao clicar Gerar Relatório no modal
+    mapPreviewImage = '';
+    capturingMapPreview = false;
     showInfoModal = true;
   }
 
@@ -508,26 +507,35 @@
   }
 
   async function gerarRelatorio() {
-    if (!chamadoId) {
-      error = 'Chamado não carregado.';
+    if (!viabilidadeRef || typeof viabilidadeRef.generateWorkbenchReport !== 'function') {
+      error = 'Mapa ainda carregando. Localize um endereço e tente de novo.';
       return;
     }
-    if (!viabilidadeRef || typeof viabilidadeRef.generateWorkbenchReport !== 'function') {
-      error = 'Mapa ainda carregando. Aguarde a localização e tente de novo.';
-      return;
+    if (!showInfoModal) {
+      openInfoModal();
     }
     generating = true;
     error = '';
+    capturingMapPreview = true;
+    mapPreviewImage = '';
     statusMsg = 'Capturando mapa e gerando PDF…';
     try {
+      // Garante print sob demanda (não reutiliza prévia antiga)
+      if (typeof viabilidadeRef.refreshWorkbenchMapPreview === 'function') {
+        const preview = await viabilidadeRef.refreshWorkbenchMapPreview();
+        if (preview) mapPreviewImage = preview;
+      }
       await viabilidadeRef.generateWorkbenchReport(buildReportPayload());
       statusMsg = 'PDF gerado (modelo Viabilidade Alares)';
       showInfoModal = false;
-      postToParent('REPORT_GENERATED', { chamadoId });
+      if (chamadoId) {
+        postToParent('REPORT_GENERATED', { chamadoId });
+      }
     } catch (err) {
       error = err?.message || String(err);
       statusMsg = '';
     } finally {
+      capturingMapPreview = false;
       generating = false;
     }
   }
@@ -547,9 +555,13 @@
     statusMsg = 'Localizando endereço no mapa…';
     // Libera pin antigo para a busca por texto valer
     pinCoords = null;
+    mapPreviewImage = '';
+    capturingMapPreview = false;
     try {
       await viabilidadeRef.searchWorkbenchAddress(endereco);
-      statusMsg = 'Endereço localizado no mapa';
+      statusMsg = 'Endereço localizado — preencha o relatório';
+      // Igual fluxo oficial: após localizar, abre o modal de relatório (sem print ainda)
+      openInfoModal();
     } catch (err) {
       error = err?.message || String(err);
       statusMsg = '';
@@ -746,8 +758,8 @@
                 initialAddress={mapAddress}
                 initialLat={mapLat}
                 initialLng={mapLng}
-                onClientLocationChange={chamadoId ? onClientLocationFromMap : null}
-                onMapPreviewChange={chamadoId ? onMapPreviewFromViabilidade : null}
+                onClientLocationChange={onClientLocationFromMap}
+                onMapPreviewChange={onMapPreviewFromViabilidade}
                 onEquipamentosChange={onEquipamentosFromViabilidade}
               />
             </div>
@@ -879,13 +891,13 @@
                 <p class="wb-preview-hint">
                   O mapa foi capturado automaticamente com todas as CTOs encontradas e suas rotas visíveis.
                 </p>
-              {:else if chamadoId && (mapAddress || (mapLat != null && mapLng != null))}
+              {:else if chamadoId || mapAddress || (mapLat != null && mapLng != null)}
                 <div class="wb-preview-loading">
-                  <p>Aguardando mapa e equipamentos para gerar a prévia…</p>
+                  <p>Clique em Gerar Relatório para capturar a prévia do mapa.</p>
                 </div>
               {:else}
                 <div class="wb-preview-loading">
-                  <p>Abra um chamado para capturar a prévia do mapa.</p>
+                  <p>Localize um endereço no mapa para gerar o relatório.</p>
                 </div>
               {/if}
             </div>
@@ -896,14 +908,14 @@
             <button type="submit" class="wb-modal-btn-save" disabled={saving || loading || !chamadoId}>
               {saving ? 'Salvando…' : 'Salvar Relatório'}
             </button>
-            <button
-              type="button"
-              class="wb-modal-btn-pdf"
-              on:click={gerarRelatorio}
-              disabled={generating || loading || !chamadoId || capturingMapPreview}
-            >
-              {generating ? 'Gerando…' : 'Gerar Relatório'}
-            </button>
+              <button
+                type="button"
+                class="wb-modal-btn-pdf"
+                on:click={gerarRelatorio}
+                disabled={generating || loading || capturingMapPreview}
+              >
+                {generating || capturingMapPreview ? 'Gerando…' : 'Gerar Relatório'}
+              </button>
           </div>
         </form>
       </div>
