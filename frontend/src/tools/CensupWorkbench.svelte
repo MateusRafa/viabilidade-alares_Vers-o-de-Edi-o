@@ -36,6 +36,9 @@
   let splitResizeRaf = 0;
   let splitStartY = 0;
   let splitStartEquipHeight = 0;
+  let splitHandleEl = null;
+  let splitPointerId = null;
+  let splitShieldEl = null;
   /** Coords da casinha (mapa) — evita re-geocode por texto ao sync do form. */
   let pinCoords = null;
   let reanaliseTimer = null;
@@ -43,9 +46,10 @@
   let mapPreviewImage = '';
   let capturingMapPreview = false;
 
-  const EQUIP_HEADER_H = 34;
+  /** Altura da barra Equipamentos colapsada (toolbar + padding ≈ Informações). */
+  const EQUIP_HEADER_H = 42;
   const MAP_COLLAPSED_H = 8;
-  const HANDLE_H = 8;
+  const HANDLE_H = 12;
   const SNAP_PX = 28;
   const DEFAULT_EQUIP_RATIO = 0.32;
 
@@ -81,6 +85,55 @@
     return h;
   }
 
+  function ensureSplitShield() {
+    if (splitShieldEl) return splitShieldEl;
+    splitShieldEl = document.createElement('div');
+    splitShieldEl.className = 'wb-split-shield';
+    splitShieldEl.setAttribute('aria-hidden', 'true');
+    return splitShieldEl;
+  }
+
+  function beginSplitCapture(handle, pointerId) {
+    const root = document.querySelector('.workbench') || document.body;
+    const shield = ensureSplitShield();
+    if (!shield.isConnected) root.appendChild(shield);
+    document.body.classList.add('wb-split-interacting');
+    try {
+      if (handle && pointerId != null && typeof handle.setPointerCapture === 'function') {
+        handle.setPointerCapture(pointerId);
+      }
+    } catch {
+      // ignore
+    }
+    // Mapa Google / iframes internos não roubam o ponteiro
+    root.querySelectorAll('iframe, .map, #censup-workbench-map').forEach((el) => {
+      el.classList?.add?.('wb-pe-none');
+      if (el.style) el.style.pointerEvents = 'none';
+    });
+  }
+
+  function endSplitCapture() {
+    document.body.classList.remove('wb-split-interacting');
+    splitShieldEl?.remove();
+    try {
+      if (
+        splitHandleEl &&
+        splitPointerId != null &&
+        typeof splitHandleEl.releasePointerCapture === 'function'
+      ) {
+        splitHandleEl.releasePointerCapture(splitPointerId);
+      }
+    } catch {
+      // ignore
+    }
+    document.querySelectorAll('.wb-pe-none').forEach((el) => {
+      el.classList.remove('wb-pe-none');
+      if (el.style) el.style.pointerEvents = '';
+    });
+    splitHandleEl = null;
+    splitPointerId = null;
+  }
+
   function onSplitPointerMove(e) {
     if (!splitDragging) return;
     e.preventDefault();
@@ -109,9 +162,11 @@
     } catch {
       // ignore
     }
-    window.removeEventListener('pointermove', onSplitPointerMove);
-    window.removeEventListener('pointerup', endSplitDrag);
-    window.removeEventListener('pointercancel', endSplitDrag);
+    endSplitCapture();
+    window.removeEventListener('pointermove', onSplitPointerMove, true);
+    window.removeEventListener('pointerup', endSplitDrag, true);
+    window.removeEventListener('pointercancel', endSplitDrag, true);
+    window.removeEventListener('blur', endSplitDrag);
     requestMapResize(60);
   }
 
@@ -124,15 +179,19 @@
     splitDragging = true;
     splitStartY = e.clientY;
     splitStartEquipHeight = equipPaneEl.getBoundingClientRect().height;
+    splitHandleEl = e.currentTarget;
+    splitPointerId = e.pointerId;
     try {
       document.body.style.cursor = 'row-resize';
       document.body.style.userSelect = 'none';
     } catch {
       // ignore
     }
-    window.addEventListener('pointermove', onSplitPointerMove);
-    window.addEventListener('pointerup', endSplitDrag);
-    window.addEventListener('pointercancel', endSplitDrag);
+    beginSplitCapture(splitHandleEl, splitPointerId);
+    window.addEventListener('pointermove', onSplitPointerMove, true);
+    window.addEventListener('pointerup', endSplitDrag, true);
+    window.addEventListener('pointercancel', endSplitDrag, true);
+    window.addEventListener('blur', endSplitDrag);
   }
 
   function reclampEquipToSplit() {
@@ -167,8 +226,11 @@
   }
 
   function equipPaneStyle() {
+    if (equipCollapsed) {
+      return 'height:auto';
+    }
     if (equipPaneHeightPx == null) {
-      return equipCollapsed ? `height:${EQUIP_HEADER_H}px` : `height:${DEFAULT_EQUIP_RATIO * 100}%`;
+      return `height:${DEFAULT_EQUIP_RATIO * 100}%`;
     }
     return `height:${equipPaneHeightPx}px`;
   }
@@ -876,13 +938,21 @@
   }
 
   .wb-equip-pane.collapsed {
-    height: 34px !important;
+    height: auto !important;
+    flex: 0 0 auto;
+  }
+
+  .wb-equip-pane.collapsed .wb-form-toolbar {
+    width: 100%;
+    max-width: 100%;
+    align-items: center;
+    justify-content: space-between;
   }
 
   .wb-split-handle {
-    flex: 0 0 8px;
+    flex: 0 0 12px;
     width: 100%;
-    margin: 0;
+    margin: -2px 0;
     padding: 0;
     border: none;
     background: transparent;
@@ -908,6 +978,21 @@
   .wb-split-handle:hover::after,
   .wb-split-handle.dragging::after {
     background: rgba(123, 104, 238, 0.35);
+  }
+
+  :global(.wb-split-shield) {
+    position: fixed;
+    inset: 0;
+    z-index: 99999;
+    background: transparent;
+    cursor: row-resize;
+    touch-action: none;
+  }
+
+  :global(body.wb-split-interacting),
+  :global(body.wb-split-interacting *) {
+    cursor: row-resize !important;
+    user-select: none !important;
   }
 
   .wb-equip-body {
