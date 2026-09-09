@@ -453,7 +453,7 @@
           <input bind:value={form.cep} placeholder="Preenchido pelo mapa quando disponível" />
         </label>
         <label>
-          <span>6. Coordenadas (Lat/Lon)</span>
+          <span>6. Coordenadas</span>
           <input bind:value={form.coordenadas} readonly placeholder="Ajuste a casinha no mapa" />
         </label>
         <label>
