@@ -24,7 +24,7 @@
   let statusMsg = '';
   let tabulacoes = [];
   let sugeridaOriginal = '';
-  let formMinimized = false;
+  let showInfoModal = false;
   let equipamentos = [];
   /** Altura do box Equipamentos (px) dentro do split; null = padrão ~32%. */
   let equipPaneHeightPx = null;
@@ -195,13 +195,6 @@
     window.addEventListener('blur', endSplitDrag);
   }
 
-  function reclampEquipToSplit() {
-    if (equipPaneHeightPx == null || !splitEl) return;
-    const h = splitEl.getBoundingClientRect().height;
-    if (h < EQUIP_HEADER_H + HANDLE_H + MAP_COLLAPSED_H) return;
-    equipPaneHeightPx = clampEquipHeight(equipPaneHeightPx, h);
-  }
-
   function toggleEquipCollapsed() {
     const willCollapse = !equipCollapsed;
     if (willCollapse) {
@@ -248,18 +241,11 @@
   };
 
   $: mapAddress = form.enderecoCompleto || chamado?.endereco?.completo || '';
-  $: originalMapAddress = chamado?.endereco?.completo || '';
-  // Edição manual do texto (sem pin da casinha) → geocode por endereço
-  $: addressWasEdited =
-    pinCoords == null &&
-    !!(form.enderecoCompleto || '').trim() &&
-    (form.enderecoCompleto || '').trim() !== (originalMapAddress || '').trim();
+  // Digitar endereço NÃO altera coords do mapa — só Localizar / casinha / sync do chamado
   $: mapLat =
-    pinCoords?.lat ??
-    (addressWasEdited ? null : chamado?.localizacao?.lat ?? chamado?.mapaCoords?.lat ?? null);
+    pinCoords?.lat ?? chamado?.localizacao?.lat ?? chamado?.mapaCoords?.lat ?? null;
   $: mapLng =
-    pinCoords?.lng ??
-    (addressWasEdited ? null : chamado?.localizacao?.lng ?? chamado?.mapaCoords?.lng ?? null);
+    pinCoords?.lng ?? chamado?.localizacao?.lng ?? chamado?.mapaCoords?.lng ?? null;
 
   function formatCoords(lat, lng) {
     if (lat == null || lng == null || Number.isNaN(Number(lat)) || Number.isNaN(Number(lng))) {
@@ -307,9 +293,22 @@
     sugeridaOriginal = item?.tabulacaoFinal || item?.analiseIa?.tabulacaoSugerida || '';
   }
 
-  /** Usuário digitou no endereço — solta o pin para o mapa poder geocodificar o texto. */
+  /** Digitar no overlay só altera o texto — pesquisa só no botão Localizar. */
   function onEnderecoManualInput() {
-    pinCoords = null;
+    // no-op intencional (mantém pin/coords até Localizar ou casinha)
+  }
+
+  function openInfoModal() {
+    if (!chamadoId) {
+      error = 'Sincronize um chamado na Agenda para preencher o relatório.';
+      return;
+    }
+    error = '';
+    showInfoModal = true;
+  }
+
+  function closeInfoModal() {
+    showInfoModal = false;
   }
 
   /**
@@ -523,6 +522,7 @@
     try {
       await viabilidadeRef.generateWorkbenchReport(buildReportPayload());
       statusMsg = 'PDF gerado (modelo Viabilidade Alares)';
+      showInfoModal = false;
       postToParent('REPORT_GENERATED', { chamadoId });
     } catch (err) {
       error = err?.message || String(err);
@@ -545,6 +545,7 @@
     locating = true;
     error = '';
     statusMsg = 'Localizando endereço no mapa…';
+    // Libera pin antigo para a busca por texto valer
     pinCoords = null;
     try {
       await viabilidadeRef.searchWorkbenchAddress(endereco);
@@ -554,6 +555,13 @@
       statusMsg = '';
     } finally {
       locating = false;
+    }
+  }
+
+  async function onSalvarRelatorioSubmit() {
+    await salvarRelatorio();
+    if (!error) {
+      showInfoModal = false;
     }
   }
 
@@ -653,112 +661,6 @@
   {/if}
 
   <div class="wb-body">
-    <aside class="wb-form-pane" class:minimized={formMinimized}>
-      <div class="wb-form-toolbar">
-        <span class="wb-form-toolbar-title">Informações</span>
-        <button
-          type="button"
-          class="wb-pane-toggle"
-          on:click={() => {
-            formMinimized = !formMinimized;
-            requestMapResize();
-            setTimeout(reclampEquipToSplit, 140);
-          }}
-          title={formMinimized ? 'Expandir formulário' : 'Minimizar formulário'}
-          aria-label={formMinimized ? 'Expandir formulário' : 'Minimizar formulário'}
-        >
-          {formMinimized ? '▾' : '▴'}
-        </button>
-      </div>
-      {#if !formMinimized}
-      <form class="wb-form" on:submit|preventDefault={salvarRelatorio}>
-        <label>
-          <span>1. Número do ALA</span>
-          <input bind:value={form.numeroALA} inputmode="numeric" placeholder="Digite apenas números" />
-        </label>
-        <label>
-          <span>2. Cidade</span>
-          <input bind:value={form.cidade} />
-        </label>
-        <label>
-          <span>3. Endereço Completo</span>
-          <input bind:value={form.enderecoCompleto} on:input={onEnderecoManualInput} />
-        </label>
-        <label>
-          <span>4. Número do Endereço</span>
-          <input bind:value={form.numeroEndereco} />
-        </label>
-        <label>
-          <span>5. CEP do Endereço</span>
-          <input bind:value={form.cep} placeholder="Preenchido pelo mapa quando disponível" />
-        </label>
-        <label>
-          <span>6. Coordenadas</span>
-          <input bind:value={form.coordenadas} readonly placeholder="Ajuste a casinha no mapa" />
-        </label>
-        <label>
-          <span>7. Tabulação Final</span>
-          <select bind:value={form.tabulacaoFinal}>
-            <option value="">Selecione uma opção</option>
-            {#each tabulacoes as tab}
-              <option value={tab}>{tab}</option>
-            {/each}
-            {#if form.tabulacaoFinal && !tabulacoes.includes(form.tabulacaoFinal)}
-              <option value={form.tabulacaoFinal}>{form.tabulacaoFinal}</option>
-            {/if}
-          </select>
-          {#if sugeridaOriginal}
-            <small class="hint">
-              Sugestão automática: {sugeridaOriginal}{reanalyzing ? ' (recalculando…)' : ''}
-            </small>
-          {:else if reanalyzing}
-            <small class="hint">Recalculando tabulação…</small>
-          {/if}
-        </label>
-        <label>
-          <span>8. Projetista</span>
-          <input bind:value={form.projetista} readonly />
-        </label>
-
-        <div class="wb-map-preview-block">
-          <span class="wb-map-preview-label">9. Prévia do Mapa</span>
-          <div class="wb-map-preview-container">
-            {#if capturingMapPreview}
-              <div class="wb-preview-loading">
-                <div class="wb-loading-spinner"></div>
-                <p>Capturando mapa...</p>
-              </div>
-            {:else if mapPreviewImage}
-              <div class="wb-preview-image-wrapper">
-                <img src={mapPreviewImage} alt="Prévia do Mapa" class="wb-preview-image" />
-              </div>
-              <p class="wb-preview-hint">
-                O mapa foi capturado automaticamente com todas as CTOs encontradas e suas rotas visíveis.
-              </p>
-            {:else if chamadoId && (mapAddress || (mapLat != null && mapLng != null))}
-              <div class="wb-preview-loading">
-                <p>Aguardando mapa e equipamentos para gerar a prévia…</p>
-              </div>
-            {:else}
-              <div class="wb-preview-loading">
-                <p>Abra um chamado para capturar a prévia do mapa.</p>
-              </div>
-            {/if}
-          </div>
-        </div>
-
-        <div class="wb-actions">
-          <button type="button" class="btn-secondary" on:click={gerarRelatorio} disabled={generating || loading || !chamadoId || capturingMapPreview}>
-            {generating ? 'Gerando…' : 'Gerar Relatório'}
-          </button>
-          <button type="submit" class="btn-primary" disabled={saving || loading || !chamadoId}>
-            {saving ? 'Salvando…' : 'Salvar Relatório'}
-          </button>
-        </div>
-      </form>
-      {/if}
-    </aside>
-
     <div class="wb-split" bind:this={splitEl}>
       <aside
         class="wb-equip-pane"
@@ -879,10 +781,10 @@
               <button
                 type="button"
                 class="wb-map-btn wb-map-btn-report"
-                on:click={gerarRelatorio}
-                disabled={generating || loading || !chamadoId || capturingMapPreview || locating}
+                on:click={openInfoModal}
+                disabled={loading || locating}
               >
-                {generating ? 'Gerando…' : 'Gerar Relatório'}
+                Gerar Relatório
               </button>
             </div>
           </div>
@@ -891,6 +793,123 @@
     </div>
   </div>
 </div>
+
+{#if showInfoModal}
+  <div
+    class="wb-modal-overlay"
+    role="presentation"
+    on:click={closeInfoModal}
+    on:keydown={(e) => e.key === 'Escape' && closeInfoModal()}
+  >
+    <div
+      class="wb-modal-content"
+      role="dialog"
+      tabindex="0"
+      aria-modal="true"
+      aria-labelledby="wb-info-modal-title"
+      on:click|stopPropagation
+      on:keydown={(e) => e.stopPropagation()}
+    >
+      <div class="wb-modal-header">
+        <h2 id="wb-info-modal-title">Preencher Relatório</h2>
+        <button type="button" class="wb-modal-close" on:click={closeInfoModal} aria-label="Fechar modal">×</button>
+      </div>
+      <div class="wb-modal-body">
+        <form class="wb-modal-form" on:submit|preventDefault={onSalvarRelatorioSubmit}>
+          <div class="wb-modal-field">
+            <label for="wb-modal-ala">1. Número do ALA</label>
+            <input id="wb-modal-ala" bind:value={form.numeroALA} inputmode="numeric" placeholder="Digite apenas números" />
+          </div>
+          <div class="wb-modal-field">
+            <label for="wb-modal-cidade">2. Cidade</label>
+            <input id="wb-modal-cidade" bind:value={form.cidade} />
+          </div>
+          <div class="wb-modal-field">
+            <label for="wb-modal-end">3. Endereço Completo</label>
+            <input id="wb-modal-end" bind:value={form.enderecoCompleto} on:input={onEnderecoManualInput} />
+          </div>
+          <div class="wb-modal-field">
+            <label for="wb-modal-num">4. Número do Endereço</label>
+            <input id="wb-modal-num" bind:value={form.numeroEndereco} />
+          </div>
+          <div class="wb-modal-field">
+            <label for="wb-modal-cep">5. CEP do Endereço</label>
+            <input id="wb-modal-cep" bind:value={form.cep} placeholder="Preenchido pelo mapa quando disponível" />
+          </div>
+          <div class="wb-modal-field">
+            <label for="wb-modal-coords">6. Coordenadas</label>
+            <input id="wb-modal-coords" bind:value={form.coordenadas} readonly placeholder="Ajuste a casinha no mapa" />
+          </div>
+          <div class="wb-modal-field">
+            <label for="wb-modal-tab">7. Tabulação Final</label>
+            <select id="wb-modal-tab" bind:value={form.tabulacaoFinal}>
+              <option value="">Selecione uma opção</option>
+              {#each tabulacoes as tab}
+                <option value={tab}>{tab}</option>
+              {/each}
+              {#if form.tabulacaoFinal && !tabulacoes.includes(form.tabulacaoFinal)}
+                <option value={form.tabulacaoFinal}>{form.tabulacaoFinal}</option>
+              {/if}
+            </select>
+            {#if sugeridaOriginal}
+              <small class="hint">
+                Sugestão automática: {sugeridaOriginal}{reanalyzing ? ' (recalculando…)' : ''}
+              </small>
+            {:else if reanalyzing}
+              <small class="hint">Recalculando tabulação…</small>
+            {/if}
+          </div>
+          <div class="wb-modal-field">
+            <label for="wb-modal-proj">8. Projetista</label>
+            <input id="wb-modal-proj" bind:value={form.projetista} readonly />
+          </div>
+
+          <div class="wb-map-preview-block">
+            <span class="wb-map-preview-label">9. Prévia do Mapa</span>
+            <div class="wb-map-preview-container">
+              {#if capturingMapPreview}
+                <div class="wb-preview-loading">
+                  <div class="wb-loading-spinner"></div>
+                  <p>Capturando mapa...</p>
+                </div>
+              {:else if mapPreviewImage}
+                <div class="wb-preview-image-wrapper">
+                  <img src={mapPreviewImage} alt="Prévia do Mapa" class="wb-preview-image" />
+                </div>
+                <p class="wb-preview-hint">
+                  O mapa foi capturado automaticamente com todas as CTOs encontradas e suas rotas visíveis.
+                </p>
+              {:else if chamadoId && (mapAddress || (mapLat != null && mapLng != null))}
+                <div class="wb-preview-loading">
+                  <p>Aguardando mapa e equipamentos para gerar a prévia…</p>
+                </div>
+              {:else}
+                <div class="wb-preview-loading">
+                  <p>Abra um chamado para capturar a prévia do mapa.</p>
+                </div>
+              {/if}
+            </div>
+          </div>
+
+          <div class="wb-modal-actions">
+            <button type="button" class="wb-modal-btn-cancel" on:click={closeInfoModal}>Cancelar</button>
+            <button type="submit" class="wb-modal-btn-save" disabled={saving || loading || !chamadoId}>
+              {saving ? 'Salvando…' : 'Salvar Relatório'}
+            </button>
+            <button
+              type="button"
+              class="wb-modal-btn-pdf"
+              on:click={gerarRelatorio}
+              disabled={generating || loading || !chamadoId || capturingMapPreview}
+            >
+              {generating ? 'Gerando…' : 'Gerar Relatório'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+{/if}
 
 <style>
   .workbench {
@@ -929,33 +948,6 @@
     overflow: hidden;
     background: #eef1f8;
     box-sizing: border-box;
-  }
-
-  .wb-form-pane {
-    flex: 0 1 auto;
-    align-self: stretch;
-    width: auto;
-    min-width: 0;
-    max-width: 100%;
-    max-height: 38%;
-    overflow-x: hidden;
-    overflow-y: auto;
-    display: flex;
-    flex-direction: column;
-    gap: 0.4rem;
-    padding: 0;
-    background: #ffffff;
-    border: 1px solid #d1d5db;
-    border-radius: 10px;
-    box-shadow: none;
-    box-sizing: border-box;
-  }
-
-  .wb-form-pane.minimized {
-    flex: 0 0 auto;
-    max-height: none;
-    overflow: hidden;
-    align-items: stretch;
   }
 
   .wb-split {
@@ -1135,13 +1127,6 @@
     box-sizing: border-box;
   }
 
-  .wb-form-pane.minimized .wb-form-toolbar {
-    flex-direction: row;
-    justify-content: space-between;
-    width: 100%;
-    max-width: 100%;
-  }
-
   .wb-form-toolbar-title {
     font-size: 0.72rem;
     font-weight: 700;
@@ -1151,13 +1136,6 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-
-  .wb-form-pane.minimized .wb-form-toolbar-title {
-    writing-mode: horizontal-tb;
-    transform: none;
-    margin-top: 0;
-    letter-spacing: normal;
   }
 
   .wb-pane-toggle {
@@ -1183,41 +1161,8 @@
     background: #f5f3ff;
   }
 
-  .wb-form {
-    display: flex;
-    flex-direction: column;
-    gap: 0.4rem;
-    padding: 0 0.55rem 0.65rem;
-  }
-
-  .wb-form label {
-    display: flex;
-    flex-direction: column;
-    gap: 0.18rem;
-    font-size: 0.68rem;
-    font-weight: 600;
-    color: #374151;
-  }
-
-  .wb-form input,
-  .wb-form select {
-    border: 1px solid #d1d5db;
-    border-radius: 6px;
-    padding: 0.32rem 0.45rem;
-    font-size: 0.75rem;
-    font-weight: 500;
-    line-height: 1.25;
-    color: #111827;
-    background: #fff;
-    min-height: 1.7rem;
-  }
-
-  .wb-form input[readonly] {
-    background: #f3f4f6;
-  }
-
   .hint {
-    font-size: 0.62rem;
+    font-size: 0.72rem;
     font-weight: 500;
     color: #7b68ee;
   }
@@ -1297,37 +1242,144 @@
     line-height: 1.3;
   }
 
-  .wb-actions {
+  .wb-modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.6);
     display: flex;
-    flex-wrap: wrap;
-    gap: 0.35rem;
-    margin-top: 0.25rem;
+    align-items: center;
+    justify-content: center;
+    z-index: 10000;
+    padding: 20px;
+    box-sizing: border-box;
   }
 
-  .btn-primary,
-  .btn-secondary {
+  .wb-modal-content {
+    background: #fff;
+    border-radius: 12px;
+    max-width: 600px;
+    width: 100%;
+    max-height: 90vh;
+    overflow-y: auto;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+    box-sizing: border-box;
+  }
+
+  .wb-modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 1.5rem;
+    border-bottom: 2px solid #7b68ee;
+    background: linear-gradient(135deg, #7b68ee 0%, #6495ed 100%);
+    color: #fff;
+  }
+
+  .wb-modal-header h2 {
+    margin: 0;
+    font-size: 1.35rem;
+    font-weight: 600;
+  }
+
+  .wb-modal-close {
+    background: none;
+    border: none;
+    color: #fff;
+    font-size: 2rem;
+    cursor: pointer;
+    padding: 0;
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    line-height: 1;
+  }
+
+  .wb-modal-close:hover {
+    background: rgba(255, 255, 255, 0.2);
+  }
+
+  .wb-modal-body {
+    padding: 1.5rem;
+  }
+
+  .wb-modal-form {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+  }
+
+  .wb-modal-field {
+    margin-bottom: 1.15rem;
+  }
+
+  .wb-modal-field label {
+    display: block;
+    margin-bottom: 0.45rem;
+    font-weight: 600;
+    color: #333;
+    font-size: 0.9rem;
+  }
+
+  .wb-modal-field input,
+  .wb-modal-field select {
+    width: 100%;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    padding: 0.55rem 0.65rem;
+    font-size: 0.9rem;
+    color: #111827;
+    background: #fff;
+    box-sizing: border-box;
+  }
+
+  .wb-modal-field input[readonly] {
+    background: #f3f4f6;
+  }
+
+  .wb-modal-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    justify-content: flex-end;
+    margin-top: 0.75rem;
+    padding-top: 0.75rem;
+    border-top: 1px solid #e5e7eb;
+  }
+
+  .wb-modal-btn-cancel,
+  .wb-modal-btn-save,
+  .wb-modal-btn-pdf {
     border: none;
     border-radius: 6px;
-    padding: 0.4rem 0.65rem;
-    font-size: 0.72rem;
-    font-weight: 600;
+    padding: 0.55rem 0.9rem;
+    font-size: 0.85rem;
+    font-weight: 700;
     cursor: pointer;
   }
 
-  .btn-primary {
+  .wb-modal-btn-cancel {
+    background: #e5e7eb;
+    color: #374151;
+  }
+
+  .wb-modal-btn-save {
     background: #6495ed;
     color: #fff;
   }
 
-  .btn-primary:disabled,
-  .btn-secondary:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
+  .wb-modal-btn-pdf {
+    background: #7b68ee;
+    color: #fff;
   }
 
-  .btn-secondary {
-    background: #e5e7eb;
-    color: #374151;
+  .wb-modal-btn-cancel:disabled,
+  .wb-modal-btn-save:disabled,
+  .wb-modal-btn-pdf:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
   }
 
   .wb-map-pane {
