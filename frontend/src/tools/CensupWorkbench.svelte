@@ -25,8 +25,14 @@
   let tabulacoes = [];
   let sugeridaOriginal = '';
   let formMinimized = false;
-  let equipMinimized = false;
   let equipamentos = [];
+  /** Altura do box Equipamentos (px) dentro do split; null = padrão ~32%. */
+  let equipPaneHeightPx = null;
+  let equipCollapsed = false;
+  let mapCollapsed = false;
+  let splitDragging = false;
+  let splitEl = null;
+  let splitResizeRaf = 0;
   /** Coords da casinha (mapa) — evita re-geocode por texto ao sync do form. */
   let pinCoords = null;
   let reanaliseTimer = null;
@@ -34,18 +40,133 @@
   let mapPreviewImage = '';
   let capturingMapPreview = false;
 
-  function requestMapResize() {
+  const EQUIP_HEADER_H = 34;
+  const MAP_COLLAPSED_H = 8;
+  const HANDLE_H = 8;
+  const SNAP_PX = 28;
+  const DEFAULT_EQUIP_RATIO = 0.32;
+
+  function requestMapResize(delayMs = 120) {
     setTimeout(() => {
       try {
         window.dispatchEvent(new Event('resize'));
       } catch {
         // ignore
       }
-    }, 120);
+    }, delayMs);
   }
 
   function onEquipamentosFromViabilidade(payload = {}) {
     equipamentos = Array.isArray(payload.items) ? payload.items : [];
+  }
+
+  function clampEquipHeight(height, splitHeight) {
+    const maxEquip = Math.max(EQUIP_HEADER_H, splitHeight - HANDLE_H - MAP_COLLAPSED_H);
+    let h = Math.max(EQUIP_HEADER_H, Math.min(maxEquip, height));
+    if (h <= EQUIP_HEADER_H + SNAP_PX) {
+      h = EQUIP_HEADER_H;
+      equipCollapsed = true;
+      mapCollapsed = false;
+    } else if (h >= maxEquip - SNAP_PX) {
+      h = maxEquip;
+      equipCollapsed = false;
+      mapCollapsed = true;
+    } else {
+      equipCollapsed = false;
+      mapCollapsed = false;
+    }
+    return h;
+  }
+
+  function applySplitFromClientY(clientY) {
+    if (!splitEl) return;
+    const rect = splitEl.getBoundingClientRect();
+    if (rect.height < EQUIP_HEADER_H + HANDLE_H + MAP_COLLAPSED_H) return;
+    const raw = clientY - rect.top;
+    equipPaneHeightPx = clampEquipHeight(raw, rect.height);
+    if (splitResizeRaf) cancelAnimationFrame(splitResizeRaf);
+    splitResizeRaf = requestAnimationFrame(() => {
+      try {
+        window.dispatchEvent(new Event('resize'));
+      } catch {
+        // ignore
+      }
+    });
+  }
+
+  function onSplitPointerMove(e) {
+    if (!splitDragging) return;
+    e.preventDefault();
+    applySplitFromClientY(e.clientY);
+  }
+
+  function endSplitDrag() {
+    if (!splitDragging) return;
+    splitDragging = false;
+    try {
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    } catch {
+      // ignore
+    }
+    window.removeEventListener('pointermove', onSplitPointerMove);
+    window.removeEventListener('pointerup', endSplitDrag);
+    window.removeEventListener('pointercancel', endSplitDrag);
+    requestMapResize(60);
+  }
+
+  function startSplitDrag(e) {
+    if (e.button != null && e.button !== 0) return;
+    e.preventDefault();
+    splitDragging = true;
+    try {
+      document.body.style.cursor = 'row-resize';
+      document.body.style.userSelect = 'none';
+    } catch {
+      // ignore
+    }
+    window.addEventListener('pointermove', onSplitPointerMove);
+    window.addEventListener('pointerup', endSplitDrag);
+    window.addEventListener('pointercancel', endSplitDrag);
+    applySplitFromClientY(e.clientY);
+  }
+
+  function reclampEquipToSplit() {
+    if (equipPaneHeightPx == null || !splitEl) return;
+    const h = splitEl.getBoundingClientRect().height;
+    if (h < EQUIP_HEADER_H + HANDLE_H + MAP_COLLAPSED_H) return;
+    equipPaneHeightPx = clampEquipHeight(equipPaneHeightPx, h);
+  }
+
+  function toggleEquipCollapsed() {
+    const willCollapse = !equipCollapsed;
+    if (willCollapse) {
+      equipCollapsed = true;
+      mapCollapsed = false;
+      equipPaneHeightPx = EQUIP_HEADER_H;
+      requestMapResize(60);
+      return;
+    }
+
+    equipCollapsed = false;
+    mapCollapsed = false;
+    if (splitEl) {
+      const h = splitEl.getBoundingClientRect().height;
+      if (h >= EQUIP_HEADER_H + HANDLE_H + MAP_COLLAPSED_H) {
+        const next = Math.round(Math.max(EQUIP_HEADER_H + 8, (h - HANDLE_H) * DEFAULT_EQUIP_RATIO));
+        equipPaneHeightPx = clampEquipHeight(next, h);
+      }
+    } else {
+      equipPaneHeightPx = null;
+    }
+    requestMapResize(60);
+  }
+
+  function equipPaneStyle() {
+    if (equipPaneHeightPx == null) {
+      return equipCollapsed ? `height:${EQUIP_HEADER_H}px` : `height:${DEFAULT_EQUIP_RATIO * 100}%`;
+    }
+    return `height:${equipPaneHeightPx}px`;
   }
 
   let form = {
@@ -426,6 +547,8 @@
   onDestroy(() => {
     window.removeEventListener('message', onMessage);
     if (reanaliseTimer) clearTimeout(reanaliseTimer);
+    endSplitDrag();
+    if (splitResizeRaf) cancelAnimationFrame(splitResizeRaf);
   });
 </script>
 
@@ -444,6 +567,7 @@
           on:click={() => {
             formMinimized = !formMinimized;
             requestMapResize();
+            setTimeout(reclampEquipToSplit, 140);
           }}
           title={formMinimized ? 'Expandir formulário' : 'Minimizar formulário'}
           aria-label={formMinimized ? 'Expandir formulário' : 'Minimizar formulário'}
@@ -540,98 +664,111 @@
       {/if}
     </aside>
 
-    <aside class="wb-equip-pane" class:minimized={equipMinimized}>
-      <div class="wb-form-toolbar">
-        <span class="wb-form-toolbar-title">Equipamentos</span>
-        <button
-          type="button"
-          class="wb-pane-toggle"
-          on:click={() => {
-            equipMinimized = !equipMinimized;
-            requestMapResize();
-          }}
-          title={equipMinimized ? 'Expandir equipamentos' : 'Minimizar equipamentos'}
-          aria-label={equipMinimized ? 'Expandir equipamentos' : 'Minimizar equipamentos'}
-        >
-          {equipMinimized ? '▾' : '▴'}
-        </button>
-      </div>
-      {#if !equipMinimized}
-        <div class="wb-equip-body">
-          {#if equipamentos.length > 0}
-            <div class="wb-equip-table-wrap">
-              <table class="wb-equip-table">
-                <thead>
-                  <tr>
-                    <th>Nº</th>
-                    <th>CTO</th>
-                    <th>Status</th>
-                    <th>Cidade</th>
-                    <th>POP</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {#each equipamentos as item (item.n + '-' + item.nome)}
-                    <tr>
-                      <td>{item.n}</td>
-                      <td title={item.nome}>{item.nome}</td>
-                      <td>
-                        <span class="wb-status-badge" class:ativado={item.statusClass === 'ativado'} class:desativado={item.statusClass === 'desativado'}>
-                          {item.status}
-                        </span>
-                      </td>
-                      <td>{item.cidade}</td>
-                      <td>{item.pop}</td>
-                    </tr>
-                  {/each}
-                </tbody>
-              </table>
-            </div>
-          {:else}
-            <p class="wb-equip-empty">
-              {mapAddress || (mapLat != null && mapLng != null)
-                ? 'Nenhum equipamento encontrado para este chamado.'
-                : 'Sincronize um chamado na Agenda para carregar os equipamentos aqui.'}
-            </p>
-          {/if}
+    <div class="wb-split" bind:this={splitEl}>
+      <aside
+        class="wb-equip-pane"
+        class:collapsed={equipCollapsed}
+        style={equipPaneStyle()}
+      >
+        <div class="wb-form-toolbar">
+          <span class="wb-form-toolbar-title">Equipamentos</span>
+          <button
+            type="button"
+            class="wb-pane-toggle"
+            on:click={toggleEquipCollapsed}
+            title={equipCollapsed ? 'Expandir equipamentos' : 'Minimizar equipamentos'}
+            aria-label={equipCollapsed ? 'Expandir equipamentos' : 'Minimizar equipamentos'}
+          >
+            {equipCollapsed ? '▾' : '▴'}
+          </button>
         </div>
-      {/if}
-    </aside>
-
-    <section class="wb-map-pane">
-      {#if loading}
-        <div class="wb-map-placeholder">Carregando mapa…</div>
-      {:else if mapAddress || (mapLat != null && mapLng != null)}
-        {#key chamadoId || 'sem-chamado'}
-          <div class="wb-map-host">
-            {#if ViabilidadeAlares}
-              <svelte:component
-                this={ViabilidadeAlares}
-                bind:this={viabilidadeRef}
-                embedded={true}
-                workbenchMode={true}
-                mapDomId="censup-workbench-map"
-                currentUser={usuario}
-                initialAddress={mapAddress}
-                initialLat={mapLat}
-                initialLng={mapLng}
-                onClientLocationChange={onClientLocationFromMap}
-                onMapPreviewChange={onMapPreviewFromViabilidade}
-                onEquipamentosChange={onEquipamentosFromViabilidade}
-              />
+        {#if !equipCollapsed}
+          <div class="wb-equip-body">
+            {#if equipamentos.length > 0}
+              <div class="wb-equip-table-wrap">
+                <table class="wb-equip-table">
+                  <thead>
+                    <tr>
+                      <th>Nº</th>
+                      <th>CTO</th>
+                      <th>Status</th>
+                      <th>Cidade</th>
+                      <th>POP</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {#each equipamentos as item (item.n + '-' + item.nome)}
+                      <tr>
+                        <td>{item.n}</td>
+                        <td title={item.nome}>{item.nome}</td>
+                        <td>
+                          <span class="wb-status-badge" class:ativado={item.statusClass === 'ativado'} class:desativado={item.statusClass === 'desativado'}>
+                            {item.status}
+                          </span>
+                        </td>
+                        <td>{item.cidade}</td>
+                        <td>{item.pop}</td>
+                      </tr>
+                    {/each}
+                  </tbody>
+                </table>
+              </div>
             {:else}
-              <div class="wb-map-placeholder">Carregando mapa…</div>
+              <p class="wb-equip-empty">
+                {mapAddress || (mapLat != null && mapLng != null)
+                  ? 'Nenhum equipamento encontrado para este chamado.'
+                  : 'Sincronize um chamado na Agenda para carregar os equipamentos aqui.'}
+              </p>
             {/if}
           </div>
-        {/key}
-      {:else}
-        <div class="wb-map-placeholder">
-          {usuario
-            ? 'Sincronize um chamado na Agenda para carregar o mapa e a tabulação aqui.'
-            : 'Informe o usuário no painel ao lado para iniciar.'}
-        </div>
-      {/if}
-    </section>
+        {/if}
+      </aside>
+
+      <div
+        class="wb-split-handle"
+        class:dragging={splitDragging}
+        role="separator"
+        aria-orientation="horizontal"
+        aria-label="Redimensionar equipamentos e mapa"
+        title="Arraste para redimensionar"
+        on:pointerdown={startSplitDrag}
+      ></div>
+
+      <section class="wb-map-pane" class:collapsed={mapCollapsed}>
+        {#if loading}
+          <div class="wb-map-placeholder">Carregando mapa…</div>
+        {:else if mapAddress || (mapLat != null && mapLng != null)}
+          {#key chamadoId || 'sem-chamado'}
+            <div class="wb-map-host">
+              {#if ViabilidadeAlares}
+                <svelte:component
+                  this={ViabilidadeAlares}
+                  bind:this={viabilidadeRef}
+                  embedded={true}
+                  workbenchMode={true}
+                  mapDomId="censup-workbench-map"
+                  currentUser={usuario}
+                  initialAddress={mapAddress}
+                  initialLat={mapLat}
+                  initialLng={mapLng}
+                  onClientLocationChange={onClientLocationFromMap}
+                  onMapPreviewChange={onMapPreviewFromViabilidade}
+                  onEquipamentosChange={onEquipamentosFromViabilidade}
+                />
+              {:else}
+                <div class="wb-map-placeholder">Carregando mapa…</div>
+              {/if}
+            </div>
+          {/key}
+        {:else}
+          <div class="wb-map-placeholder">
+            {usuario
+              ? 'Sincronize um chamado na Agenda para carregar o mapa e a tabulação aqui.'
+              : 'Informe o usuário no painel ao lado para iniciar.'}
+          </div>
+        {/if}
+      </section>
+    </div>
   </div>
 </div>
 
@@ -701,13 +838,26 @@
     align-items: stretch;
   }
 
+  .wb-split {
+    flex: 1 1 auto;
+    min-height: 0;
+    min-width: 0;
+    width: 100%;
+    max-width: 100%;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    box-sizing: border-box;
+  }
+
   .wb-equip-pane {
-    flex: 0 1 auto;
+    flex: 0 0 auto;
     align-self: stretch;
     width: auto;
     min-width: 0;
     max-width: 100%;
-    max-height: 28%;
+    height: 32%;
+    max-height: none;
     overflow: hidden;
     display: flex;
     flex-direction: column;
@@ -720,9 +870,39 @@
     box-sizing: border-box;
   }
 
-  .wb-equip-pane.minimized {
-    flex: 0 0 auto;
-    max-height: none;
+  .wb-equip-pane.collapsed {
+    height: 34px !important;
+  }
+
+  .wb-split-handle {
+    flex: 0 0 8px;
+    width: 100%;
+    margin: 0;
+    padding: 0;
+    border: none;
+    background: transparent;
+    cursor: row-resize;
+    touch-action: none;
+    position: relative;
+    z-index: 3;
+    box-sizing: border-box;
+  }
+
+  .wb-split-handle::after {
+    content: '';
+    position: absolute;
+    left: 18%;
+    right: 18%;
+    top: 50%;
+    height: 2px;
+    margin-top: -1px;
+    border-radius: 2px;
+    background: transparent;
+  }
+
+  .wb-split-handle:hover::after,
+  .wb-split-handle.dragging::after {
+    background: rgba(123, 104, 238, 0.35);
   }
 
   .wb-equip-body {
@@ -1020,6 +1200,18 @@
     background: transparent;
     box-sizing: border-box;
     overflow: hidden;
+  }
+
+  .wb-map-pane.collapsed {
+    flex: 0 0 8px;
+    min-height: 8px;
+    max-height: 8px;
+  }
+
+  .wb-map-pane.collapsed .wb-map-placeholder,
+  .wb-map-pane.collapsed .wb-map-host {
+    opacity: 0;
+    pointer-events: none;
   }
 
   .wb-map-host {
