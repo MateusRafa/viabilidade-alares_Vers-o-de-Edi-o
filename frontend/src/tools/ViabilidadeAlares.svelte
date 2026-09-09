@@ -6521,6 +6521,37 @@
   }
 
   /**
+   * WORKBENCH ONLY — botão Localizar do overlay no mapa.
+   * Geocodifica o endereço e busca CTOs (mesmo fluxo da busca por endereço).
+   */
+  export async function searchWorkbenchAddress(address = '') {
+    if (!workbenchMode) {
+      throw new Error('searchWorkbenchAddress só está disponível no Workbench');
+    }
+    const text = String(address || '').trim();
+    if (!text) {
+      throw new Error('Informe um endereço para localizar.');
+    }
+    if (!map || !googleMapsLoaded) {
+      throw new Error('Aguarde o mapa carregar e tente de novo.');
+    }
+
+    searchMode = 'address';
+    addressInput = text;
+    lastWorkbenchLocKey = `a:${text.toLowerCase()}`;
+
+    await tick();
+    await searchClientLocation();
+    if (map && google?.maps) {
+      try {
+        google.maps.event.trigger(map, 'resize');
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  /**
    * WORKBENCH ONLY — chamado pelo CensupWorkbench (botão Informações).
    * Prefill com dados do formulário, usa prévia já capturada (ou captura) e gera o PDF.
    * Não altera openReportModal() / exportToPDF() usados na ferramenta standalone.
