@@ -2881,7 +2881,6 @@
         if (workbenchMode) {
           try {
             await searchCTOs();
-            scheduleWorkbenchMapPreview();
           } catch (ctoErr) {
             console.warn('[Workbench] Rebusca de CTOs após drag:', ctoErr);
           }
@@ -2902,9 +2901,7 @@
       // Buscar CTOs automaticamente após localizar o cliente
       await searchCTOs();
 
-      if (workbenchMode) {
-        scheduleWorkbenchMapPreview();
-      }
+      // Workbench: prévia/print só no clique em Gerar Relatório (igual standalone)
 
     } catch (err) {
       console.error('❌ Erro completo:', err);
@@ -6459,13 +6456,11 @@
     }
   }
 
-  /** Workbench: agenda captura da prévia (casinha + CTOs + rotas), sem abrir modal. */
+  /** Workbench: captura sob demanda (botão Gerar Relatório). Não agenda mais sozinha. */
   function scheduleWorkbenchMapPreview() {
+    // Mantida por compatibilidade — captura automática desligada no workbench.
+    // O print/prévia inicia só em generateWorkbenchReport / refreshWorkbenchMapPreview.
     if (!workbenchMode) return;
-    if (workbenchPreviewTimer) clearTimeout(workbenchPreviewTimer);
-    workbenchPreviewTimer = setTimeout(() => {
-      void refreshWorkbenchMapPreview();
-    }, 700);
   }
 
   /**
