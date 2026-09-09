@@ -39,6 +39,11 @@
    * Workbench only: notifica prévia do mapa ({ capturing, image }).
    */
   export let onMapPreviewChange = null;
+  /**
+   * Workbench only: lista de equipamentos para o box fixo abaixo de Informações.
+   * Payload: { items: [{ n, nome, status, statusClass, cidade, pop }] }
+   */
+  export let onEquipamentosChange = null;
 
   /** Workbench: chave da última localização aplicada (evita loop form↔mapa). */
   let lastWorkbenchLocKey = '';
@@ -1208,6 +1213,37 @@
     } catch (err) {
       console.warn('[Workbench] onClientLocationChange:', err);
     }
+  }
+
+  function emitEquipamentosChange() {
+    if (!workbenchMode || typeof onEquipamentosChange !== 'function') return;
+    try {
+      const items = (ctosRua || []).map((cto, rowIndex) => {
+        const statusCto = getStatusCTO(cto) || 'N/A';
+        const statusUpper = String(statusCto).toUpperCase();
+        let statusClass = '';
+        if (statusUpper.includes('ATIVADO')) statusClass = 'ativado';
+        else if (statusUpper.includes('DESATIVADO') || statusUpper.includes('INATIVO')) statusClass = 'desativado';
+        return {
+          n: ctoNumbers.get(cto) || rowIndex + 1,
+          nome: cto.nome || '',
+          status: statusCto,
+          statusClass,
+          cidade: cto.cidade || 'N/A',
+          pop: cto.pop || 'N/A'
+        };
+      });
+      onEquipamentosChange({ items });
+    } catch (err) {
+      console.warn('[Workbench] onEquipamentosChange:', err);
+    }
+  }
+
+  $: if (workbenchMode) {
+    void ctosRua;
+    void ctosRua?.length;
+    void ctoNumbersVersion;
+    emitEquipamentosChange();
   }
 
   // Função para determinar a cor do marcador baseada na porcentagem de ocupação (pct_ocup)
@@ -9056,7 +9092,7 @@
   /*
    * ============================================================
    * WORKBENCH ONLY — extensão Agenda (workbenchMode=true)
-   * Só mapa (em cima) + tabela de equipamentos (embaixo).
+   * Só mapa no embed; tabela de equipamentos fica no CensupWorkbench.
    * Painel de busca escondido — coords/endereço vêm do Workbench.
    * Standalone e Portal (sem workbenchMode) não usam estas regras.
    * ============================================================
@@ -9100,13 +9136,13 @@
     background: transparent !important;
   }
 
-  /* Box só do mapa (sem título) — abaixo da tabela */
+  /* Box só do mapa — tabela fica no CensupWorkbench abaixo de Informações */
   .viabilidade-content.workbench-mode .map-container {
-    order: 2;
-    flex: 1 1 58% !important;
+    order: 1;
+    flex: 1 1 auto !important;
     min-height: 180px !important;
     max-height: none !important;
-    height: auto !important;
+    height: 100% !important;
     width: 100% !important;
     max-width: 100% !important;
     min-width: 0 !important;
@@ -9193,44 +9229,10 @@
     min-width: 0;
   }
 
-  /* Tabela acima do mapa */
+  /* Tabela fica no box fixo do Workbench (CensupWorkbench) — esconde a cópia interna */
   .viabilidade-content.workbench-mode .results-table-container,
   .viabilidade-content.workbench-mode .empty-state {
-    order: 1;
-    flex: 0 1 38% !important;
-    min-height: 120px !important;
-    max-height: 42% !important;
-    height: auto !important;
-    width: 100% !important;
-    max-width: 100% !important;
-    min-width: 0 !important;
-    margin: 0 !important;
-    overflow: auto !important;
-    border: 1px solid #d1d5db !important;
-    border-radius: 10px !important;
-    background: #ffffff !important;
-    box-shadow: none !important;
-    padding: 0 !important;
-    box-sizing: border-box !important;
-  }
-
-  /* Minimizado = mesma barra compacta do box Informações */
-  .viabilidade-content.workbench-mode .results-table-container.minimized,
-  .viabilidade-content.workbench-mode .empty-state.minimized {
-    flex: 0 0 auto !important;
-    flex-grow: 0 !important;
-    flex-shrink: 0 !important;
-    height: auto !important;
-    min-height: 0 !important;
-    max-height: none !important;
-    overflow: hidden !important;
-    padding: 0 !important;
-  }
-
-  .viabilidade-content.workbench-mode .results-table-container.minimized .table-header,
-  .viabilidade-content.workbench-mode .empty-state.minimized .table-header {
-    margin-bottom: 0 !important;
-    border-bottom: none !important;
+    display: none !important;
   }
 
   .viabilidade-content.workbench-mode .tabulacao-container {
