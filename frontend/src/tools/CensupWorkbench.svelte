@@ -25,12 +25,28 @@
   let tabulacoes = [];
   let sugeridaOriginal = '';
   let formMinimized = false;
+  let equipMinimized = false;
+  let equipamentos = [];
   /** Coords da casinha (mapa) — evita re-geocode por texto ao sync do form. */
   let pinCoords = null;
   let reanaliseTimer = null;
   let reanalyzing = false;
   let mapPreviewImage = '';
   let capturingMapPreview = false;
+
+  function requestMapResize() {
+    setTimeout(() => {
+      try {
+        window.dispatchEvent(new Event('resize'));
+      } catch {
+        // ignore
+      }
+    }, 120);
+  }
+
+  function onEquipamentosFromViabilidade(payload = {}) {
+    equipamentos = Array.isArray(payload.items) ? payload.items : [];
+  }
 
   let form = {
     numeroALA: '',
@@ -194,6 +210,7 @@
     pinCoords = null;
     mapPreviewImage = '';
     capturingMapPreview = false;
+    equipamentos = [];
     statusMsg = 'Carregando chamado…';
     try {
       chamado = await fetchPortalCensupChamadoById(usuario, id);
@@ -426,14 +443,7 @@
           class="wb-pane-toggle"
           on:click={() => {
             formMinimized = !formMinimized;
-            // Dá tempo ao layout redimensionar e pede resize do mapa embutido
-            setTimeout(() => {
-              try {
-                window.dispatchEvent(new Event('resize'));
-              } catch {
-                // ignore
-              }
-            }, 120);
+            requestMapResize();
           }}
           title={formMinimized ? 'Expandir formulário' : 'Minimizar formulário'}
           aria-label={formMinimized ? 'Expandir formulário' : 'Minimizar formulário'}
@@ -530,6 +540,64 @@
       {/if}
     </aside>
 
+    <aside class="wb-equip-pane" class:minimized={equipMinimized}>
+      <div class="wb-form-toolbar">
+        <span class="wb-form-toolbar-title">Equipamentos</span>
+        <button
+          type="button"
+          class="wb-pane-toggle"
+          on:click={() => {
+            equipMinimized = !equipMinimized;
+            requestMapResize();
+          }}
+          title={equipMinimized ? 'Expandir equipamentos' : 'Minimizar equipamentos'}
+          aria-label={equipMinimized ? 'Expandir equipamentos' : 'Minimizar equipamentos'}
+        >
+          {equipMinimized ? '▾' : '▴'}
+        </button>
+      </div>
+      {#if !equipMinimized}
+        <div class="wb-equip-body">
+          {#if equipamentos.length > 0}
+            <div class="wb-equip-table-wrap">
+              <table class="wb-equip-table">
+                <thead>
+                  <tr>
+                    <th>Nº</th>
+                    <th>CTO</th>
+                    <th>Status</th>
+                    <th>Cidade</th>
+                    <th>POP</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {#each equipamentos as item (item.n + '-' + item.nome)}
+                    <tr>
+                      <td>{item.n}</td>
+                      <td title={item.nome}>{item.nome}</td>
+                      <td>
+                        <span class="wb-status-badge" class:ativado={item.statusClass === 'ativado'} class:desativado={item.statusClass === 'desativado'}>
+                          {item.status}
+                        </span>
+                      </td>
+                      <td>{item.cidade}</td>
+                      <td>{item.pop}</td>
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
+            </div>
+          {:else}
+            <p class="wb-equip-empty">
+              {mapAddress || (mapLat != null && mapLng != null)
+                ? 'Nenhum equipamento encontrado para este chamado.'
+                : 'Sincronize um chamado na Agenda para carregar os equipamentos aqui.'}
+            </p>
+          {/if}
+        </div>
+      {/if}
+    </aside>
+
     <section class="wb-map-pane">
       {#if loading}
         <div class="wb-map-placeholder">Carregando mapa…</div>
@@ -549,6 +617,7 @@
                 initialLng={mapLng}
                 onClientLocationChange={onClientLocationFromMap}
                 onMapPreviewChange={onMapPreviewFromViabilidade}
+                onEquipamentosChange={onEquipamentosFromViabilidade}
               />
             {:else}
               <div class="wb-map-placeholder">Carregando mapa…</div>
@@ -611,7 +680,7 @@
     width: auto;
     min-width: 0;
     max-width: 100%;
-    max-height: 48%;
+    max-height: 38%;
     overflow-x: hidden;
     overflow-y: auto;
     display: flex;
@@ -630,6 +699,105 @@
     max-height: none;
     overflow: hidden;
     align-items: stretch;
+  }
+
+  .wb-equip-pane {
+    flex: 0 1 auto;
+    align-self: stretch;
+    width: auto;
+    min-width: 0;
+    max-width: 100%;
+    max-height: 28%;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    padding: 0;
+    background: #ffffff;
+    border: 1px solid #d1d5db;
+    border-radius: 10px;
+    box-shadow: none;
+    box-sizing: border-box;
+  }
+
+  .wb-equip-pane.minimized {
+    flex: 0 0 auto;
+    max-height: none;
+  }
+
+  .wb-equip-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: auto;
+    padding: 0 0.45rem 0.45rem;
+    box-sizing: border-box;
+  }
+
+  .wb-equip-empty {
+    margin: 0;
+    padding: 0.75rem 0.35rem;
+    text-align: center;
+    font-size: 0.72rem;
+    font-weight: 500;
+    color: #64748b;
+    line-height: 1.35;
+  }
+
+  .wb-equip-table-wrap {
+    width: 100%;
+    overflow: auto;
+  }
+
+  .wb-equip-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.68rem;
+  }
+
+  .wb-equip-table th,
+  .wb-equip-table td {
+    padding: 0.28rem 0.35rem;
+    text-align: left;
+    border-bottom: 1px solid #e5e7eb;
+    white-space: nowrap;
+    max-width: 9rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .wb-equip-table th {
+    position: sticky;
+    top: 0;
+    background: #f8fafc;
+    color: #4b5563;
+    font-weight: 700;
+    z-index: 1;
+  }
+
+  .wb-equip-table td:nth-child(1),
+  .wb-equip-table th:nth-child(1) {
+    width: 2rem;
+    max-width: 2.5rem;
+  }
+
+  .wb-status-badge {
+    display: inline-block;
+    padding: 0.1rem 0.35rem;
+    border-radius: 4px;
+    font-size: 0.62rem;
+    font-weight: 700;
+    background: #e5e7eb;
+    color: #374151;
+  }
+
+  .wb-status-badge.ativado {
+    background: #dcfce7;
+    color: #166534;
+  }
+
+  .wb-status-badge.desativado {
+    background: #fee2e2;
+    color: #991b1b;
   }
 
   .wb-form-toolbar {
