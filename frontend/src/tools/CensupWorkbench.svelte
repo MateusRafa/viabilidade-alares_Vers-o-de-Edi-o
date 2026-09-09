@@ -45,6 +45,7 @@
   let reanalyzing = false;
   let mapPreviewImage = '';
   let capturingMapPreview = false;
+  let locating = false;
 
   /** Altura da barra Equipamentos colapsada (toolbar + padding ≈ Informações). */
   const EQUIP_HEADER_H = 42;
@@ -531,6 +532,31 @@
     }
   }
 
+  async function localizarNoMapa() {
+    const endereco = (form.enderecoCompleto || '').trim();
+    if (!endereco) {
+      error = 'Informe um endereço para localizar.';
+      return;
+    }
+    if (!viabilidadeRef || typeof viabilidadeRef.searchWorkbenchAddress !== 'function') {
+      error = 'Mapa ainda carregando. Aguarde e tente de novo.';
+      return;
+    }
+    locating = true;
+    error = '';
+    statusMsg = 'Localizando endereço no mapa…';
+    pinCoords = null;
+    try {
+      await viabilidadeRef.searchWorkbenchAddress(endereco);
+      statusMsg = 'Endereço localizado no mapa';
+    } catch (err) {
+      error = err?.message || String(err);
+      statusMsg = '';
+    } finally {
+      locating = false;
+    }
+  }
+
   async function salvarRelatorio() {
     if (!chamadoId) {
       error = 'Chamado não carregado.';
@@ -826,6 +852,40 @@
           {/key}
         {:else}
           <div class="wb-map-placeholder">Carregando mapa…</div>
+        {/if}
+
+        {#if !mapCollapsed}
+          <div class="wb-map-search-box">
+            <label class="wb-map-search-label" for="wb-map-address">
+              Endereço
+            </label>
+            <input
+              id="wb-map-address"
+              class="wb-map-search-input"
+              type="text"
+              bind:value={form.enderecoCompleto}
+              on:input={onEnderecoManualInput}
+              placeholder="Endereço para localizar no mapa"
+            />
+            <div class="wb-map-search-actions">
+              <button
+                type="button"
+                class="wb-map-btn wb-map-btn-locate"
+                on:click={localizarNoMapa}
+                disabled={locating || !ViabilidadeAlares || !(form.enderecoCompleto || '').trim()}
+              >
+                {locating ? 'Localizando…' : 'Localizar'}
+              </button>
+              <button
+                type="button"
+                class="wb-map-btn wb-map-btn-report"
+                on:click={gerarRelatorio}
+                disabled={generating || loading || !chamadoId || capturingMapPreview || locating}
+              >
+                {generating ? 'Gerando…' : 'Gerar Relatório'}
+              </button>
+            </div>
+          </div>
         {/if}
       </section>
     </div>
@@ -1283,6 +1343,90 @@
     background: transparent;
     box-sizing: border-box;
     overflow: hidden;
+    position: relative;
+  }
+
+  .wb-map-search-box {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    z-index: 8;
+    width: min(280px, calc(100% - 20px));
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    padding: 0.5rem 0.55rem;
+    background: rgba(255, 255, 255, 0.96);
+    border: 1px solid #d1d5db;
+    border-radius: 10px;
+    box-shadow: 0 4px 14px rgba(15, 23, 42, 0.12);
+    box-sizing: border-box;
+    pointer-events: auto;
+  }
+
+  .wb-map-search-label {
+    font-size: 0.68rem;
+    font-weight: 700;
+    color: #7b68ee;
+    line-height: 1.2;
+  }
+
+  .wb-map-search-input {
+    width: 100%;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    padding: 0.35rem 0.45rem;
+    font-size: 0.74rem;
+    font-weight: 500;
+    color: #111827;
+    background: #fff;
+    box-sizing: border-box;
+    min-height: 1.85rem;
+  }
+
+  .wb-map-search-input:focus {
+    outline: none;
+    border-color: #a78bfa;
+    box-shadow: 0 0 0 2px rgba(123, 104, 238, 0.18);
+  }
+
+  .wb-map-search-actions {
+    display: flex;
+    gap: 0.35rem;
+  }
+
+  .wb-map-btn {
+    flex: 1 1 0;
+    border: none;
+    border-radius: 6px;
+    padding: 0.4rem 0.45rem;
+    font-size: 0.7rem;
+    font-weight: 700;
+    cursor: pointer;
+    line-height: 1.2;
+  }
+
+  .wb-map-btn:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+  }
+
+  .wb-map-btn-locate {
+    background: #7b68ee;
+    color: #fff;
+  }
+
+  .wb-map-btn-locate:hover:not(:disabled) {
+    background: #6a58e0;
+  }
+
+  .wb-map-btn-report {
+    background: #6495ed;
+    color: #fff;
+  }
+
+  .wb-map-btn-report:hover:not(:disabled) {
+    background: #4f7fd6;
   }
 
   .wb-map-pane.collapsed {
