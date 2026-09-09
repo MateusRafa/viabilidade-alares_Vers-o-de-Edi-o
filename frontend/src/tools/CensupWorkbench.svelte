@@ -29,6 +29,8 @@
   let pinCoords = null;
   let reanaliseTimer = null;
   let reanalyzing = false;
+  let mapPreviewImage = '';
+  let capturingMapPreview = false;
 
   let form = {
     numeroALA: '',
@@ -190,6 +192,8 @@
     loading = true;
     error = '';
     pinCoords = null;
+    mapPreviewImage = '';
+    capturingMapPreview = false;
     statusMsg = 'Carregando chamado…';
     try {
       chamado = await fetchPortalCensupChamadoById(usuario, id);
@@ -395,6 +399,13 @@
     }
   });
 
+  function onMapPreviewFromViabilidade(payload = {}) {
+    capturingMapPreview = !!payload.capturing;
+    if (!payload.capturing) {
+      mapPreviewImage = payload.image || '';
+    }
+  }
+
   onDestroy(() => {
     window.removeEventListener('message', onMessage);
     if (reanaliseTimer) clearTimeout(reanaliseTimer);
@@ -480,8 +491,35 @@
           <input bind:value={form.projetista} readonly />
         </label>
 
+        <div class="wb-map-preview-block">
+          <span class="wb-map-preview-label">9. Prévia do Mapa</span>
+          <div class="wb-map-preview-container">
+            {#if capturingMapPreview}
+              <div class="wb-preview-loading">
+                <div class="wb-loading-spinner"></div>
+                <p>Capturando mapa...</p>
+              </div>
+            {:else if mapPreviewImage}
+              <div class="wb-preview-image-wrapper">
+                <img src={mapPreviewImage} alt="Prévia do Mapa" class="wb-preview-image" />
+              </div>
+              <p class="wb-preview-hint">
+                O mapa foi capturado automaticamente com todas as CTOs encontradas e suas rotas visíveis.
+              </p>
+            {:else if mapAddress || (mapLat != null && mapLng != null)}
+              <div class="wb-preview-loading">
+                <p>Aguardando mapa e equipamentos para gerar a prévia…</p>
+              </div>
+            {:else}
+              <div class="wb-preview-loading">
+                <p>Abra um chamado para capturar a prévia do mapa.</p>
+              </div>
+            {/if}
+          </div>
+        </div>
+
         <div class="wb-actions">
-          <button type="button" class="btn-secondary" on:click={gerarRelatorio} disabled={generating || loading || !chamadoId}>
+          <button type="button" class="btn-secondary" on:click={gerarRelatorio} disabled={generating || loading || !chamadoId || capturingMapPreview}>
             {generating ? 'Gerando…' : 'Gerar Relatório'}
           </button>
           <button type="submit" class="btn-primary" disabled={saving || loading || !chamadoId}>
@@ -510,6 +548,7 @@
                 initialLat={mapLat}
                 initialLng={mapLng}
                 onClientLocationChange={onClientLocationFromMap}
+                onMapPreviewChange={onMapPreviewFromViabilidade}
               />
             {:else}
               <div class="wb-map-placeholder">Carregando mapa…</div>
@@ -690,6 +729,81 @@
     font-size: 0.62rem;
     font-weight: 500;
     color: #7b68ee;
+  }
+
+  .wb-map-preview-block {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    margin-top: 0.15rem;
+  }
+
+  .wb-map-preview-label {
+    font-size: 0.68rem;
+    font-weight: 600;
+    color: #374151;
+  }
+
+  .wb-map-preview-container {
+    width: 100%;
+  }
+
+  .wb-preview-image-wrapper {
+    display: block;
+    width: 100%;
+    max-width: 100%;
+    border: 2px solid #ddd;
+    border-radius: 6px;
+    overflow: hidden;
+    background: #f9f9f9;
+    line-height: 0;
+  }
+
+  .wb-preview-image {
+    display: block;
+    width: 100%;
+    height: auto;
+    max-width: 100%;
+  }
+
+  .wb-preview-loading {
+    padding: 1.25rem 0.75rem;
+    text-align: center;
+    background: #f5f5f5;
+    border: 2px dashed #ddd;
+    border-radius: 6px;
+  }
+
+  .wb-preview-loading p {
+    margin: 0.65rem 0 0;
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: #7b68ee;
+  }
+
+  .wb-loading-spinner {
+    border: 3px solid #f3f3f3;
+    border-top: 3px solid #7b68ee;
+    border-radius: 50%;
+    width: 28px;
+    height: 28px;
+    animation: wb-spin 1s linear infinite;
+    margin: 0 auto;
+  }
+
+  @keyframes wb-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  .wb-preview-hint {
+    margin: 0.35rem 0 0;
+    font-size: 0.62rem;
+    color: #666;
+    font-style: italic;
+    text-align: center;
+    line-height: 1.3;
   }
 
   .wb-actions {
