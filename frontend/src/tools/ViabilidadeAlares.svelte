@@ -1645,7 +1645,7 @@
     }
   }
 
-  /** Workbench: se o usuário alterar o endereço no formulário, atualiza o mapa. */
+  /** Workbench: só recentra/busca quando mudam as coordenadas (não ao digitar endereço). */
   function scheduleWorkbenchLocationSync() {
     if (!workbenchMode) return;
     if (workbenchSearchTimer) clearTimeout(workbenchSearchTimer);
@@ -1663,24 +1663,17 @@
       initialLng != null &&
       !Number.isNaN(Number(initialLat)) &&
       !Number.isNaN(Number(initialLng));
-    const address = (initialAddress || '').trim();
-    const hasAddress = !!address;
 
-    if (!hasCoords && !hasAddress) return;
+    // Digitação de endereço no overlay NÃO dispara busca — só o botão Localizar
+    // (searchWorkbenchAddress) ou a pré-busca inicial com coords do chamado.
+    if (!hasCoords) return;
 
-    const key = hasCoords
-      ? `c:${Number(initialLat)},${Number(initialLng)}`
-      : `a:${address.toLowerCase()}`;
+    const key = `c:${Number(initialLat)},${Number(initialLng)}`;
     if (key === lastWorkbenchLocKey) return;
     lastWorkbenchLocKey = key;
 
-    if (hasCoords) {
-      searchMode = 'coordinates';
-      coordinatesInput = `${Number(initialLat)}, ${Number(initialLng)}`;
-    } else {
-      searchMode = 'address';
-      addressInput = address;
-    }
+    searchMode = 'coordinates';
+    coordinatesInput = `${Number(initialLat)}, ${Number(initialLng)}`;
 
     await tick();
     try {
@@ -1694,8 +1687,7 @@
   }
 
   $: if (workbenchMode) {
-    // Dependências reativas dos props vindos do CensupWorkbench
-    void initialAddress;
+    // Só reage a coords — endereço digitado não pesquisa sozinho
     void initialLat;
     void initialLng;
     scheduleWorkbenchLocationSync();
