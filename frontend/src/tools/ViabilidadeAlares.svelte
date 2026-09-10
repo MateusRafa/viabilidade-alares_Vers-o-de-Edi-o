@@ -6186,7 +6186,8 @@
    * WORKBENCH ONLY — captura o mapa em tamanho fixo temporário (casinha + CTOs + rotas)
    * sem alterar o fluxo standalone de captureMapAutomatically / openReportModal.
    *
-   * Importante: estilos do workbench usam !important; a captura precisa setProperty(..., 'important').
+   * Importante: o modal do Workbench e overflow:hidden dos pais impedem a captura.
+   * Por isso o mapa é movido temporariamente para document.body e o overlay é escondido.
    */
   async function captureMapForWorkbench() {
     if (!map || !clientCoords) {
@@ -6197,6 +6198,10 @@
       '.viabilidade-content.workbench-mode .map-container'
     );
     const mapEl = getMapElement();
+    if (!mapEl) {
+      throw new Error('Elemento do mapa não encontrado');
+    }
+
     const CAPTURE_W = 1200;
     const CAPTURE_H = 720;
 
@@ -6243,19 +6248,42 @@
     if (mapContainer) {
       for (const p of containerProps) savedContainer[p] = mapContainer.style.getPropertyValue(p);
     }
-    if (mapEl) {
-      for (const p of mapProps) savedMapEl[p] = mapEl.style.getPropertyValue(p);
-    }
+    for (const p of mapProps) savedMapEl[p] = mapEl.style.getPropertyValue(p);
 
     const applyImportant = (el, prop, value) => {
       if (el) el.style.setProperty(prop, value, 'important');
     };
 
+    // Esconde modal do Workbench durante o print (igual “mapa livre” da Viabilidade)
+    const overlays = Array.from(document.querySelectorAll('.wb-modal-overlay'));
+    const overlayPrev = overlays.map((el) => ({
+      el,
+      visibility: el.style.visibility,
+      pointerEvents: el.style.pointerEvents
+    }));
+    overlays.forEach((el) => {
+      el.style.visibility = 'hidden';
+      el.style.pointerEvents = 'none';
+    });
+
+    // Reparent para body — escapa overflow:hidden / stacking do layout do workbench
+    let placeholder = null;
+    let originalParent = null;
+    let originalNext = null;
+    if (mapContainer && mapContainer.parentNode) {
+      originalParent = mapContainer.parentNode;
+      originalNext = mapContainer.nextSibling;
+      placeholder = document.createElement('div');
+      placeholder.setAttribute('data-wb-map-placeholder', '1');
+      placeholder.style.cssText = 'flex:1 1 auto;min-height:180px;width:100%;';
+      originalParent.insertBefore(placeholder, mapContainer);
+      document.body.appendChild(mapContainer);
+    }
+
     try {
       isListMinimized = true;
       await tick();
 
-      // Esconder controles do Google Maps no print
       try {
         map.setOptions({
           mapTypeControl: false,
@@ -6300,21 +6328,18 @@
         applyImportant(mapContainer, 'flex', '0 0 auto');
       }
 
-      if (mapEl) {
-        applyImportant(mapEl, 'width', `${CAPTURE_W}px`);
-        applyImportant(mapEl, 'height', `${CAPTURE_H}px`);
-        applyImportant(mapEl, 'min-height', `${CAPTURE_H}px`);
-        applyImportant(mapEl, 'max-height', `${CAPTURE_H}px`);
-        applyImportant(mapEl, 'visibility', 'visible');
-        applyImportant(mapEl, 'opacity', '1');
-        applyImportant(mapEl, 'display', 'block');
-      }
+      applyImportant(mapEl, 'width', `${CAPTURE_W}px`);
+      applyImportant(mapEl, 'height', `${CAPTURE_H}px`);
+      applyImportant(mapEl, 'min-height', `${CAPTURE_H}px`);
+      applyImportant(mapEl, 'max-height', `${CAPTURE_H}px`);
+      applyImportant(mapEl, 'visibility', 'visible');
+      applyImportant(mapEl, 'opacity', '1');
+      applyImportant(mapEl, 'display', 'block');
 
       google.maps.event.trigger(map, 'resize');
       await waitMapIdleWorkbench(2000);
       await new Promise((r) => setTimeout(r, 200));
 
-      // Bounds: cliente + CTOs + pontos das rotas
       const bounds = new google.maps.LatLngBounds();
       bounds.extend(clientCoords);
       if (ctos?.length) {
@@ -6330,19 +6355,17 @@
             const path = polyline.getPath?.();
             if (!path) continue;
             const len = path.getLength();
-            // Amostrar pontos da rota para não travar em paths muito longos
             const step = Math.max(1, Math.floor(len / 40));
             for (let i = 0; i < len; i += step) {
               bounds.extend(path.getAt(i));
             }
             if (len > 0) bounds.extend(path.getAt(len - 1));
           } catch {
-            // ignore rota inválida
+            // ignore
           }
         }
       }
 
-      // Padding generoso — evita cortar casinha/CTOs nas bordas
       map.fitBounds(bounds, {
         top: 90,
         right: 90,
@@ -6352,20 +6375,14 @@
       await waitMapIdleWorkbench(2000);
       await new Promise((r) => setTimeout(r, 250));
 
-      // Afasta 1 nível de zoom para margem de segurança (evita crop do zoom agressivo)
       const fittedZoom = map.getZoom();
       if (fittedZoom != null && fittedZoom > 14) {
         map.setZoom(fittedZoom - 1);
         await waitMapIdleWorkbench(1500);
       }
 
-      // Tempo extra para tiles de satélite
       await new Promise((r) => setTimeout(r, 700));
       await waitMapIdleWorkbench(1500);
-
-      if (!mapEl) {
-        throw new Error('Elemento do mapa não encontrado');
-      }
 
       for (let i = 0; i < 3; i++) {
         await new Promise((r) => requestAnimationFrame(r));
@@ -6394,7 +6411,6 @@
           ) {
             return true;
           }
-          // Botões Mapa/Satélite e controles
           if (el.getAttribute?.('controlwidth') != null || el.getAttribute?.('controlheight') != null) {
             return true;
           }
@@ -6414,9 +6430,24 @@
         }
       });
 
-      return canvas.toDataURL('image/png', 1.0);
+      const dataUrl = canvas.toDataURL('image/png', 1.0);
+      if (!dataUrl || dataUrl.length < 1000) {
+        throw new Error('Captura do mapa retornou imagem vazia');
+      }
+      return dataUrl;
     } finally {
       isListMinimized = prevListMin;
+
+      if (mapContainer && originalParent) {
+        if (placeholder && placeholder.parentNode === originalParent) {
+          originalParent.insertBefore(mapContainer, placeholder);
+          placeholder.remove();
+        } else if (originalNext && originalNext.parentNode === originalParent) {
+          originalParent.insertBefore(mapContainer, originalNext);
+        } else {
+          originalParent.appendChild(mapContainer);
+        }
+      }
 
       if (mapContainer) {
         for (const p of containerProps) {
@@ -6425,13 +6456,16 @@
           else mapContainer.style.removeProperty(p);
         }
       }
-      if (mapEl) {
-        for (const p of mapProps) {
-          const v = savedMapEl[p];
-          if (v) mapEl.style.setProperty(p, v);
-          else mapEl.style.removeProperty(p);
-        }
+      for (const p of mapProps) {
+        const v = savedMapEl[p];
+        if (v) mapEl.style.setProperty(p, v);
+        else mapEl.style.removeProperty(p);
       }
+
+      overlayPrev.forEach(({ el, visibility, pointerEvents }) => {
+        el.style.visibility = visibility;
+        el.style.pointerEvents = pointerEvents;
+      });
 
       try {
         map.setOptions(prevMapOptions);
@@ -6443,7 +6477,7 @@
       google.maps.event.trigger(map, 'resize');
       if (prevCenter) map.setCenter(prevCenter);
       if (prevZoom != null) map.setZoom(prevZoom);
-      await waitMapIdleWorkbench(1200);
+      await waitMapIdleWorkbench(800);
     }
   }
 
@@ -6571,7 +6605,7 @@
     }
 
     try {
-      // Reutiliza prévia se já existir; senão captura agora
+      // Captura sob demanda se ainda não houver prévia (refreshWorkbenchMapPreview pode ter feito)
       if (!mapPreviewImage) {
         capturingMap = true;
         notifyMapPreviewChange(true, '');
@@ -6588,23 +6622,21 @@
       }
 
       if (!validateReportForm()) {
-        showReportModal = true;
         const missing = getMissingRequiredFields();
         throw new Error(
           missing.length
-            ? `Preencha em Informações: ${missing.join(', ')}`
-            : 'Preencha os campos obrigatórios em Informações antes de gerar o PDF.'
+            ? `Preencha os campos obrigatórios: ${missing.join(', ')}`
+            : 'Preencha os campos obrigatórios antes de gerar o PDF.'
         );
       }
 
       await exportToPDF();
 
       if (showPopupInstructions) {
-        showReportModal = true;
         throw new Error('Pop-up bloqueado. Permita pop-ups para este site e tente de novo.');
       }
 
-      return { success: true };
+      return { success: true, preview: mapPreviewImage };
     } finally {
       capturingMap = false;
     }
