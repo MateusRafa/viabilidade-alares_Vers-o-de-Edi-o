@@ -1512,6 +1512,19 @@
             .catch(() => {
               baseDataExists = false;
             });
+          // Mesma pré-carga da data da base usada no PDF da Viabilidade
+          fetch(getApiUrl('/api/base-last-modified'))
+            .then((r) => r.json())
+            .then((data) => {
+              if (data?.success && data.lastModified) {
+                try {
+                  localStorage.setItem('baseLastModified', data.lastModified);
+                } catch {
+                  // ignore
+                }
+              }
+            })
+            .catch(() => {});
           try {
             loadProjetistas();
           } catch {
@@ -6272,6 +6285,7 @@
    * WORKBENCH ONLY — captura o mapa no lugar (igual Viabilidade oficial).
    * Abre o modal primeiro; o ajuste do mapa (fitBounds) ocorre atrás do box.
    * Não move o mapa para document.body (evita o “bug” visual na Agenda).
+   * Força aspect ratio landscape na captura para o PDF não sair “comprimido”.
    */
   async function captureMapForWorkbench() {
     if (!map || !clientCoords) {
@@ -6308,6 +6322,22 @@
       el.style.pointerEvents = 'none';
     });
 
+    // Aspect landscape (como o mapa expandido da Viabilidade) — evita print estreito/comprimido
+    const prevBox = {
+      width: mapEl.style.width,
+      height: mapEl.style.height,
+      minHeight: mapEl.style.minHeight,
+      maxHeight: mapEl.style.maxHeight,
+      maxWidth: mapEl.style.maxWidth
+    };
+    const captureW = Math.max(720, Math.min(960, mapEl.clientWidth || 800));
+    const captureH = Math.round(captureW * 0.56); // ~16:9
+    mapEl.style.width = `${captureW}px`;
+    mapEl.style.maxWidth = `${captureW}px`;
+    mapEl.style.height = `${captureH}px`;
+    mapEl.style.minHeight = `${captureH}px`;
+    mapEl.style.maxHeight = `${captureH}px`;
+
     try {
       try {
         map.setOptions({
@@ -6331,7 +6361,6 @@
         }
       }
 
-      // Garante que o mapa no layout do Workbench redirecione tiles
       google.maps.event.trigger(map, 'resize');
       await waitMapIdleWorkbench(1200);
       await new Promise((r) => setTimeout(r, 150));
@@ -6364,22 +6393,40 @@
 
       // Ajuste atrás do modal (mesmo espírito do openReportModal oficial)
       map.fitBounds(bounds, {
-        top: 48,
-        right: 48,
-        bottom: 48,
-        left: 48
+        top: 24,
+        right: 24,
+        bottom: 24,
+        left: 24
       });
       await waitMapIdleWorkbench(2000);
       await new Promise((r) => setTimeout(r, 350));
 
-      const fittedZoom = map.getZoom();
-      if (fittedZoom != null && fittedZoom > 18) {
-        map.setZoom(18);
-        await waitMapIdleWorkbench(1200);
+      // Mesma lógica da captura oficial: sobe o zoom o máximo possível mantendo tudo visível
+      let bestZoom = map.getZoom() || 16;
+      for (let testZoom = bestZoom + 1; testZoom <= 20; testZoom++) {
+        map.setZoom(testZoom);
+        await waitMapIdleWorkbench(800);
+        const testBounds = map.getBounds();
+        if (!testBounds) break;
+        let allVisible = testBounds.contains(clientCoords);
+        if (allVisible && ctos?.length) {
+          for (const cto of ctos) {
+            if (
+              cto?.latitude != null &&
+              cto?.longitude != null &&
+              !testBounds.contains({ lat: cto.latitude, lng: cto.longitude })
+            ) {
+              allVisible = false;
+              break;
+            }
+          }
+        }
+        if (allVisible) bestZoom = testZoom;
+        else break;
       }
-
+      map.setZoom(bestZoom);
+      await waitMapIdleWorkbench(1200);
       await new Promise((r) => setTimeout(r, 400));
-      await waitMapIdleWorkbench(1000);
 
       mapEl.style.visibility = 'visible';
       mapEl.style.opacity = '1';
@@ -6400,6 +6447,10 @@
         imageTimeout: 12000,
         removeContainer: true,
         foreignObjectRendering: false,
+        width: captureW,
+        height: captureH,
+        windowWidth: captureW,
+        windowHeight: captureH,
         ignoreElements: (el) => {
           if (!el) return false;
           const cls = typeof el.className === 'string' ? el.className : el.className?.baseVal || '';
@@ -6429,6 +6480,8 @@
             clonedMap.style.opacity = '1';
             clonedMap.style.display = 'block';
             clonedMap.style.background = '#ffffff';
+            clonedMap.style.width = `${captureW}px`;
+            clonedMap.style.height = `${captureH}px`;
           }
         }
       });
@@ -6439,6 +6492,12 @@
       }
       return dataUrl;
     } finally {
+      mapEl.style.width = prevBox.width;
+      mapEl.style.height = prevBox.height;
+      mapEl.style.minHeight = prevBox.minHeight;
+      mapEl.style.maxHeight = prevBox.maxHeight;
+      mapEl.style.maxWidth = prevBox.maxWidth;
+
       searchPrev.forEach(({ el, visibility, pointerEvents }) => {
         el.style.visibility = visibility;
         el.style.pointerEvents = pointerEvents;
@@ -6865,30 +6924,68 @@
         viAla: currentVIALA
       });
 
-      // Buscar data de atualização da base (opcional, não bloqueia)
+      // Buscar data de atualização da base (fresca da API; localStorage só como fallback)
       let baseLastModifiedText = '';
       try {
-        const savedLastModified = localStorage.getItem('baseLastModified');
-        if (savedLastModified) {
-          const lastModified = new Date(savedLastModified);
-          baseLastModifiedText = lastModified.toLocaleDateString('pt-BR', { 
-            day: '2-digit', month: '2-digit', year: 'numeric'
-          }) + ' - ' + lastModified.toLocaleTimeString('pt-BR', {
-            hour: '2-digit', minute: '2-digit'
-          });
-        }
-      } catch (err) {}
-      
-      fetch(getApiUrl('/api/base-last-modified'))
-        .then(res => res.json())
-        .then(data => {
-          if (data.success && data.lastModified) {
-            localStorage.setItem('baseLastModified', data.lastModified);
+        const baseRes = await fetch(getApiUrl('/api/base-last-modified'));
+        const baseData = await baseRes.json();
+        if (baseData?.success && baseData.lastModified) {
+          try {
+            localStorage.setItem('baseLastModified', baseData.lastModified);
+          } catch {
+            // ignore
           }
-        })
-        .catch(() => {});
+          const lastModified = new Date(baseData.lastModified);
+          if (!Number.isNaN(lastModified.getTime())) {
+            baseLastModifiedText =
+              lastModified.toLocaleDateString('pt-BR', {
+                day: '2-digit',
+                month: '2-digit',
+                year: 'numeric'
+              }) +
+              ' - ' +
+              lastModified.toLocaleTimeString('pt-BR', {
+                hour: '2-digit',
+                minute: '2-digit'
+              });
+          }
+        }
+      } catch {
+        // fallback abaixo
+      }
+      if (!baseLastModifiedText) {
+        try {
+          const savedLastModified = localStorage.getItem('baseLastModified');
+          if (savedLastModified) {
+            const lastModified = new Date(savedLastModified);
+            if (!Number.isNaN(lastModified.getTime())) {
+              baseLastModifiedText =
+                lastModified.toLocaleDateString('pt-BR', {
+                  day: '2-digit',
+                  month: '2-digit',
+                  year: 'numeric'
+                }) +
+                ' - ' +
+                lastModified.toLocaleTimeString('pt-BR', {
+                  hour: '2-digit',
+                  minute: '2-digit'
+                });
+            }
+          }
+        } catch {
+          // ignore
+        }
+      }
       
       console.log('Dados preparados, criando HTML do PDF...');
+
+      const formatCepPdf = (cep) => {
+        let digits = String(cep || '').replace(/\D/g, '');
+        if (digits.length > 8) digits = digits.slice(0, 8);
+        if (digits.length === 8) return `${digits.slice(0, 5)}-${digits.slice(5)}`;
+        return String(cep || '').trim();
+      };
+      const cepPdf = formatCepPdf(reportForm.cep);
 
       // Criar nome do arquivo PDF com VI ALA no formato: "VI ALA - XXXXXXX - ALA-15002 - Engenharia.pdf"
       let pdfFileName = '';
@@ -7048,15 +7145,16 @@
                 line-height: 1.3;
               }
               .map-wrapper {
-                display: inline-flex;
+                display: flex;
                 flex-direction: column;
-                align-items: center;
-                width: auto;
+                align-items: stretch;
+                width: 100%;
                 max-width: 100%;
+                flex: 1;
               }
               .map-image-container { 
-                display: inline-block;
-                width: auto;
+                display: block;
+                width: 100%;
                 max-width: 100%;
                 position: relative; 
                 background: transparent !important; 
@@ -7073,11 +7171,12 @@
               }
               .map-image { 
                 display: block; 
-                width: auto;
+                width: 100%;
                 height: auto;
                 max-width: 100%;
                 max-height: 320px;
                 object-fit: contain;
+                object-position: center;
                 box-shadow: none; 
                 background: transparent !important; 
                 opacity: 1 !important; 
@@ -7207,8 +7306,8 @@
                   line-height: 1.3 !important;
                 }
                 .map-image-container {
-                  display: inline-block !important;
-                  width: auto !important;
+                  display: block !important;
+                  width: 100% !important;
                   max-width: 100% !important;
                   height: auto !important;
                   background: transparent !important;
@@ -7217,11 +7316,12 @@
                 }
                 .map-image { 
                   display: block !important;
-                  width: auto !important;
+                  width: 100% !important;
                   height: auto !important;
                   max-width: 100% !important;
                   max-height: 320px !important;
                   object-fit: contain !important;
+                  object-position: center !important;
                   margin: 0 !important;
                   padding: 0 !important;
                   page-break-inside: avoid; 
@@ -7494,7 +7594,7 @@
                   </div>
                   <div class="report-info-item">
                     <span class="report-info-label">CEP do Endereço</span>
-                    <span class="report-info-value">${reportForm.cep}</span>
+                    <span class="report-info-value">${cepPdf}</span>
                   </div>
                   ${clientCoords ? `
                   <div class="report-info-item">
