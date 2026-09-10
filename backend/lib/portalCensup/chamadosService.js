@@ -176,9 +176,10 @@ function getMapsApiKey() {
 }
 
 function formatCep(cep) {
-  const digits = String(cep || '').replace(/\D/g, '');
+  let digits = String(cep || '').replace(/\D/g, '');
+  if (digits.length > 8) digits = digits.slice(0, 8);
   if (digits.length === 8) return `${digits.slice(0, 5)}-${digits.slice(5)}`;
-  return cep || '—';
+  return digits || cep || '—';
 }
 
 function buildStaticMapUrl(lat, lng) {
@@ -922,7 +923,10 @@ export async function syncFilaToSupabase() {
   return syncJsonFromSupabase();
 }
 
-export async function analisarChamadoById(id, { force = false } = {}) {
+export async function analisarChamadoById(
+  id,
+  { force = false, lat = null, lng = null, enderecoPatch = null } = {}
+) {
   const chamado = await findChamadoByPedidoOrCode({ id });
   if (!chamado) {
     const err = new Error('Chamado não encontrado');
@@ -941,11 +945,41 @@ export async function analisarChamadoById(id, { force = false } = {}) {
     };
   }
 
-  await upsertChamado({
+  const hasManualCoords =
+    lat != null &&
+    lng != null &&
+    Number.isFinite(Number(lat)) &&
+    Number.isFinite(Number(lng));
+
+  const baseForUpsert = {
     ...chamado,
+    ...(hasManualCoords
+      ? {
+          mapaCoords: { lat: Number(lat), lng: Number(lng) },
+          localizacao: {
+            ...(chamado.localizacao || {}),
+            lat: Number(lat),
+            lng: Number(lng),
+            metodo: 'ajuste_manual_casinha'
+          }
+        }
+      : {}),
+    ...(enderecoPatch
+      ? {
+          endereco: {
+            ...(chamado.endereco || {}),
+            ...(enderecoPatch.completo != null ? { completo: enderecoPatch.completo } : {}),
+            ...(enderecoPatch.cidade != null ? { cidade: enderecoPatch.cidade } : {}),
+            ...(enderecoPatch.numero != null ? { numero: enderecoPatch.numero } : {}),
+            ...(enderecoPatch.cep != null ? { cep: enderecoPatch.cep } : {})
+          }
+        }
+      : {}),
     analiseStatus: 'processando',
     updatedAt: new Date().toISOString()
-  });
+  };
+
+  await upsertChamado(baseForUpsert);
 
   try {
     const current = await findChamadoByPedidoOrCode({ id });
