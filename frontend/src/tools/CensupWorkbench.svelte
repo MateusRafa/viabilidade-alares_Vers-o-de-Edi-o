@@ -300,14 +300,46 @@
 
   function openInfoModal() {
     error = '';
-    // Prévia só é capturada ao clicar Gerar Relatório no modal
-    mapPreviewImage = '';
-    capturingMapPreview = false;
     showInfoModal = true;
   }
 
   function closeInfoModal() {
     showInfoModal = false;
+  }
+
+  /**
+   * Igual openReportModal da Viabilidade: abre o formulário e captura a prévia do mapa.
+   * Usado pelo botão "Gerar Relatório" do overlay.
+   */
+  async function abrirRelatorioComPrint() {
+    if (!viabilidadeRef || typeof viabilidadeRef.refreshWorkbenchMapPreview !== 'function') {
+      error = 'Mapa ainda carregando. Localize um endereço e tente de novo.';
+      return;
+    }
+
+    error = '';
+    mapPreviewImage = '';
+    showInfoModal = true;
+    capturingMapPreview = true;
+    statusMsg = 'Capturando prévia do mapa…';
+    await tick();
+
+    try {
+      const preview = await viabilidadeRef.refreshWorkbenchMapPreview();
+      if (!preview) {
+        throw new Error(
+          'Não foi possível capturar a prévia do mapa. Localize o endereço no mapa e tente de novo.'
+        );
+      }
+      mapPreviewImage = preview;
+      statusMsg = 'Prévia do mapa capturada';
+    } catch (err) {
+      error = err?.message || String(err);
+      statusMsg = '';
+      mapPreviewImage = '';
+    } finally {
+      capturingMapPreview = false;
+    }
   }
 
   /**
@@ -809,10 +841,10 @@
               <button
                 type="button"
                 class="wb-map-btn wb-map-btn-report"
-                on:click={openInfoModal}
-                disabled={loading || locating}
+                on:click={abrirRelatorioComPrint}
+                disabled={loading || locating || capturingMapPreview || generating || !ViabilidadeAlares}
               >
-                Gerar Relatório
+                {capturingMapPreview ? 'Capturando…' : 'Gerar Relatório'}
               </button>
             </div>
           </div>
@@ -907,13 +939,9 @@
                 <p class="wb-preview-hint">
                   O mapa foi capturado automaticamente com todas as CTOs encontradas e suas rotas visíveis.
                 </p>
-              {:else if chamadoId || mapAddress || (mapLat != null && mapLng != null)}
-                <div class="wb-preview-loading">
-                  <p>Clique em Gerar Relatório para capturar a prévia do mapa.</p>
-                </div>
               {:else}
                 <div class="wb-preview-loading">
-                  <p>Localize um endereço no mapa para gerar o relatório.</p>
+                  <p>A prévia será capturada ao abrir por Gerar Relatório.</p>
                 </div>
               {/if}
             </div>
