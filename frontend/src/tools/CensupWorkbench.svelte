@@ -28,7 +28,7 @@
   let equipamentos = [];
   /** Altura do box Equipamentos (px) dentro do split; null = padrão ~32%. */
   let equipPaneHeightPx = null;
-  let equipCollapsed = false;
+  let equipCollapsed = true;
   let mapCollapsed = false;
   let splitDragging = false;
   let splitEl = null;
@@ -675,6 +675,10 @@
 
   onMount(async () => {
     window.addEventListener('message', onMessage);
+    // Equipamentos inicia minimizado — mapa ocupa o split desde o boot
+    equipCollapsed = true;
+    equipPaneHeightPx = EQUIP_HEADER_H;
+    requestMapResize(80);
     try {
       const mod = await import('./ViabilidadeAlares.svelte');
       ViabilidadeAlares = mod.default;
@@ -698,6 +702,7 @@
       statusMsg = 'Aguardando dados da extensão…';
       postToParent('HELLO');
     }
+    requestMapResize(200);
   });
 
   function onMapPreviewFromViabilidade(payload = {}) {
@@ -794,24 +799,22 @@
 
       <section class="wb-map-pane" class:collapsed={mapCollapsed}>
         {#if ViabilidadeAlares}
-          {#key chamadoId || 'idle-map'}
-            <div class="wb-map-host">
-              <svelte:component
-                this={ViabilidadeAlares}
-                bind:this={viabilidadeRef}
-                embedded={true}
-                workbenchMode={true}
-                mapDomId="censup-workbench-map"
-                currentUser={usuario}
-                initialAddress={mapAddress}
-                initialLat={mapLat}
-                initialLng={mapLng}
-                onClientLocationChange={onClientLocationFromMap}
-                onMapPreviewChange={onMapPreviewFromViabilidade}
-                onEquipamentosChange={onEquipamentosFromViabilidade}
-              />
-            </div>
-          {/key}
+          <div class="wb-map-host">
+            <svelte:component
+              this={ViabilidadeAlares}
+              bind:this={viabilidadeRef}
+              embedded={true}
+              workbenchMode={true}
+              mapDomId="censup-workbench-map"
+              currentUser={usuario}
+              initialAddress={mapAddress}
+              initialLat={mapLat}
+              initialLng={mapLng}
+              onClientLocationChange={onClientLocationFromMap}
+              onMapPreviewChange={onMapPreviewFromViabilidade}
+              onEquipamentosChange={onEquipamentosFromViabilidade}
+            />
+          </div>
         {:else}
           <div class="wb-map-placeholder">Carregando mapa…</div>
         {/if}
