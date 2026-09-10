@@ -47,6 +47,8 @@
   let capturingMapPreview = false;
   let locating = false;
   let mapSearchError = '';
+  let reportModalEl = null;
+  let reportModalFitRaf = 0;
 
   /** Altura da barra Equipamentos colapsada (toolbar + padding ≈ Informações). */
   const EQUIP_HEADER_H = 42;
@@ -382,10 +384,48 @@
   function openInfoModal() {
     error = '';
     showInfoModal = true;
+    void fitReportModalToViewport();
   }
 
   function closeInfoModal() {
     showInfoModal = false;
+    if (reportModalEl) {
+      reportModalEl.style.transform = '';
+      reportModalEl.style.width = '';
+    }
+  }
+
+  /**
+   * Escala o box no formato Viabilidade para caber na altura do painel
+   * (equivalente a diminuir o zoom da tela manualmente).
+   */
+  async function fitReportModalToViewport() {
+    await tick();
+    if (reportModalFitRaf) cancelAnimationFrame(reportModalFitRaf);
+    reportModalFitRaf = requestAnimationFrame(() => {
+      reportModalFitRaf = 0;
+      const el = reportModalEl;
+      if (!el || !showInfoModal) return;
+
+      el.style.transform = 'none';
+      el.style.width = '';
+
+      const pad = 16;
+      const availH = Math.max(240, window.innerHeight - pad);
+      const availW = Math.max(280, window.innerWidth - pad);
+      const naturalH = el.scrollHeight;
+      const naturalW = el.offsetWidth || Math.min(520, availW);
+      if (!naturalH) return;
+
+      const scale = Math.min(1, availH / naturalH, availW / naturalW);
+      const finalScale = Math.max(0.68, scale);
+      el.style.transformOrigin = 'top center';
+      el.style.transform = finalScale < 0.999 ? `scale(${finalScale})` : '';
+      // Compensa a largura visual após o scale para não “encolher” demais o conteúdo
+      if (finalScale < 0.999 && naturalW > 0) {
+        el.style.width = `${Math.min(520, Math.floor(availW / finalScale))}px`;
+      }
+    });
   }
 
   /**
@@ -404,6 +444,7 @@
     capturingMapPreview = true;
     statusMsg = 'Capturando prévia do mapa…';
     await tick();
+    await fitReportModalToViewport();
     // Deixa o box do relatório pintar antes do ajuste do mapa (atrás do modal)
     await new Promise((r) => setTimeout(r, 120));
 
@@ -421,12 +462,14 @@
       }
       mapPreviewImage = preview;
       statusMsg = 'Prévia do mapa capturada';
+      await fitReportModalToViewport();
     } catch (err) {
       error = err?.message || String(err);
       statusMsg = '';
       mapPreviewImage = '';
     } finally {
       capturingMapPreview = false;
+      await fitReportModalToViewport();
     }
   }
 
@@ -720,6 +763,7 @@
 
   onMount(async () => {
     window.addEventListener('message', onMessage);
+    window.addEventListener('resize', onReportModalViewportResize);
     // Equipamentos inicia minimizado — mapa ocupa o split desde o boot
     equipCollapsed = true;
     equipPaneHeightPx = EQUIP_HEADER_H;
@@ -750,6 +794,10 @@
     requestMapResize(200);
   });
 
+  function onReportModalViewportResize() {
+    if (showInfoModal) void fitReportModalToViewport();
+  }
+
   function onMapReadyFromViabilidade() {
     postToParent('MAP_READY');
   }
@@ -758,12 +806,15 @@
     capturingMapPreview = !!payload.capturing;
     if (!payload.capturing) {
       mapPreviewImage = payload.image || '';
+      if (showInfoModal) void fitReportModalToViewport();
     }
   }
 
   onDestroy(() => {
     window.removeEventListener('message', onMessage);
+    window.removeEventListener('resize', onReportModalViewportResize);
     if (reanaliseTimer) clearTimeout(reanaliseTimer);
+    if (reportModalFitRaf) cancelAnimationFrame(reportModalFitRaf);
     endSplitDrag();
     if (splitResizeRaf) cancelAnimationFrame(splitResizeRaf);
   });
@@ -919,6 +970,7 @@
   >
     <div
       class="wb-modal-content"
+      bind:this={reportModalEl}
       role="dialog"
       tabindex="0"
       aria-modal="true"
@@ -932,54 +984,52 @@
       </div>
       <div class="wb-modal-body">
         <form class="wb-modal-form" on:submit|preventDefault={onSalvarRelatorioSubmit}>
-          <div class="wb-modal-grid">
-            <div class="wb-modal-field">
-              <label for="wb-modal-ala">1. Número do ALA</label>
-              <input id="wb-modal-ala" bind:value={form.numeroALA} inputmode="numeric" placeholder="Digite apenas números" />
-            </div>
-            <div class="wb-modal-field">
-              <label for="wb-modal-cidade">2. Cidade</label>
-              <input id="wb-modal-cidade" bind:value={form.cidade} />
-            </div>
-            <div class="wb-modal-field wb-modal-field-span">
-              <label for="wb-modal-end">3. Endereço Completo</label>
-              <input id="wb-modal-end" bind:value={form.enderecoCompleto} on:input={onEnderecoManualInput} />
-            </div>
-            <div class="wb-modal-field">
-              <label for="wb-modal-num">4. Número</label>
-              <input id="wb-modal-num" bind:value={form.numeroEndereco} />
-            </div>
-            <div class="wb-modal-field">
-              <label for="wb-modal-cep">5. CEP</label>
-              <input id="wb-modal-cep" bind:value={form.cep} placeholder="Do mapa" />
-            </div>
-            <div class="wb-modal-field wb-modal-field-span">
-              <label for="wb-modal-coords">6. Coordenadas</label>
-              <input id="wb-modal-coords" bind:value={form.coordenadas} readonly placeholder="Ajuste a casinha no mapa" />
-            </div>
-            <div class="wb-modal-field">
-              <label for="wb-modal-tab">7. Tabulação Final</label>
-              <select id="wb-modal-tab" bind:value={form.tabulacaoFinal}>
-                <option value="">Selecione</option>
-                {#each tabulacoes as tab}
-                  <option value={tab}>{tab}</option>
-                {/each}
-                {#if form.tabulacaoFinal && !tabulacoes.includes(form.tabulacaoFinal)}
-                  <option value={form.tabulacaoFinal}>{form.tabulacaoFinal}</option>
-                {/if}
-              </select>
-              {#if sugeridaOriginal}
-                <small class="hint">
-                  Sugestão: {sugeridaOriginal}{reanalyzing ? ' (recalc…)' : ''}
-                </small>
-              {:else if reanalyzing}
-                <small class="hint">Recalculando…</small>
+          <div class="wb-modal-field">
+            <label for="wb-modal-ala">1. Número do ALA</label>
+            <input id="wb-modal-ala" bind:value={form.numeroALA} inputmode="numeric" placeholder="Digite apenas números" />
+          </div>
+          <div class="wb-modal-field">
+            <label for="wb-modal-cidade">2. Cidade</label>
+            <input id="wb-modal-cidade" bind:value={form.cidade} />
+          </div>
+          <div class="wb-modal-field">
+            <label for="wb-modal-end">3. Endereço Completo</label>
+            <input id="wb-modal-end" bind:value={form.enderecoCompleto} on:input={onEnderecoManualInput} />
+          </div>
+          <div class="wb-modal-field">
+            <label for="wb-modal-num">4. Número do Endereço</label>
+            <input id="wb-modal-num" bind:value={form.numeroEndereco} />
+          </div>
+          <div class="wb-modal-field">
+            <label for="wb-modal-cep">5. CEP do Endereço</label>
+            <input id="wb-modal-cep" bind:value={form.cep} placeholder="Preenchido pelo mapa quando disponível" />
+          </div>
+          <div class="wb-modal-field">
+            <label for="wb-modal-coords">6. Coordenadas</label>
+            <input id="wb-modal-coords" bind:value={form.coordenadas} readonly placeholder="Ajuste a casinha no mapa" />
+          </div>
+          <div class="wb-modal-field">
+            <label for="wb-modal-tab">7. Tabulação Final</label>
+            <select id="wb-modal-tab" bind:value={form.tabulacaoFinal}>
+              <option value="">Selecione uma opção</option>
+              {#each tabulacoes as tab}
+                <option value={tab}>{tab}</option>
+              {/each}
+              {#if form.tabulacaoFinal && !tabulacoes.includes(form.tabulacaoFinal)}
+                <option value={form.tabulacaoFinal}>{form.tabulacaoFinal}</option>
               {/if}
-            </div>
-            <div class="wb-modal-field">
-              <label for="wb-modal-proj">8. Projetista</label>
-              <input id="wb-modal-proj" bind:value={form.projetista} readonly />
-            </div>
+            </select>
+            {#if sugeridaOriginal}
+              <small class="hint">
+                Sugestão automática: {sugeridaOriginal}{reanalyzing ? ' (recalculando…)' : ''}
+              </small>
+            {:else if reanalyzing}
+              <small class="hint">Recalculando tabulação…</small>
+            {/if}
+          </div>
+          <div class="wb-modal-field">
+            <label for="wb-modal-proj">8. Projetista</label>
+            <input id="wb-modal-proj" bind:value={form.projetista} readonly />
           </div>
 
           <div class="wb-map-preview-block">
@@ -994,9 +1044,12 @@
                 <div class="wb-preview-image-wrapper">
                   <img src={mapPreviewImage} alt="Prévia do Mapa" class="wb-preview-image" />
                 </div>
+                <p class="wb-preview-hint">
+                  O mapa foi capturado automaticamente com todas as CTOs encontradas e suas rotas visíveis.
+                </p>
               {:else}
                 <div class="wb-preview-loading">
-                  <p>Prévia ao abrir por Gerar Relatório.</p>
+                  <p>A prévia será capturada ao abrir por Gerar Relatório.</p>
                 </div>
               {/if}
             </div>
@@ -1007,14 +1060,14 @@
             <button type="submit" class="wb-modal-btn-save" disabled={saving || loading || !chamadoId}>
               {saving ? 'Salvando…' : 'Salvar Relatório'}
             </button>
-              <button
-                type="button"
-                class="wb-modal-btn-pdf"
-                on:click={gerarRelatorio}
-                disabled={generating || loading || capturingMapPreview}
-              >
-                {generating || capturingMapPreview ? 'Gerando…' : 'Gerar PDF'}
-              </button>
+            <button
+              type="button"
+              class="wb-modal-btn-pdf"
+              on:click={gerarRelatorio}
+              disabled={generating || loading || capturingMapPreview}
+            >
+              {generating || capturingMapPreview ? 'Gerando…' : 'Gerar PDF'}
+            </button>
           </div>
         </form>
       </div>
@@ -1281,15 +1334,14 @@
   .wb-map-preview-block {
     display: flex;
     flex-direction: column;
-    gap: 0.2rem;
-    margin-top: 0;
-    flex-shrink: 0;
+    gap: 0.25rem;
+    margin-top: 0.15rem;
   }
 
   .wb-map-preview-label {
-    font-size: 0.72rem;
+    font-size: 0.88rem;
     font-weight: 600;
-    color: #374151;
+    color: #333;
   }
 
   .wb-map-preview-container {
@@ -1300,9 +1352,8 @@
     display: block;
     width: 100%;
     max-width: 100%;
-    max-height: 110px;
-    border: 1px solid #ddd;
-    border-radius: 5px;
+    border: 2px solid #ddd;
+    border-radius: 6px;
     overflow: hidden;
     background: #f9f9f9;
     line-height: 0;
@@ -1312,23 +1363,24 @@
     display: block;
     width: 100%;
     height: auto;
-    max-height: 110px;
-    object-fit: cover;
+    max-height: 160px;
+    object-fit: contain;
     object-position: center;
     max-width: 100%;
+    background: #f9f9f9;
   }
 
   .wb-preview-loading {
-    padding: 0.55rem 0.5rem;
+    padding: 0.85rem 0.65rem;
     text-align: center;
     background: #f5f5f5;
-    border: 1px dashed #ddd;
-    border-radius: 5px;
+    border: 2px dashed #ddd;
+    border-radius: 6px;
   }
 
   .wb-preview-loading p {
-    margin: 0.35rem 0 0;
-    font-size: 0.68rem;
+    margin: 0.45rem 0 0;
+    font-size: 0.78rem;
     font-weight: 600;
     color: #7b68ee;
   }
@@ -1337,8 +1389,8 @@
     border: 3px solid #f3f3f3;
     border-top: 3px solid #7b68ee;
     border-radius: 50%;
-    width: 22px;
-    height: 22px;
+    width: 26px;
+    height: 26px;
     animation: wb-spin 1s linear infinite;
     margin: 0 auto;
   }
@@ -1350,7 +1402,12 @@
   }
 
   .wb-preview-hint {
-    display: none;
+    margin: 0.3rem 0 0;
+    font-size: 0.7rem;
+    color: #666;
+    font-style: italic;
+    text-align: center;
+    line-height: 1.3;
   }
 
   .wb-modal-overlay {
@@ -1358,40 +1415,40 @@
     inset: 0;
     background: rgba(0, 0, 0, 0.6);
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     justify-content: center;
     z-index: 10000;
-    padding: 10px;
+    padding: 8px;
     box-sizing: border-box;
+    overflow: auto;
   }
 
   .wb-modal-content {
     background: #fff;
-    border-radius: 10px;
-    max-width: 560px;
+    border-radius: 12px;
+    max-width: 520px;
     width: 100%;
-    max-height: calc(100vh - 20px);
-    overflow: hidden;
-    display: flex;
-    flex-direction: column;
+    max-height: none;
+    overflow: visible;
     box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
     box-sizing: border-box;
+    transform-origin: top center;
+    margin: 0 auto;
   }
 
   .wb-modal-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 0.65rem 0.85rem;
+    padding: 0.85rem 1.1rem;
     border-bottom: 2px solid #7b68ee;
     background: linear-gradient(135deg, #7b68ee 0%, #6495ed 100%);
     color: #fff;
-    flex-shrink: 0;
   }
 
   .wb-modal-header h2 {
     margin: 0;
-    font-size: 1.05rem;
+    font-size: 1.2rem;
     font-weight: 600;
   }
 
@@ -1399,11 +1456,11 @@
     background: none;
     border: none;
     color: #fff;
-    font-size: 1.6rem;
+    font-size: 1.75rem;
     cursor: pointer;
     padding: 0;
-    width: 28px;
-    height: 28px;
+    width: 32px;
+    height: 32px;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -1416,50 +1473,34 @@
   }
 
   .wb-modal-body {
-    padding: 0.7rem 0.85rem 0.75rem;
-    overflow: hidden;
-    flex: 1 1 auto;
-    min-height: 0;
+    padding: 0.9rem 1.1rem 1rem;
   }
 
   .wb-modal-form {
     display: flex;
     flex-direction: column;
-    gap: 0.45rem;
-    height: 100%;
-    min-height: 0;
-  }
-
-  .wb-modal-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 0.4rem 0.55rem;
+    gap: 0;
   }
 
   .wb-modal-field {
-    margin-bottom: 0;
-    min-width: 0;
-  }
-
-  .wb-modal-field-span {
-    grid-column: 1 / -1;
+    margin-bottom: 0.7rem;
   }
 
   .wb-modal-field label {
     display: block;
-    margin-bottom: 0.2rem;
+    margin-bottom: 0.3rem;
     font-weight: 600;
     color: #333;
-    font-size: 0.72rem;
+    font-size: 0.88rem;
   }
 
   .wb-modal-field input,
   .wb-modal-field select {
     width: 100%;
-    border: 1px solid #d1d5db;
-    border-radius: 5px;
-    padding: 0.32rem 0.45rem;
-    font-size: 0.8rem;
+    border: 2px solid #ddd;
+    border-radius: 6px;
+    padding: 0.5rem 0.65rem;
+    font-size: 0.9rem;
     color: #111827;
     background: #fff;
     box-sizing: border-box;
@@ -1472,21 +1513,20 @@
   .wb-modal-actions {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.4rem;
+    gap: 0.5rem;
     justify-content: flex-end;
-    margin-top: 0.15rem;
-    padding-top: 0.45rem;
+    margin-top: 0.55rem;
+    padding-top: 0.7rem;
     border-top: 1px solid #e5e7eb;
-    flex-shrink: 0;
   }
 
   .wb-modal-btn-cancel,
   .wb-modal-btn-save,
   .wb-modal-btn-pdf {
     border: none;
-    border-radius: 5px;
-    padding: 0.4rem 0.7rem;
-    font-size: 0.78rem;
+    border-radius: 6px;
+    padding: 0.5rem 0.85rem;
+    font-size: 0.85rem;
     font-weight: 700;
     cursor: pointer;
   }
