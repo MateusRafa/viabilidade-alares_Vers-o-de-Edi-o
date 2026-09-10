@@ -47,8 +47,6 @@
   let capturingMapPreview = false;
   let locating = false;
   let mapSearchError = '';
-  let reportModalEl = null;
-  let reportModalFitRaf = 0;
 
   /** Altura da barra Equipamentos colapsada (toolbar + padding ≈ Informações). */
   const EQUIP_HEADER_H = 42;
@@ -384,48 +382,10 @@
   function openInfoModal() {
     error = '';
     showInfoModal = true;
-    void fitReportModalToViewport();
   }
 
   function closeInfoModal() {
     showInfoModal = false;
-    if (reportModalEl) {
-      reportModalEl.style.transform = '';
-      reportModalEl.style.width = '';
-    }
-  }
-
-  /**
-   * Escala o box no formato Viabilidade para caber na altura do painel
-   * (equivalente a diminuir o zoom da tela manualmente).
-   */
-  async function fitReportModalToViewport() {
-    await tick();
-    if (reportModalFitRaf) cancelAnimationFrame(reportModalFitRaf);
-    reportModalFitRaf = requestAnimationFrame(() => {
-      reportModalFitRaf = 0;
-      const el = reportModalEl;
-      if (!el || !showInfoModal) return;
-
-      el.style.transform = 'none';
-      el.style.width = '';
-
-      const pad = 16;
-      const availH = Math.max(240, window.innerHeight - pad);
-      const availW = Math.max(280, window.innerWidth - pad);
-      const naturalH = el.scrollHeight;
-      const naturalW = el.offsetWidth || Math.min(520, availW);
-      if (!naturalH) return;
-
-      const scale = Math.min(1, availH / naturalH, availW / naturalW);
-      const finalScale = Math.max(0.68, scale);
-      el.style.transformOrigin = 'top center';
-      el.style.transform = finalScale < 0.999 ? `scale(${finalScale})` : '';
-      // Compensa a largura visual após o scale para não “encolher” demais o conteúdo
-      if (finalScale < 0.999 && naturalW > 0) {
-        el.style.width = `${Math.min(520, Math.floor(availW / finalScale))}px`;
-      }
-    });
   }
 
   /**
@@ -444,7 +404,6 @@
     capturingMapPreview = true;
     statusMsg = 'Capturando prévia do mapa…';
     await tick();
-    await fitReportModalToViewport();
     // Deixa o box do relatório pintar antes do ajuste do mapa (atrás do modal)
     await new Promise((r) => setTimeout(r, 120));
 
@@ -462,14 +421,12 @@
       }
       mapPreviewImage = preview;
       statusMsg = 'Prévia do mapa capturada';
-      await fitReportModalToViewport();
     } catch (err) {
       error = err?.message || String(err);
       statusMsg = '';
       mapPreviewImage = '';
     } finally {
       capturingMapPreview = false;
-      await fitReportModalToViewport();
     }
   }
 
@@ -763,7 +720,6 @@
 
   onMount(async () => {
     window.addEventListener('message', onMessage);
-    window.addEventListener('resize', onReportModalViewportResize);
     // Equipamentos inicia minimizado — mapa ocupa o split desde o boot
     equipCollapsed = true;
     equipPaneHeightPx = EQUIP_HEADER_H;
@@ -794,10 +750,6 @@
     requestMapResize(200);
   });
 
-  function onReportModalViewportResize() {
-    if (showInfoModal) void fitReportModalToViewport();
-  }
-
   function onMapReadyFromViabilidade() {
     postToParent('MAP_READY');
   }
@@ -806,15 +758,12 @@
     capturingMapPreview = !!payload.capturing;
     if (!payload.capturing) {
       mapPreviewImage = payload.image || '';
-      if (showInfoModal) void fitReportModalToViewport();
     }
   }
 
   onDestroy(() => {
     window.removeEventListener('message', onMessage);
-    window.removeEventListener('resize', onReportModalViewportResize);
     if (reanaliseTimer) clearTimeout(reanaliseTimer);
-    if (reportModalFitRaf) cancelAnimationFrame(reportModalFitRaf);
     endSplitDrag();
     if (splitResizeRaf) cancelAnimationFrame(splitResizeRaf);
   });
@@ -970,7 +919,6 @@
   >
     <div
       class="wb-modal-content"
-      bind:this={reportModalEl}
       role="dialog"
       tabindex="0"
       aria-modal="true"
@@ -1334,21 +1282,23 @@
   .wb-map-preview-block {
     display: flex;
     flex-direction: column;
-    gap: 0.25rem;
-    margin-top: 0.15rem;
+    gap: 0.35rem;
+    margin-top: 0.35rem;
   }
 
   .wb-map-preview-label {
-    font-size: 0.88rem;
+    font-size: 0.95rem;
     font-weight: 600;
     color: #333;
   }
 
   .wb-map-preview-container {
     width: 100%;
+    margin-top: 0.25rem;
   }
 
   .wb-preview-image-wrapper {
+    position: relative;
     display: block;
     width: 100%;
     max-width: 100%;
@@ -1363,34 +1313,36 @@
     display: block;
     width: 100%;
     height: auto;
-    max-height: 160px;
-    object-fit: contain;
-    object-position: center;
     max-width: 100%;
-    background: #f9f9f9;
   }
 
   .wb-preview-loading {
-    padding: 0.85rem 0.65rem;
+    padding: 2.5rem 1.5rem;
     text-align: center;
     background: #f5f5f5;
     border: 2px dashed #ddd;
     border-radius: 6px;
+    min-height: 220px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
   }
 
   .wb-preview-loading p {
-    margin: 0.45rem 0 0;
-    font-size: 0.78rem;
+    margin: 0.75rem 0 0;
+    font-size: 0.9rem;
     font-weight: 600;
     color: #7b68ee;
   }
 
   .wb-loading-spinner {
-    border: 3px solid #f3f3f3;
-    border-top: 3px solid #7b68ee;
+    border: 4px solid #f3f3f3;
+    border-top: 4px solid #7b68ee;
     border-radius: 50%;
-    width: 26px;
-    height: 26px;
+    width: 40px;
+    height: 40px;
     animation: wb-spin 1s linear infinite;
     margin: 0 auto;
   }
@@ -1402,8 +1354,8 @@
   }
 
   .wb-preview-hint {
-    margin: 0.3rem 0 0;
-    font-size: 0.7rem;
+    margin: 0.5rem 0 0;
+    font-size: 0.85rem;
     color: #666;
     font-style: italic;
     text-align: center;
@@ -1418,22 +1370,21 @@
     align-items: flex-start;
     justify-content: center;
     z-index: 10000;
-    padding: 8px;
+    padding: 16px;
     box-sizing: border-box;
-    overflow: auto;
+    overflow-y: auto;
   }
 
   .wb-modal-content {
     background: #fff;
     border-radius: 12px;
-    max-width: 520px;
+    max-width: 600px;
     width: 100%;
     max-height: none;
     overflow: visible;
     box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
     box-sizing: border-box;
-    transform-origin: top center;
-    margin: 0 auto;
+    margin: 0 auto 24px;
   }
 
   .wb-modal-header {
@@ -1473,7 +1424,7 @@
   }
 
   .wb-modal-body {
-    padding: 0.9rem 1.1rem 1rem;
+    padding: 1.25rem 1.35rem 1.35rem;
   }
 
   .wb-modal-form {
@@ -1483,15 +1434,15 @@
   }
 
   .wb-modal-field {
-    margin-bottom: 0.7rem;
+    margin-bottom: 1rem;
   }
 
   .wb-modal-field label {
     display: block;
-    margin-bottom: 0.3rem;
+    margin-bottom: 0.4rem;
     font-weight: 600;
     color: #333;
-    font-size: 0.88rem;
+    font-size: 0.95rem;
   }
 
   .wb-modal-field input,
@@ -1499,8 +1450,8 @@
     width: 100%;
     border: 2px solid #ddd;
     border-radius: 6px;
-    padding: 0.5rem 0.65rem;
-    font-size: 0.9rem;
+    padding: 0.65rem 0.75rem;
+    font-size: 0.95rem;
     color: #111827;
     background: #fff;
     box-sizing: border-box;
