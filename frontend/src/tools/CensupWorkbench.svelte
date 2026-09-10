@@ -240,6 +240,8 @@
     tabulacaoFinal: '',
     projetista: ''
   };
+  /** true após endereço/CEP vindos do pin do mapa — não sobrescrever com Agenda */
+  let addressFromMap = false;
 
   $: mapAddress = form.enderecoCompleto || chamado?.endereco?.completo || '';
   // Digitar endereço NÃO altera coords do mapa — só Localizar / casinha / sync do chamado
@@ -253,6 +255,38 @@
       return '';
     }
     return `${Number(lat).toFixed(6)}, ${Number(lng).toFixed(6)}`;
+  }
+
+  /** CEP da Agenda às vezes vem concatenado com o pedido; mantém só 8 dígitos. */
+  function normalizeCep(cep) {
+    const digits = String(cep || '').replace(/\D/g, '');
+    if (!digits) return '';
+    return digits.length > 8 ? digits.slice(0, 8) : digits;
+  }
+
+  function applyMapAddressToForm(address = {}) {
+    if (!address || typeof address !== 'object') return;
+    let changed = false;
+    if (address.enderecoCompleto) {
+      form.enderecoCompleto = address.enderecoCompleto;
+      changed = true;
+    }
+    if (address.cidade) {
+      form.cidade = address.cidade;
+      changed = true;
+    }
+    if (address.numero) {
+      form.numeroEndereco = address.numero;
+      changed = true;
+    }
+    if (address.cep) {
+      form.cep = normalizeCep(address.cep);
+      changed = true;
+    }
+    if (changed) {
+      addressFromMap = true;
+      form = form;
+    }
   }
 
   function coordsFromChamado(item) {
@@ -280,16 +314,25 @@
   function fillFormFromChamado(item) {
     const end = item?.endereco || {};
     const coords = coordsFromChamado(item);
-    form = {
+    const next = {
       numeroALA: String(item?.pedido || '').replace(/\D/g, ''),
       cidade: end.cidade || item?.cidade || '',
       enderecoCompleto: end.completo || '',
       numeroEndereco: end.numero || '',
-      cep: end.cep || '',
+      cep: normalizeCep(end.cep),
       coordenadas: coords ? formatCoords(coords.lat, coords.lng) : form.coordenadas || '',
       tabulacaoFinal: item?.tabulacaoFinal || '',
       projetista: usuario || item?.viabilidadeResumo?.projetista || ''
     };
+    // Se o mapa já resolveu o endereço do pin, não voltar para o texto da Agenda/busca
+    if (addressFromMap) {
+      next.enderecoCompleto = form.enderecoCompleto || next.enderecoCompleto;
+      next.cidade = form.cidade || next.cidade;
+      next.numeroEndereco = form.numeroEndereco || next.numeroEndereco;
+      next.cep = form.cep || next.cep;
+      next.coordenadas = form.coordenadas || next.coordenadas;
+    }
+    form = next;
     if (coords) pinCoords = coords;
     sugeridaOriginal = item?.tabulacaoFinal || item?.analiseIa?.tabulacaoSugerida || '';
   }
@@ -320,7 +363,13 @@
     mapPreviewImage = '';
     capturingMapPreview = false;
     try {
-      await viabilidadeRef.searchWorkbenchAddress(endereco);
+      const found = await viabilidadeRef.searchWorkbenchAddress(endereco);
+      // Campo do overlay/relatório = endereço encontrado no pin, não o texto digitado na busca
+      if (found) {
+        applyMapAddressToForm(found);
+      } else if (typeof viabilidadeRef.syncWorkbenchAddressFromMap === 'function') {
+        applyMapAddressToForm(await viabilidadeRef.syncWorkbenchAddressFromMap());
+      }
       statusMsg = 'Endereço localizado no mapa';
     } catch (err) {
       error = err?.message || String(err);
@@ -359,6 +408,11 @@
     await new Promise((r) => setTimeout(r, 120));
 
     try {
+      // Endereço Completo / CEP = encontrados no pin do mapa (igual Viabilidade oficial)
+      if (typeof viabilidadeRef.syncWorkbenchAddressFromMap === 'function') {
+        applyMapAddressToForm(await viabilidadeRef.syncWorkbenchAddressFromMap());
+      }
+
       const preview = await viabilidadeRef.refreshWorkbenchMapPreview();
       if (!preview) {
         throw new Error(
@@ -389,22 +443,7 @@
 
     pinCoords = { lat, lng };
     form.coordenadas = formatCoords(lat, lng);
-
-    if (address.enderecoCompleto) {
-      form.enderecoCompleto = address.enderecoCompleto;
-    }
-    if (address.cidade) {
-      form.cidade = address.cidade;
-    }
-    if (address.numero) {
-      form.numeroEndereco = address.numero;
-    }
-    // CEP do geocode do mapa (mais confiável que o da Agenda)
-    if (address.cep) {
-      form.cep = address.cep;
-    }
-
-    form = form; // reatividade
+    applyMapAddressToForm(address);
     scheduleReanaliseTabulacao();
   }
 
@@ -460,6 +499,7 @@
     loading = true;
     error = '';
     pinCoords = null;
+    addressFromMap = false;
     mapPreviewImage = '';
     capturingMapPreview = false;
     equipamentos = [];
@@ -515,6 +555,7 @@
         tabulacaoFinal: seed.tabulacaoFinal || '',
         projetista: usuario || seed.projetista || ''
       };
+      form.cep = normalizeCep(form.cep);
     }
 
     if (!usuario) {
@@ -891,52 +932,54 @@
       </div>
       <div class="wb-modal-body">
         <form class="wb-modal-form" on:submit|preventDefault={onSalvarRelatorioSubmit}>
-          <div class="wb-modal-field">
-            <label for="wb-modal-ala">1. Número do ALA</label>
-            <input id="wb-modal-ala" bind:value={form.numeroALA} inputmode="numeric" placeholder="Digite apenas números" />
-          </div>
-          <div class="wb-modal-field">
-            <label for="wb-modal-cidade">2. Cidade</label>
-            <input id="wb-modal-cidade" bind:value={form.cidade} />
-          </div>
-          <div class="wb-modal-field">
-            <label for="wb-modal-end">3. Endereço Completo</label>
-            <input id="wb-modal-end" bind:value={form.enderecoCompleto} on:input={onEnderecoManualInput} />
-          </div>
-          <div class="wb-modal-field">
-            <label for="wb-modal-num">4. Número do Endereço</label>
-            <input id="wb-modal-num" bind:value={form.numeroEndereco} />
-          </div>
-          <div class="wb-modal-field">
-            <label for="wb-modal-cep">5. CEP do Endereço</label>
-            <input id="wb-modal-cep" bind:value={form.cep} placeholder="Preenchido pelo mapa quando disponível" />
-          </div>
-          <div class="wb-modal-field">
-            <label for="wb-modal-coords">6. Coordenadas</label>
-            <input id="wb-modal-coords" bind:value={form.coordenadas} readonly placeholder="Ajuste a casinha no mapa" />
-          </div>
-          <div class="wb-modal-field">
-            <label for="wb-modal-tab">7. Tabulação Final</label>
-            <select id="wb-modal-tab" bind:value={form.tabulacaoFinal}>
-              <option value="">Selecione uma opção</option>
-              {#each tabulacoes as tab}
-                <option value={tab}>{tab}</option>
-              {/each}
-              {#if form.tabulacaoFinal && !tabulacoes.includes(form.tabulacaoFinal)}
-                <option value={form.tabulacaoFinal}>{form.tabulacaoFinal}</option>
+          <div class="wb-modal-grid">
+            <div class="wb-modal-field">
+              <label for="wb-modal-ala">1. Número do ALA</label>
+              <input id="wb-modal-ala" bind:value={form.numeroALA} inputmode="numeric" placeholder="Digite apenas números" />
+            </div>
+            <div class="wb-modal-field">
+              <label for="wb-modal-cidade">2. Cidade</label>
+              <input id="wb-modal-cidade" bind:value={form.cidade} />
+            </div>
+            <div class="wb-modal-field wb-modal-field-span">
+              <label for="wb-modal-end">3. Endereço Completo</label>
+              <input id="wb-modal-end" bind:value={form.enderecoCompleto} on:input={onEnderecoManualInput} />
+            </div>
+            <div class="wb-modal-field">
+              <label for="wb-modal-num">4. Número</label>
+              <input id="wb-modal-num" bind:value={form.numeroEndereco} />
+            </div>
+            <div class="wb-modal-field">
+              <label for="wb-modal-cep">5. CEP</label>
+              <input id="wb-modal-cep" bind:value={form.cep} placeholder="Do mapa" />
+            </div>
+            <div class="wb-modal-field wb-modal-field-span">
+              <label for="wb-modal-coords">6. Coordenadas</label>
+              <input id="wb-modal-coords" bind:value={form.coordenadas} readonly placeholder="Ajuste a casinha no mapa" />
+            </div>
+            <div class="wb-modal-field">
+              <label for="wb-modal-tab">7. Tabulação Final</label>
+              <select id="wb-modal-tab" bind:value={form.tabulacaoFinal}>
+                <option value="">Selecione</option>
+                {#each tabulacoes as tab}
+                  <option value={tab}>{tab}</option>
+                {/each}
+                {#if form.tabulacaoFinal && !tabulacoes.includes(form.tabulacaoFinal)}
+                  <option value={form.tabulacaoFinal}>{form.tabulacaoFinal}</option>
+                {/if}
+              </select>
+              {#if sugeridaOriginal}
+                <small class="hint">
+                  Sugestão: {sugeridaOriginal}{reanalyzing ? ' (recalc…)' : ''}
+                </small>
+              {:else if reanalyzing}
+                <small class="hint">Recalculando…</small>
               {/if}
-            </select>
-            {#if sugeridaOriginal}
-              <small class="hint">
-                Sugestão automática: {sugeridaOriginal}{reanalyzing ? ' (recalculando…)' : ''}
-              </small>
-            {:else if reanalyzing}
-              <small class="hint">Recalculando tabulação…</small>
-            {/if}
-          </div>
-          <div class="wb-modal-field">
-            <label for="wb-modal-proj">8. Projetista</label>
-            <input id="wb-modal-proj" bind:value={form.projetista} readonly />
+            </div>
+            <div class="wb-modal-field">
+              <label for="wb-modal-proj">8. Projetista</label>
+              <input id="wb-modal-proj" bind:value={form.projetista} readonly />
+            </div>
           </div>
 
           <div class="wb-map-preview-block">
@@ -951,12 +994,9 @@
                 <div class="wb-preview-image-wrapper">
                   <img src={mapPreviewImage} alt="Prévia do Mapa" class="wb-preview-image" />
                 </div>
-                <p class="wb-preview-hint">
-                  O mapa foi capturado automaticamente com todas as CTOs encontradas e suas rotas visíveis.
-                </p>
               {:else}
                 <div class="wb-preview-loading">
-                  <p>A prévia será capturada ao abrir por Gerar Relatório.</p>
+                  <p>Prévia ao abrir por Gerar Relatório.</p>
                 </div>
               {/if}
             </div>
@@ -1241,12 +1281,13 @@
   .wb-map-preview-block {
     display: flex;
     flex-direction: column;
-    gap: 0.25rem;
-    margin-top: 0.15rem;
+    gap: 0.2rem;
+    margin-top: 0;
+    flex-shrink: 0;
   }
 
   .wb-map-preview-label {
-    font-size: 0.68rem;
+    font-size: 0.72rem;
     font-weight: 600;
     color: #374151;
   }
@@ -1259,8 +1300,9 @@
     display: block;
     width: 100%;
     max-width: 100%;
-    border: 2px solid #ddd;
-    border-radius: 6px;
+    max-height: 110px;
+    border: 1px solid #ddd;
+    border-radius: 5px;
     overflow: hidden;
     background: #f9f9f9;
     line-height: 0;
@@ -1270,20 +1312,23 @@
     display: block;
     width: 100%;
     height: auto;
+    max-height: 110px;
+    object-fit: cover;
+    object-position: center;
     max-width: 100%;
   }
 
   .wb-preview-loading {
-    padding: 1.25rem 0.75rem;
+    padding: 0.55rem 0.5rem;
     text-align: center;
     background: #f5f5f5;
-    border: 2px dashed #ddd;
-    border-radius: 6px;
+    border: 1px dashed #ddd;
+    border-radius: 5px;
   }
 
   .wb-preview-loading p {
-    margin: 0.65rem 0 0;
-    font-size: 0.72rem;
+    margin: 0.35rem 0 0;
+    font-size: 0.68rem;
     font-weight: 600;
     color: #7b68ee;
   }
@@ -1292,8 +1337,8 @@
     border: 3px solid #f3f3f3;
     border-top: 3px solid #7b68ee;
     border-radius: 50%;
-    width: 28px;
-    height: 28px;
+    width: 22px;
+    height: 22px;
     animation: wb-spin 1s linear infinite;
     margin: 0 auto;
   }
@@ -1305,12 +1350,7 @@
   }
 
   .wb-preview-hint {
-    margin: 0.35rem 0 0;
-    font-size: 0.62rem;
-    color: #666;
-    font-style: italic;
-    text-align: center;
-    line-height: 1.3;
+    display: none;
   }
 
   .wb-modal-overlay {
@@ -1321,17 +1361,19 @@
     align-items: center;
     justify-content: center;
     z-index: 10000;
-    padding: 20px;
+    padding: 10px;
     box-sizing: border-box;
   }
 
   .wb-modal-content {
     background: #fff;
-    border-radius: 12px;
-    max-width: 600px;
+    border-radius: 10px;
+    max-width: 560px;
     width: 100%;
-    max-height: 90vh;
-    overflow-y: auto;
+    max-height: calc(100vh - 20px);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
     box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
     box-sizing: border-box;
   }
@@ -1340,15 +1382,16 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 1.5rem;
+    padding: 0.65rem 0.85rem;
     border-bottom: 2px solid #7b68ee;
     background: linear-gradient(135deg, #7b68ee 0%, #6495ed 100%);
     color: #fff;
+    flex-shrink: 0;
   }
 
   .wb-modal-header h2 {
     margin: 0;
-    font-size: 1.35rem;
+    font-size: 1.05rem;
     font-weight: 600;
   }
 
@@ -1356,11 +1399,11 @@
     background: none;
     border: none;
     color: #fff;
-    font-size: 2rem;
+    font-size: 1.6rem;
     cursor: pointer;
     padding: 0;
-    width: 32px;
-    height: 32px;
+    width: 28px;
+    height: 28px;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -1373,34 +1416,50 @@
   }
 
   .wb-modal-body {
-    padding: 1.5rem;
+    padding: 0.7rem 0.85rem 0.75rem;
+    overflow: hidden;
+    flex: 1 1 auto;
+    min-height: 0;
   }
 
   .wb-modal-form {
     display: flex;
     flex-direction: column;
-    gap: 0;
+    gap: 0.45rem;
+    height: 100%;
+    min-height: 0;
+  }
+
+  .wb-modal-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.4rem 0.55rem;
   }
 
   .wb-modal-field {
-    margin-bottom: 1.15rem;
+    margin-bottom: 0;
+    min-width: 0;
+  }
+
+  .wb-modal-field-span {
+    grid-column: 1 / -1;
   }
 
   .wb-modal-field label {
     display: block;
-    margin-bottom: 0.45rem;
+    margin-bottom: 0.2rem;
     font-weight: 600;
     color: #333;
-    font-size: 0.9rem;
+    font-size: 0.72rem;
   }
 
   .wb-modal-field input,
   .wb-modal-field select {
     width: 100%;
     border: 1px solid #d1d5db;
-    border-radius: 6px;
-    padding: 0.55rem 0.65rem;
-    font-size: 0.9rem;
+    border-radius: 5px;
+    padding: 0.32rem 0.45rem;
+    font-size: 0.8rem;
     color: #111827;
     background: #fff;
     box-sizing: border-box;
@@ -1413,20 +1472,21 @@
   .wb-modal-actions {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.5rem;
+    gap: 0.4rem;
     justify-content: flex-end;
-    margin-top: 0.75rem;
-    padding-top: 0.75rem;
+    margin-top: 0.15rem;
+    padding-top: 0.45rem;
     border-top: 1px solid #e5e7eb;
+    flex-shrink: 0;
   }
 
   .wb-modal-btn-cancel,
   .wb-modal-btn-save,
   .wb-modal-btn-pdf {
     border: none;
-    border-radius: 6px;
-    padding: 0.55rem 0.9rem;
-    font-size: 0.85rem;
+    border-radius: 5px;
+    padding: 0.4rem 0.7rem;
+    font-size: 0.78rem;
     font-weight: 700;
     cursor: pointer;
   }
