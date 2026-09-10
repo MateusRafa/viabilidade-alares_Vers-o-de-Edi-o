@@ -321,9 +321,7 @@
     capturingMapPreview = false;
     try {
       await viabilidadeRef.searchWorkbenchAddress(endereco);
-      statusMsg = 'Endereço localizado — preencha o relatório';
-      // Igual fluxo oficial: após localizar, abre o modal de relatório (sem print ainda)
-      openInfoModal();
+      statusMsg = 'Endereço localizado no mapa';
     } catch (err) {
       error = err?.message || String(err);
       statusMsg = '';
