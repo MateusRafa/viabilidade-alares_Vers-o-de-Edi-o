@@ -2683,6 +2683,28 @@
     });
   }
 
+  /**
+   * Endereço/CEP a partir do pin no mapa (reverse geocode), não do texto usado na busca.
+   * Workbench e relatório usam isso para preencher o formulário.
+   */
+  async function resolveClientAddressFromPin(lat = null, lng = null) {
+    const pinLat = lat != null ? Number(lat) : Number(clientCoords?.lat);
+    const pinLng = lng != null ? Number(lng) : Number(clientCoords?.lng);
+    if (!Number.isFinite(pinLat) || !Number.isFinite(pinLng)) return null;
+
+    try {
+      const result = await reverseGeocode(pinLat, pinLng);
+      if (result?.results?.length > 0) {
+        extractAddressComponents(result.results[0]);
+        return { ...clientAddressData };
+      }
+    } catch (err) {
+      console.warn('[Mapa] Reverse geocode do pin:', err);
+      if (workbenchMode) emitClientLocationChange('geocode');
+    }
+    return clientAddressData?.enderecoCompleto ? { ...clientAddressData } : null;
+  }
+
   async function searchClientLocation() {
     loading = true;
     error = null;
@@ -2959,6 +2981,11 @@
 
       // Buscar CTOs automaticamente após localizar o cliente
       await searchCTOs();
+
+      // Workbench: endereço/CEP do relatório = o encontrado no pin (não o texto da busca/Agenda)
+      if (workbenchMode && clientCoords) {
+        await resolveClientAddressFromPin(clientCoords.lat, clientCoords.lng);
+      }
 
       // Workbench: prévia/print só no clique em Gerar Relatório (igual standalone)
 
@@ -6523,6 +6550,17 @@
         // ignore
       }
     }
+    // Garante retorno do endereço encontrado no pin (já feito em searchClientLocation no workbench)
+    return clientAddressData?.enderecoCompleto ? { ...clientAddressData } : null;
+  }
+
+  /**
+   * WORKBENCH ONLY — reverse geocode do pin atual para preencher o relatório.
+   */
+  export async function syncWorkbenchAddressFromMap() {
+    if (!workbenchMode) return null;
+    if (!clientCoords) return null;
+    return resolveClientAddressFromPin(clientCoords.lat, clientCoords.lng);
   }
 
   /**
