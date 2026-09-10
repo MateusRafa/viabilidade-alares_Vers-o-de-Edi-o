@@ -625,25 +625,26 @@
 
     generating = true;
     error = '';
-    capturingMapPreview = true;
-    mapPreviewImage = '';
-    statusMsg = 'Capturando mapa…';
+    statusMsg = 'Gerando PDF…';
 
     try {
-      // 1) Print sob demanda (modal some temporariamente durante a captura)
-      let preview = null;
-      if (typeof viabilidadeRef.refreshWorkbenchMapPreview === 'function') {
-        preview = await viabilidadeRef.refreshWorkbenchMapPreview();
-      }
-      if (preview) {
-        mapPreviewImage = preview;
+      // Reusa a prévia já capturada ao abrir o modal — só captura de novo se faltar
+      if (!mapPreviewImage && typeof viabilidadeRef.refreshWorkbenchMapPreview === 'function') {
+        capturingMapPreview = true;
+        statusMsg = 'Capturando mapa…';
+        const preview = await viabilidadeRef.refreshWorkbenchMapPreview();
+        if (preview) {
+          mapPreviewImage = preview;
+        }
         capturingMapPreview = false;
-        statusMsg = 'Prévia capturada — gerando PDF…';
+        statusMsg = 'Gerando PDF…';
         await tick();
       }
 
-      // 2) Gera PDF (recaptura se a prévia falhou)
-      const result = await viabilidadeRef.generateWorkbenchReport(buildReportPayload());
+      const result = await viabilidadeRef.generateWorkbenchReport({
+        ...buildReportPayload(),
+        previewImage: mapPreviewImage || undefined
+      });
       if (result?.preview) {
         mapPreviewImage = result.preview;
       }
@@ -655,7 +656,6 @@
     } catch (err) {
       error = err?.message || String(err);
       statusMsg = mapPreviewImage ? 'Prévia ok — corrija os campos e tente de novo' : '';
-      // Mantém o modal aberto para o usuário ver a prévia / corrigir campos
       showInfoModal = true;
     } finally {
       capturingMapPreview = false;
@@ -1013,7 +1013,7 @@
                 on:click={gerarRelatorio}
                 disabled={generating || loading || capturingMapPreview}
               >
-                {generating || capturingMapPreview ? 'Gerando…' : 'Gerar Relatório'}
+                {generating || capturingMapPreview ? 'Gerando…' : 'Gerar PDF'}
               </button>
           </div>
         </form>
