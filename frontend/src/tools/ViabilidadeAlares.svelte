@@ -6596,7 +6596,11 @@
     }
 
     try {
-      // Captura sob demanda se ainda não houver prévia (refreshWorkbenchMapPreview pode ter feito)
+      // Usa prévia já capturada (abrir modal / formData); só captura se ainda não houver
+      const passedPreview = String(formData.previewImage || formData.mapPreviewImage || '').trim();
+      if (passedPreview) {
+        mapPreviewImage = passedPreview;
+      }
       if (!mapPreviewImage) {
         capturingMap = true;
         notifyMapPreviewChange(true, '');
