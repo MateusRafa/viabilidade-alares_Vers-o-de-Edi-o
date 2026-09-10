@@ -1,5 +1,5 @@
 <script>
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount, onDestroy, tick } from 'svelte';
   import {
     analisarPortalCensupChamado,
     fetchPortalCensupChamadoById,
@@ -513,19 +513,33 @@
     }
     if (!showInfoModal) {
       openInfoModal();
+      await tick();
     }
+
     generating = true;
     error = '';
     capturingMapPreview = true;
     mapPreviewImage = '';
-    statusMsg = 'Capturando mapa e gerando PDF…';
+    statusMsg = 'Capturando mapa…';
+
     try {
-      // Garante print sob demanda (não reutiliza prévia antiga)
+      // 1) Print sob demanda (modal some temporariamente durante a captura)
+      let preview = null;
       if (typeof viabilidadeRef.refreshWorkbenchMapPreview === 'function') {
-        const preview = await viabilidadeRef.refreshWorkbenchMapPreview();
-        if (preview) mapPreviewImage = preview;
+        preview = await viabilidadeRef.refreshWorkbenchMapPreview();
       }
-      await viabilidadeRef.generateWorkbenchReport(buildReportPayload());
+      if (preview) {
+        mapPreviewImage = preview;
+        capturingMapPreview = false;
+        statusMsg = 'Prévia capturada — gerando PDF…';
+        await tick();
+      }
+
+      // 2) Gera PDF (recaptura se a prévia falhou)
+      const result = await viabilidadeRef.generateWorkbenchReport(buildReportPayload());
+      if (result?.preview) {
+        mapPreviewImage = result.preview;
+      }
       statusMsg = 'PDF gerado (modelo Viabilidade Alares)';
       showInfoModal = false;
       if (chamadoId) {
@@ -533,7 +547,9 @@
       }
     } catch (err) {
       error = err?.message || String(err);
-      statusMsg = '';
+      statusMsg = mapPreviewImage ? 'Prévia ok — corrija os campos e tente de novo' : '';
+      // Mantém o modal aberto para o usuário ver a prévia / corrigir campos
+      showInfoModal = true;
     } finally {
       capturingMapPreview = false;
       generating = false;
