@@ -44,6 +44,10 @@
    * Payload: { items: [{ n, nome, status, statusClass, cidade, pop }] }
    */
   export let onEquipamentosChange = null;
+  /**
+   * Workbench only: mapa Google já inicializado (idle).
+   */
+  export let onMapReady = null;
 
   /** Workbench: chave da última localização aplicada (evita loop form↔mapa). */
   let lastWorkbenchLocKey = '';
@@ -1495,6 +1499,40 @@
       // Mostrar loading enquanto carrega a ferramenta
       isLoading = true;
       const bootPause = (ms) => (embedded ? Promise.resolve() : new Promise((resolve) => setTimeout(resolve, ms)));
+
+      // Workbench: boot rápido — só Google Maps + initMap (resto em background)
+      if (workbenchMode) {
+        try {
+          loadingMessage = 'Carregando Mapa';
+          await loadGoogleMaps();
+          checkBaseAvailable()
+            .then(() => {
+              baseDataExists = true;
+            })
+            .catch(() => {
+              baseDataExists = false;
+            });
+          try {
+            loadProjetistas();
+          } catch {
+            /* ignore */
+          }
+          loadTabulacoes().catch(() => {});
+          isLoading = false;
+          await tick();
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          initMap();
+          startHeartbeat();
+          await applyInitialSearchIfAny();
+        } catch (err) {
+          console.error('Erro ao inicializar ferramenta (workbench):', err);
+          error = 'Erro ao inicializar ferramenta: ' + err.message;
+          isLoading = false;
+          await tick();
+          initMap();
+        }
+        return;
+      }
       
       try {
       // Etapa 1: Carregando Mapa
@@ -2266,6 +2304,27 @@
       }).catch(err => {
         console.warn('⚠️ Erro ao carregar mancha de cobertura:', err);
       });
+
+      if (workbenchMode) {
+        let notified = false;
+        const notify = () => {
+          if (notified) return;
+          notified = true;
+          if (typeof onMapReady === 'function') {
+            try {
+              onMapReady();
+            } catch {
+              // ignore
+            }
+          }
+        };
+        try {
+          google.maps.event.addListenerOnce(map, 'idle', notify);
+        } catch {
+          // ignore
+        }
+        setTimeout(notify, 2500);
+      }
     }
   }
 
