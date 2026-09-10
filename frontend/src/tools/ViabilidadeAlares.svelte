@@ -6242,29 +6242,20 @@
   }
 
   /**
-   * WORKBENCH ONLY — captura o mapa em tamanho fixo temporário (casinha + CTOs + rotas)
-   * sem alterar o fluxo standalone de captureMapAutomatically / openReportModal.
-   *
-   * Importante: o modal do Workbench e overflow:hidden dos pais impedem a captura.
-   * Por isso o mapa é movido temporariamente para document.body e o overlay é escondido.
+   * WORKBENCH ONLY — captura o mapa no lugar (igual Viabilidade oficial).
+   * Abre o modal primeiro; o ajuste do mapa (fitBounds) ocorre atrás do box.
+   * Não move o mapa para document.body (evita o “bug” visual na Agenda).
    */
   async function captureMapForWorkbench() {
     if (!map || !clientCoords) {
       throw new Error('Mapa não está pronto para captura');
     }
 
-    const mapContainer = document.querySelector(
-      '.viabilidade-content.workbench-mode .map-container'
-    );
     const mapEl = getMapElement();
     if (!mapEl) {
       throw new Error('Elemento do mapa não encontrado');
     }
 
-    const CAPTURE_W = 1200;
-    const CAPTURE_H = 720;
-
-    const prevListMin = isListMinimized;
     const prevCenter = map.getCenter()
       ? { lat: map.getCenter().lat(), lng: map.getCenter().lng() }
       : null;
@@ -6278,71 +6269,19 @@
       rotateControl: false
     };
 
-    const containerProps = [
-      'position',
-      'left',
-      'top',
-      'width',
-      'height',
-      'min-height',
-      'max-height',
-      'min-width',
-      'max-width',
-      'margin',
-      'z-index',
-      'overflow',
-      'border',
-      'border-radius',
-      'background',
-      'box-shadow',
-      'display',
-      'flex-direction',
-      'flex',
-      'order'
-    ];
-    const mapProps = ['width', 'height', 'min-height', 'max-height', 'visibility', 'opacity', 'display'];
-
-    const savedContainer = {};
-    const savedMapEl = {};
-    if (mapContainer) {
-      for (const p of containerProps) savedContainer[p] = mapContainer.style.getPropertyValue(p);
-    }
-    for (const p of mapProps) savedMapEl[p] = mapEl.style.getPropertyValue(p);
-
-    const applyImportant = (el, prop, value) => {
-      if (el) el.style.setProperty(prop, value, 'important');
-    };
-
-    // Esconde modal do Workbench durante o print (igual “mapa livre” da Viabilidade)
-    const overlays = Array.from(document.querySelectorAll('.wb-modal-overlay'));
-    const overlayPrev = overlays.map((el) => ({
+    // Esconde só o box de endereço do Workbench (não o modal do relatório)
+    const searchBoxes = Array.from(document.querySelectorAll('.wb-map-search-box'));
+    const searchPrev = searchBoxes.map((el) => ({
       el,
       visibility: el.style.visibility,
       pointerEvents: el.style.pointerEvents
     }));
-    overlays.forEach((el) => {
+    searchBoxes.forEach((el) => {
       el.style.visibility = 'hidden';
       el.style.pointerEvents = 'none';
     });
 
-    // Reparent para body — escapa overflow:hidden / stacking do layout do workbench
-    let placeholder = null;
-    let originalParent = null;
-    let originalNext = null;
-    if (mapContainer && mapContainer.parentNode) {
-      originalParent = mapContainer.parentNode;
-      originalNext = mapContainer.nextSibling;
-      placeholder = document.createElement('div');
-      placeholder.setAttribute('data-wb-map-placeholder', '1');
-      placeholder.style.cssText = 'flex:1 1 auto;min-height:180px;width:100%;';
-      originalParent.insertBefore(placeholder, mapContainer);
-      document.body.appendChild(mapContainer);
-    }
-
     try {
-      isListMinimized = true;
-      await tick();
-
       try {
         map.setOptions({
           mapTypeControl: false,
@@ -6365,39 +6304,10 @@
         }
       }
 
-      if (mapContainer) {
-        applyImportant(mapContainer, 'position', 'fixed');
-        applyImportant(mapContainer, 'left', '0');
-        applyImportant(mapContainer, 'top', '0');
-        applyImportant(mapContainer, 'width', `${CAPTURE_W}px`);
-        applyImportant(mapContainer, 'height', `${CAPTURE_H}px`);
-        applyImportant(mapContainer, 'min-height', `${CAPTURE_H}px`);
-        applyImportant(mapContainer, 'max-height', 'none');
-        applyImportant(mapContainer, 'min-width', `${CAPTURE_W}px`);
-        applyImportant(mapContainer, 'max-width', `${CAPTURE_W}px`);
-        applyImportant(mapContainer, 'margin', '0');
-        applyImportant(mapContainer, 'z-index', '2147483000');
-        applyImportant(mapContainer, 'overflow', 'hidden');
-        applyImportant(mapContainer, 'border', 'none');
-        applyImportant(mapContainer, 'border-radius', '0');
-        applyImportant(mapContainer, 'background', '#ffffff');
-        applyImportant(mapContainer, 'box-shadow', 'none');
-        applyImportant(mapContainer, 'display', 'flex');
-        applyImportant(mapContainer, 'flex-direction', 'column');
-        applyImportant(mapContainer, 'flex', '0 0 auto');
-      }
-
-      applyImportant(mapEl, 'width', `${CAPTURE_W}px`);
-      applyImportant(mapEl, 'height', `${CAPTURE_H}px`);
-      applyImportant(mapEl, 'min-height', `${CAPTURE_H}px`);
-      applyImportant(mapEl, 'max-height', `${CAPTURE_H}px`);
-      applyImportant(mapEl, 'visibility', 'visible');
-      applyImportant(mapEl, 'opacity', '1');
-      applyImportant(mapEl, 'display', 'block');
-
+      // Garante que o mapa no layout do Workbench redirecione tiles
       google.maps.event.trigger(map, 'resize');
-      await waitMapIdleWorkbench(2000);
-      await new Promise((r) => setTimeout(r, 200));
+      await waitMapIdleWorkbench(1200);
+      await new Promise((r) => setTimeout(r, 150));
 
       const bounds = new google.maps.LatLngBounds();
       bounds.extend(clientCoords);
@@ -6425,23 +6335,28 @@
         }
       }
 
+      // Ajuste atrás do modal (mesmo espírito do openReportModal oficial)
       map.fitBounds(bounds, {
-        top: 90,
-        right: 90,
-        bottom: 90,
-        left: 90
+        top: 48,
+        right: 48,
+        bottom: 48,
+        left: 48
       });
       await waitMapIdleWorkbench(2000);
-      await new Promise((r) => setTimeout(r, 250));
+      await new Promise((r) => setTimeout(r, 350));
 
       const fittedZoom = map.getZoom();
-      if (fittedZoom != null && fittedZoom > 14) {
-        map.setZoom(fittedZoom - 1);
-        await waitMapIdleWorkbench(1500);
+      if (fittedZoom != null && fittedZoom > 18) {
+        map.setZoom(18);
+        await waitMapIdleWorkbench(1200);
       }
 
-      await new Promise((r) => setTimeout(r, 700));
-      await waitMapIdleWorkbench(1500);
+      await new Promise((r) => setTimeout(r, 400));
+      await waitMapIdleWorkbench(1000);
+
+      mapEl.style.visibility = 'visible';
+      mapEl.style.opacity = '1';
+      mapEl.style.display = 'block';
 
       for (let i = 0; i < 3; i++) {
         await new Promise((r) => requestAnimationFrame(r));
@@ -6466,7 +6381,9 @@
             cls.includes('gm-bundled-control') ||
             cls.includes('gm-fullscreen-control') ||
             cls.includes('gm-svpc') ||
-            cls.includes('gm-style-cc')
+            cls.includes('gm-style-cc') ||
+            cls.includes('wb-map-search-box') ||
+            cls.includes('wb-modal-overlay')
           ) {
             return true;
           }
@@ -6495,33 +6412,7 @@
       }
       return dataUrl;
     } finally {
-      isListMinimized = prevListMin;
-
-      if (mapContainer && originalParent) {
-        if (placeholder && placeholder.parentNode === originalParent) {
-          originalParent.insertBefore(mapContainer, placeholder);
-          placeholder.remove();
-        } else if (originalNext && originalNext.parentNode === originalParent) {
-          originalParent.insertBefore(mapContainer, originalNext);
-        } else {
-          originalParent.appendChild(mapContainer);
-        }
-      }
-
-      if (mapContainer) {
-        for (const p of containerProps) {
-          const v = savedContainer[p];
-          if (v) mapContainer.style.setProperty(p, v);
-          else mapContainer.style.removeProperty(p);
-        }
-      }
-      for (const p of mapProps) {
-        const v = savedMapEl[p];
-        if (v) mapEl.style.setProperty(p, v);
-        else mapEl.style.removeProperty(p);
-      }
-
-      overlayPrev.forEach(({ el, visibility, pointerEvents }) => {
+      searchPrev.forEach(({ el, visibility, pointerEvents }) => {
         el.style.visibility = visibility;
         el.style.pointerEvents = pointerEvents;
       });
@@ -6536,7 +6427,7 @@
       google.maps.event.trigger(map, 'resize');
       if (prevCenter) map.setCenter(prevCenter);
       if (prevZoom != null) map.setZoom(prevZoom);
-      await waitMapIdleWorkbench(800);
+      await waitMapIdleWorkbench(600);
     }
   }
 
