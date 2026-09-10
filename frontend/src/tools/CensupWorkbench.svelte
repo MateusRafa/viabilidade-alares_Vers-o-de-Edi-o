@@ -46,6 +46,7 @@
   let mapPreviewImage = '';
   let capturingMapPreview = false;
   let locating = false;
+  let mapSearchError = '';
 
   /** Altura da barra Equipamentos colapsada (toolbar + padding ≈ Informações). */
   const EQUIP_HEADER_H = 42;
@@ -295,7 +296,40 @@
 
   /** Digitar no overlay só altera o texto — pesquisa só no botão Localizar. */
   function onEnderecoManualInput() {
+    if (mapSearchError) mapSearchError = '';
     // no-op intencional (mantém pin/coords até Localizar ou casinha)
+  }
+
+  async function localizarNoMapa() {
+    const endereco = (form.enderecoCompleto || '').trim();
+    mapSearchError = '';
+    // Erro no box só quando clica Localizar com campo vazio
+    if (!endereco) {
+      mapSearchError = 'Informe um endereço para localizar.';
+      return;
+    }
+    if (!viabilidadeRef || typeof viabilidadeRef.searchWorkbenchAddress !== 'function') {
+      error = 'Mapa ainda carregando. Aguarde e tente de novo.';
+      return;
+    }
+    locating = true;
+    error = '';
+    statusMsg = 'Localizando endereço no mapa…';
+    // Libera pin antigo para a busca por texto valer
+    pinCoords = null;
+    mapPreviewImage = '';
+    capturingMapPreview = false;
+    try {
+      await viabilidadeRef.searchWorkbenchAddress(endereco);
+      statusMsg = 'Endereço localizado — preencha o relatório';
+      // Igual fluxo oficial: após localizar, abre o modal de relatório (sem print ainda)
+      openInfoModal();
+    } catch (err) {
+      error = err?.message || String(err);
+      statusMsg = '';
+    } finally {
+      locating = false;
+    }
   }
 
   function openInfoModal() {
@@ -588,36 +622,6 @@
     }
   }
 
-  async function localizarNoMapa() {
-    const endereco = (form.enderecoCompleto || '').trim();
-    if (!endereco) {
-      error = 'Informe um endereço para localizar.';
-      return;
-    }
-    if (!viabilidadeRef || typeof viabilidadeRef.searchWorkbenchAddress !== 'function') {
-      error = 'Mapa ainda carregando. Aguarde e tente de novo.';
-      return;
-    }
-    locating = true;
-    error = '';
-    statusMsg = 'Localizando endereço no mapa…';
-    // Libera pin antigo para a busca por texto valer
-    pinCoords = null;
-    mapPreviewImage = '';
-    capturingMapPreview = false;
-    try {
-      await viabilidadeRef.searchWorkbenchAddress(endereco);
-      statusMsg = 'Endereço localizado — preencha o relatório';
-      // Igual fluxo oficial: após localizar, abre o modal de relatório (sem print ainda)
-      openInfoModal();
-    } catch (err) {
-      error = err?.message || String(err);
-      statusMsg = '';
-    } finally {
-      locating = false;
-    }
-  }
-
   async function onSalvarRelatorioSubmit() {
     await salvarRelatorio();
     if (!error) {
@@ -842,7 +846,7 @@
                 type="button"
                 class="wb-map-btn wb-map-btn-locate"
                 on:click={localizarNoMapa}
-                disabled={locating || !ViabilidadeAlares || !(form.enderecoCompleto || '').trim()}
+                disabled={locating}
               >
                 {locating ? 'Localizando…' : 'Localizar'}
               </button>
@@ -855,6 +859,9 @@
                 {capturingMapPreview ? 'Capturando…' : 'Gerar Relatório'}
               </button>
             </div>
+            {#if mapSearchError}
+              <p class="wb-map-search-error" role="alert">{mapSearchError}</p>
+            {/if}
           </div>
         {/if}
       </section>
@@ -1509,6 +1516,17 @@
   .wb-map-search-actions {
     display: flex;
     gap: 0.35rem;
+  }
+
+  .wb-map-search-error {
+    margin: 0;
+    padding: 0.3rem 0.35rem;
+    border-radius: 6px;
+    background: #fef2f2;
+    color: #b91c1c;
+    font-size: 0.68rem;
+    font-weight: 600;
+    line-height: 1.3;
   }
 
   .wb-map-btn {
