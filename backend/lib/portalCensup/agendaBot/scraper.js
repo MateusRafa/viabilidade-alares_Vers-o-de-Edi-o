@@ -270,7 +270,10 @@ export async function scrapeDetailFields(page) {
       logradouro,
       numero: numeroMatch?.[1] || '',
       bairro,
-      cep: (cepRaw || '').replace(/\D/g, ''),
+      cep: (() => {
+        const digits = (cepRaw || '').replace(/\D/g, '');
+        return digits.length > 8 ? digits.slice(0, 8) : digits;
+      })(),
       cidadeRaw
     };
   });
