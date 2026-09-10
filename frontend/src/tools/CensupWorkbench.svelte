@@ -355,6 +355,8 @@
     capturingMapPreview = true;
     statusMsg = 'Capturando prévia do mapa…';
     await tick();
+    // Deixa o box do relatório pintar antes do ajuste do mapa (atrás do modal)
+    await new Promise((r) => setTimeout(r, 120));
 
     try {
       const preview = await viabilidadeRef.refreshWorkbenchMapPreview();
