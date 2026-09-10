@@ -705,6 +705,10 @@
     requestMapResize(200);
   });
 
+  function onMapReadyFromViabilidade() {
+    postToParent('MAP_READY');
+  }
+
   function onMapPreviewFromViabilidade(payload = {}) {
     capturingMapPreview = !!payload.capturing;
     if (!payload.capturing) {
@@ -813,6 +817,7 @@
               onClientLocationChange={onClientLocationFromMap}
               onMapPreviewChange={onMapPreviewFromViabilidade}
               onEquipamentosChange={onEquipamentosFromViabilidade}
+              onMapReady={onMapReadyFromViabilidade}
             />
           </div>
         {:else}
