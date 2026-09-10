@@ -6505,7 +6505,7 @@
     if (!workbenchMode) return null;
     if (!map || !clientCoords) {
       notifyMapPreviewChange(false, '');
-      return null;
+      throw new Error('Localize um endereço no mapa antes de gerar o relatório.');
     }
 
     const token = ++workbenchPreviewToken;
@@ -6524,6 +6524,9 @@
     try {
       const image = await captureMapForWorkbench();
       if (token !== workbenchPreviewToken) return null;
+      if (!image) {
+        throw new Error('Captura do mapa retornou vazia.');
+      }
       mapPreviewImage = image;
       notifyMapPreviewChange(false, image);
       return image;
@@ -6533,7 +6536,7 @@
         mapPreviewImage = '';
         notifyMapPreviewChange(false, '');
       }
-      return null;
+      throw err instanceof Error ? err : new Error(String(err?.message || err));
     } finally {
       if (token === workbenchPreviewToken) {
         capturingMap = false;
