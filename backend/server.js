@@ -3849,35 +3849,79 @@ async function saveProjetistas(projetistas) {
 }
 
 // Função para ler tabulações do Supabase (nova versão)
+// Lê primary (+ réplica se cluster) e une — evita lista incompleta na extensão
+// quando novas tabulações existem só num dos lados do cluster.
 async function readTabulacoesFromSupabase() {
   try {
-    if (!supabase || !isSupabaseAvailable()) {
-      return null; // Retorna null para indicar que deve usar fallback
+    if (!isDbAvailable() && !isSupabaseAvailable()) {
+      return null;
     }
-    
-    console.log('📂 [Supabase] Carregando tabulações do Supabase...');
-    
-    const { data, error } = await supabase
-      .from('tabulacoes')
-      .select('nome')
-      .order('nome', { ascending: true });
-    
-    if (error) {
-      console.error('❌ [Supabase] Erro ao ler tabulações:', error);
-      return null; // Fallback para Excel
+
+    const clients = [];
+    const primary = getPrimaryClient() || supabasePrimary;
+    if (primary) clients.push({ client: primary, label: 'primary' });
+
+    if (isClusterEnabled()) {
+      const replica = getReplicaClient();
+      if (replica && replica !== primary) {
+        clients.push({ client: replica, label: 'replica' });
+      }
     }
-    
-    const tabulacoes = (data || []).map(t => (t.nome || '').trim()).filter(nome => nome);
-    
-    console.log(`✅ [Supabase] ${tabulacoes.length} tabulações carregadas do Supabase`);
+
+    // Fallback: cliente cluster-aware (modo admin)
+    if (!clients.length && supabase) {
+      clients.push({ client: supabase, label: 'active' });
+    }
+
+    if (!clients.length) {
+      return null;
+    }
+
+    console.log('📂 [Supabase] Carregando tabulações (primary + réplica se houver)…');
+
+    const nomes = new Set();
+    let anyOk = false;
+
+    for (const { client, label } of clients) {
+      try {
+        const { data, error } = await client
+          .from('tabulacoes')
+          .select('nome')
+          .order('nome', { ascending: true });
+
+        if (error) {
+          console.error(`❌ [Supabase] Erro ao ler tabulações (${label}):`, error);
+          continue;
+        }
+
+        anyOk = true;
+        for (const row of data || []) {
+          const nome = (row?.nome || '').trim();
+          if (nome) nomes.add(nome);
+        }
+        console.log(`📋 [Supabase] ${label}: ${(data || []).length} tabulação(ões)`);
+      } catch (err) {
+        console.error(`❌ [Supabase] Erro ao ler tabulações (${label}):`, err);
+      }
+    }
+
+    if (!anyOk) {
+      return null;
+    }
+
+    const tabulacoes = Array.from(nomes).sort((a, b) =>
+      a.localeCompare(b, 'pt-BR', { sensitivity: 'base' })
+    );
+
+    console.log(`✅ [Supabase] ${tabulacoes.length} tabulações unificadas`);
     if (tabulacoes.length > 0) {
       console.log(`📋 [Supabase] Tabulações: ${tabulacoes.join(', ')}`);
     }
-    
+
     return tabulacoes;
   } catch (err) {
     console.error('❌ [Supabase] Erro ao ler tabulações:', err);
-    return null; // Fallback para Excel
+    return null;
   }
 }
 
@@ -8027,39 +8071,29 @@ app.post('/api/tabulacoes', async (req, res) => {
     
     const nomeLimpo = nome.trim();
     
-    // Tentar adicionar no Supabase primeiro
-    if (supabase && isSupabaseAvailable()) {
+    // Tentar adicionar no Supabase primeiro (dual-write no cluster)
+    if (isDbAvailable() || isSupabaseAvailable()) {
       try {
-        // Verificar se já existe
-        const { data: existing } = await supabase
-          .from('tabulacoes')
-          .select('nome')
-          .ilike('nome', nomeLimpo)
-          .limit(1);
-        
-        if (existing && existing.length > 0) {
-          const tabulacoes = await readTabulacoes();
-          return res.json({ success: true, tabulacoes, message: 'Tabulação já existe' });
+        const existentes = await readTabulacoesFromSupabase();
+        if (existentes && existentes.some((n) => n.toLowerCase() === nomeLimpo.toLowerCase())) {
+          return res.json({
+            success: true,
+            tabulacoes: existentes,
+            message: 'Tabulação já existe'
+          });
         }
-        
-        // Inserir no Supabase
-        const { error } = await supabase
-          .from('tabulacoes')
-          .insert([{ nome: nomeLimpo }]);
-        
-        if (error) {
-          throw error;
-        }
-        
+
+        await clusterAwareWrite(async (client) => {
+          const { error } = await client.from('tabulacoes').insert([{ nome: nomeLimpo }]);
+          if (error) throw error;
+        });
+
         console.log(`✅ [Supabase] Tabulação '${nomeLimpo}' adicionada no Supabase`);
-        
-        // Buscar todas para retornar
+
         const tabulacoes = await readTabulacoes();
-        
         return res.json({ success: true, tabulacoes, message: 'Tabulação adicionada com sucesso' });
       } catch (supabaseErr) {
         console.error('❌ [Supabase] Erro ao adicionar tabulação, usando fallback Excel:', supabaseErr);
-        // Continuar com fallback Excel
       }
     }
     
@@ -8095,39 +8129,29 @@ app.delete('/api/tabulacoes/:nome', async (req, res) => {
     
     const nomeLimpo = nome.trim();
     
-    // Tentar deletar no Supabase primeiro
-    if (supabase && isSupabaseAvailable()) {
+    // Tentar deletar no Supabase primeiro (dual-write no cluster)
+    if (isDbAvailable() || isSupabaseAvailable()) {
       try {
-        // Buscar tabulação para verificar se existe
-        const { data: existing } = await supabase
-          .from('tabulacoes')
-          .select('nome')
-          .ilike('nome', nomeLimpo)
-          .limit(1);
-        
-        if (!existing || existing.length === 0) {
+        const existentes = await readTabulacoesFromSupabase();
+        const found = existentes && existentes.some((n) => n.toLowerCase() === nomeLimpo.toLowerCase());
+        if (!found) {
           return res.status(404).json({ success: false, error: 'Tabulação não encontrada' });
         }
-        
-        // Deletar do Supabase
-        const { error } = await supabase
-          .from('tabulacoes')
-          .delete()
-          .ilike('nome', nomeLimpo);
-        
-        if (error) {
-          throw error;
-        }
-        
+
+        await clusterAwareWrite(async (client) => {
+          const { error } = await client
+            .from('tabulacoes')
+            .delete()
+            .ilike('nome', nomeLimpo);
+          if (error) throw error;
+        });
+
         console.log(`✅ [Supabase] Tabulação '${nomeLimpo}' deletada do Supabase`);
-        
-        // Buscar todas para retornar
+
         const tabulacoes = await readTabulacoes();
-        
         return res.json({ success: true, tabulacoes, message: 'Tabulação deletada com sucesso' });
       } catch (supabaseErr) {
         console.error('❌ [Supabase] Erro ao deletar tabulação, usando fallback Excel:', supabaseErr);
-        // Continuar com fallback Excel
       }
     }
     
