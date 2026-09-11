@@ -6628,7 +6628,7 @@
         throw new Error('Pop-up bloqueado. Permita pop-ups para este site e tente de novo.');
       }
 
-      return { success: true, preview: mapPreviewImage };
+      return { success: true, preview: mapPreviewImage, viAla: currentVIALA || null };
     } finally {
       capturingMap = false;
     }
