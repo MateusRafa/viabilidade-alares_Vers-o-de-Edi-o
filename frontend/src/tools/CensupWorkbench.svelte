@@ -1333,6 +1333,8 @@
     width: 100%;
     height: auto;
     max-width: 100%;
+    object-fit: contain;
+    object-position: center;
     vertical-align: top;
   }
 
