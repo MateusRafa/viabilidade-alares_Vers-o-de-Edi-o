@@ -6042,24 +6042,31 @@
       const currentCenter = map.getCenter();
       const currentZoom = map.getZoom();
 
-      // Criar bounds incluindo cliente
+      // Todos os equipamentos a enquadrar (rua + fora de limite)
+      const ctosForCapture = [];
+      const pushCto = (cto) => {
+        if (!cto) return;
+        const lat = Number(cto.latitude);
+        const lng = Number(cto.longitude);
+        if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+        ctosForCapture.push({ ...cto, latitude: lat, longitude: lng });
+      };
+      (ctos || []).forEach(pushCto);
+      if (nearestCTOOutsideLimit) pushCto(nearestCTOOutsideLimit);
+
+      // Criar bounds incluindo cliente + equipamentos
       const bounds = new google.maps.LatLngBounds();
       bounds.extend(clientCoords);
-
-      // Adicionar todas as CTOs aos bounds (se houver)
-      if (ctos.length > 0) {
-        ctos.forEach(cto => {
-          bounds.extend({ lat: cto.latitude, lng: cto.longitude });
-        });
-      }
-
-      // Usar fitBounds com padding mínimo para maximizar o zoom
-      map.fitBounds(bounds, {
-        top: 15,
-        right: 15,
-        bottom: 15,
-        left: 15
+      ctosForCapture.forEach((cto) => {
+        bounds.extend({ lat: cto.latitude, lng: cto.longitude });
       });
+
+      // Padding um pouco maior no workbench para não cortar marcadores
+      const fitPad = workbenchMode
+        ? { top: 36, right: 36, bottom: 36, left: 36 }
+        : { top: 15, right: 15, bottom: 15, left: 15 };
+
+      map.fitBounds(bounds, fitPad);
 
       // Aguardar o mapa ajustar completamente usando evento idle
       await new Promise((resolve) => {
@@ -6105,8 +6112,8 @@
         let allVisible = testBounds.contains(clientCoords);
         
         // Verificar todas as CTOs (se houver)
-        if (allVisible && ctos.length > 0) {
-          for (const cto of ctos) {
+        if (allVisible && ctosForCapture.length > 0) {
+          for (const cto of ctosForCapture) {
             if (!testBounds.contains({ lat: cto.latitude, lng: cto.longitude })) {
               allVisible = false;
               break;
@@ -6142,13 +6149,13 @@
       if (finalBounds) {
         let finalAllVisible = finalBounds.contains(clientCoords);
         if (finalAllVisible) {
-          for (const cto of ctos) {
+          for (const cto of ctosForCapture) {
             if (!finalBounds.contains({ lat: cto.latitude, lng: cto.longitude })) {
               finalAllVisible = false;
-        break;
-      }
-    }
-  }
+              break;
+            }
+          }
+        }
 
         // Se algo não está visível, reduzir zoom um nível (mas manter zoom alto se possível)
         if (!finalAllVisible && bestZoom > 16) {
@@ -6282,10 +6289,8 @@
   }
 
   /**
-   * WORKBENCH ONLY — captura o mapa no lugar (igual Viabilidade oficial).
-   * Abre o modal primeiro; o ajuste do mapa (fitBounds) ocorre atrás do box.
-   * Não move o mapa para document.body (evita o “bug” visual na Agenda).
-   * Força aspect ratio landscape na captura para o PDF não sair “comprimido”.
+   * WORKBENCH ONLY — captura idêntica à oficial, com mapa em estágio fixo
+   * (tamanho real) para o print preencher a prévia e enquadrar todos os equipamentos.
    */
   async function captureMapForWorkbench() {
     if (!map || !clientCoords) {
@@ -6297,20 +6302,13 @@
       throw new Error('Elemento do mapa não encontrado');
     }
 
+    const mapContainer = mapEl.closest('.map-container') || mapEl.parentElement;
+    const mainArea = mapEl.closest('.main-area');
     const prevCenter = map.getCenter()
       ? { lat: map.getCenter().lat(), lng: map.getCenter().lng() }
       : null;
     const prevZoom = map.getZoom();
-    const prevMapOptions = {
-      mapTypeControl: true,
-      streetViewControl: true,
-      fullscreenControl: true,
-      zoomControl: true,
-      scaleControl: false,
-      rotateControl: false
-    };
 
-    // Esconde só o box de endereço do Workbench (não o modal do relatório)
     const searchBoxes = Array.from(document.querySelectorAll('.wb-map-search-box'));
     const searchPrev = searchBoxes.map((el) => ({
       el,
@@ -6322,192 +6320,86 @@
       el.style.pointerEvents = 'none';
     });
 
-    // Aspect landscape (como o mapa expandido da Viabilidade) — evita print estreito/comprimido
-    const prevBox = {
-      width: mapEl.style.width,
-      height: mapEl.style.height,
-      minHeight: mapEl.style.minHeight,
-      maxHeight: mapEl.style.maxHeight,
-      maxWidth: mapEl.style.maxWidth
+    const overlays = Array.from(document.querySelectorAll('.wb-modal-overlay'));
+    const overlayPrev = overlays.map((el) => ({
+      el,
+      visibility: el.style.visibility,
+      opacity: el.style.opacity,
+      pointerEvents: el.style.pointerEvents
+    }));
+    overlays.forEach((el) => {
+      el.style.visibility = 'hidden';
+      el.style.opacity = '0';
+      el.style.pointerEvents = 'none';
+    });
+
+    // Estágio fixo com tamanho real (evita canvas “achatado” / faixa branca)
+    const captureW = 900;
+    const captureH = 560;
+    const styled = [];
+    const forceCaptureBox = (el, { fixed = false } = {}) => {
+      if (!el) return;
+      styled.push({ el, cssText: el.getAttribute('style') || '' });
+      if (fixed) {
+        el.style.setProperty('position', 'fixed', 'important');
+        el.style.setProperty('left', '0', 'important');
+        el.style.setProperty('top', '0', 'important');
+        el.style.setProperty('z-index', '2147483000', 'important');
+      } else {
+        el.style.setProperty('position', 'relative', 'important');
+      }
+      el.style.setProperty('width', `${captureW}px`, 'important');
+      el.style.setProperty('height', `${captureH}px`, 'important');
+      el.style.setProperty('min-width', `${captureW}px`, 'important');
+      el.style.setProperty('min-height', `${captureH}px`, 'important');
+      el.style.setProperty('max-width', `${captureW}px`, 'important');
+      el.style.setProperty('max-height', `${captureH}px`, 'important');
+      el.style.setProperty('flex', 'none', 'important');
+      el.style.setProperty('overflow', 'hidden', 'important');
+      el.style.setProperty('visibility', 'visible', 'important');
+      el.style.setProperty('opacity', '1', 'important');
+      el.style.setProperty('display', 'block', 'important');
+      el.style.setProperty('background', '#ffffff', 'important');
     };
-    const captureW = Math.max(720, Math.min(960, mapEl.clientWidth || 800));
-    const captureH = Math.round(captureW * 0.56); // ~16:9
-    mapEl.style.width = `${captureW}px`;
-    mapEl.style.maxWidth = `${captureW}px`;
-    mapEl.style.height = `${captureH}px`;
-    mapEl.style.minHeight = `${captureH}px`;
-    mapEl.style.maxHeight = `${captureH}px`;
+
+    forceCaptureBox(mainArea, { fixed: true });
+    forceCaptureBox(mapContainer, { fixed: false });
+    forceCaptureBox(mapEl, { fixed: false });
 
     try {
-      try {
-        map.setOptions({
-          mapTypeControl: false,
-          streetViewControl: false,
-          fullscreenControl: false,
-          zoomControl: false,
-          scaleControl: false,
-          rotateControl: false,
-          clickableIcons: false
-        });
-      } catch {
-        // ignore
-      }
-
-      if (clientInfoWindow) {
-        try {
-          clientInfoWindow.close();
-        } catch {
-          // ignore
-        }
-      }
-
       google.maps.event.trigger(map, 'resize');
       await waitMapIdleWorkbench(1200);
-      await new Promise((r) => setTimeout(r, 150));
+      await new Promise((r) => setTimeout(r, 200));
 
-      const bounds = new google.maps.LatLngBounds();
-      bounds.extend(clientCoords);
-      if (ctos?.length) {
-        ctos.forEach((cto) => {
-          if (cto?.latitude != null && cto?.longitude != null) {
-            bounds.extend({ lat: cto.latitude, lng: cto.longitude });
-          }
-        });
-      }
-      if (routes?.length) {
-        for (const polyline of routes) {
-          try {
-            const path = polyline.getPath?.();
-            if (!path) continue;
-            const len = path.getLength();
-            const step = Math.max(1, Math.floor(len / 40));
-            for (let i = 0; i < len; i += step) {
-              bounds.extend(path.getAt(i));
-            }
-            if (len > 0) bounds.extend(path.getAt(len - 1));
-          } catch {
-            // ignore
-          }
-        }
+      // Confirma que o mapa realmente ocupou o estágio (senão o print fica “achatado”)
+      if (mapEl.clientWidth < captureW * 0.8 || mapEl.clientHeight < captureH * 0.8) {
+        console.warn(
+          '[Workbench] Tamanho do mapa para captura abaixo do esperado:',
+          mapEl.clientWidth,
+          mapEl.clientHeight
+        );
       }
 
-      // Ajuste atrás do modal (mesmo espírito do openReportModal oficial)
-      map.fitBounds(bounds, {
-        top: 24,
-        right: 24,
-        bottom: 24,
-        left: 24
-      });
-      await waitMapIdleWorkbench(2000);
-      await new Promise((r) => setTimeout(r, 350));
-
-      // Mesma lógica da captura oficial: sobe o zoom o máximo possível mantendo tudo visível
-      let bestZoom = map.getZoom() || 16;
-      for (let testZoom = bestZoom + 1; testZoom <= 20; testZoom++) {
-        map.setZoom(testZoom);
-        await waitMapIdleWorkbench(800);
-        const testBounds = map.getBounds();
-        if (!testBounds) break;
-        let allVisible = testBounds.contains(clientCoords);
-        if (allVisible && ctos?.length) {
-          for (const cto of ctos) {
-            if (
-              cto?.latitude != null &&
-              cto?.longitude != null &&
-              !testBounds.contains({ lat: cto.latitude, lng: cto.longitude })
-            ) {
-              allVisible = false;
-              break;
-            }
-          }
-        }
-        if (allVisible) bestZoom = testZoom;
-        else break;
-      }
-      map.setZoom(bestZoom);
-      await waitMapIdleWorkbench(1200);
-      await new Promise((r) => setTimeout(r, 400));
-
-      mapEl.style.visibility = 'visible';
-      mapEl.style.opacity = '1';
-      mapEl.style.display = 'block';
-
-      for (let i = 0; i < 3; i++) {
-        await new Promise((r) => requestAnimationFrame(r));
-        void mapEl.offsetHeight;
-      }
-
-      const canvas = await html2canvas(mapEl, {
-        useCORS: true,
-        allowTaint: false,
-        backgroundColor: '#ffffff',
-        scale: 2,
-        logging: false,
-        timeout: 25000,
-        imageTimeout: 12000,
-        removeContainer: true,
-        foreignObjectRendering: false,
-        width: captureW,
-        height: captureH,
-        windowWidth: captureW,
-        windowHeight: captureH,
-        ignoreElements: (el) => {
-          if (!el) return false;
-          const cls = typeof el.className === 'string' ? el.className : el.className?.baseVal || '';
-          if (
-            cls.includes('gmnoprint') ||
-            cls.includes('gm-bundled-control') ||
-            cls.includes('gm-fullscreen-control') ||
-            cls.includes('gm-svpc') ||
-            cls.includes('gm-style-cc') ||
-            cls.includes('wb-map-search-box') ||
-            cls.includes('wb-modal-overlay')
-          ) {
-            return true;
-          }
-          if (el.getAttribute?.('controlwidth') != null || el.getAttribute?.('controlheight') != null) {
-            return true;
-          }
-          return false;
-        },
-        onclone: (clonedDoc) => {
-          if (clonedDoc.body) {
-            clonedDoc.body.style.background = '#ffffff';
-          }
-          const clonedMap = clonedDoc.getElementById(mapDomId);
-          if (clonedMap) {
-            clonedMap.style.visibility = 'visible';
-            clonedMap.style.opacity = '1';
-            clonedMap.style.display = 'block';
-            clonedMap.style.background = '#ffffff';
-            clonedMap.style.width = `${captureW}px`;
-            clonedMap.style.height = `${captureH}px`;
-          }
-        }
-      });
-
-      const dataUrl = canvas.toDataURL('image/png', 1.0);
-      if (!dataUrl || dataUrl.length < 1000) {
+      const imageData = await captureMapAutomatically();
+      if (!imageData || imageData.length < 1000) {
         throw new Error('Captura do mapa retornou imagem vazia');
       }
-      return dataUrl;
+      return imageData;
     } finally {
-      mapEl.style.width = prevBox.width;
-      mapEl.style.height = prevBox.height;
-      mapEl.style.minHeight = prevBox.minHeight;
-      mapEl.style.maxHeight = prevBox.maxHeight;
-      mapEl.style.maxWidth = prevBox.maxWidth;
+      for (const { el, cssText } of styled.reverse()) {
+        if (cssText) el.setAttribute('style', cssText);
+        else el.removeAttribute('style');
+      }
 
       searchPrev.forEach(({ el, visibility, pointerEvents }) => {
         el.style.visibility = visibility;
         el.style.pointerEvents = pointerEvents;
       });
-
-      try {
-        map.setOptions(prevMapOptions);
-      } catch {
-        // ignore
-      }
+      overlayPrev.forEach(({ el, visibility, opacity, pointerEvents }) => {
+        el.style.visibility = visibility;
+        el.style.opacity = opacity;
+        el.style.pointerEvents = pointerEvents;
+      });
 
       await tick();
       google.maps.event.trigger(map, 'resize');
