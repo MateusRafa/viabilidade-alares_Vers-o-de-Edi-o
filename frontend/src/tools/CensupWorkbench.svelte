@@ -1370,7 +1370,7 @@
     display: flex;
     align-items: flex-start;
     justify-content: center;
-    z-index: 10000;
+    z-index: 2147483646;
     padding: 16px;
     box-sizing: border-box;
     overflow-y: auto;
