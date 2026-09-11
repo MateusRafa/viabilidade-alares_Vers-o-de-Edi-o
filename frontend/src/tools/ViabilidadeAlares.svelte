@@ -6291,6 +6291,7 @@
   /**
    * WORKBENCH ONLY — igual Viabilidade oficial:
    * o box "Preencher Relatório" permanece aberto; o mapa ajusta/captura por trás.
+   * Captura em landscape (sem esticar); o estágio preenche a tela para não sobrar faixa vazia.
    */
   async function captureMapForWorkbench() {
     if (!map || !clientCoords) {
@@ -6335,29 +6336,25 @@
       el.style.zIndex = '2147483646';
     });
 
-    // Expande o mapa por trás do box preenchendo TODA a tela do embed
-    // (evita a faixa em branco à direita que o usuário via com 900×560 fixo)
-    const captureW = Math.max(900, Math.floor(window.innerWidth || 900));
-    const captureH = Math.max(560, Math.floor(window.innerHeight || 560));
+    // Estágio = tela cheia (sem faixa em branco). Mapa = landscape ~16:9 (print sem esticar).
+    const viewW = Math.max(640, Math.floor(window.innerWidth || 900));
+    const viewH = Math.max(400, Math.floor(window.innerHeight || 560));
+    const captureW = viewW;
+    const captureH = Math.max(360, Math.min(viewH, Math.round(captureW * 0.56)));
+
     const styled = [];
-    const forceCaptureBox = (el, { stage = false } = {}) => {
+    const saveStyle = (el) => {
       if (!el) return;
       styled.push({ el, cssText: el.getAttribute('style') || '' });
-      if (stage) {
-        el.style.setProperty('position', 'fixed', 'important');
-        el.style.setProperty('left', '0', 'important');
-        el.style.setProperty('top', '0', 'important');
-        el.style.setProperty('right', '0', 'important');
-        el.style.setProperty('bottom', '0', 'important');
-        // Abaixo do modal — usuário continua vendo o box aberto
-        el.style.setProperty('z-index', '5000', 'important');
-      } else {
-        el.style.setProperty('position', 'relative', 'important');
-      }
-      el.style.setProperty('width', `${captureW}px`, 'important');
-      el.style.setProperty('height', `${captureH}px`, 'important');
-      el.style.setProperty('min-width', `${captureW}px`, 'important');
-      el.style.setProperty('min-height', `${captureH}px`, 'important');
+    };
+    const setBox = (el, w, h, extra = {}) => {
+      if (!el) return;
+      saveStyle(el);
+      Object.entries(extra).forEach(([k, v]) => el.style.setProperty(k, v, 'important'));
+      el.style.setProperty('width', `${w}px`, 'important');
+      el.style.setProperty('height', `${h}px`, 'important');
+      el.style.setProperty('min-width', `${w}px`, 'important');
+      el.style.setProperty('min-height', `${h}px`, 'important');
       el.style.setProperty('max-width', 'none', 'important');
       el.style.setProperty('max-height', 'none', 'important');
       el.style.setProperty('flex', 'none', 'important');
@@ -6366,24 +6363,59 @@
       el.style.setProperty('opacity', '1', 'important');
       el.style.setProperty('display', 'block', 'important');
       el.style.setProperty('background', '#ffffff', 'important');
+      el.style.setProperty('transform', 'none', 'important');
     };
 
-    // Também cobre o host do workbench para não sobrar fundo escuro ao redor
     const mapHost =
       mapEl.closest('.wb-map-host') ||
       mapEl.closest('.wb-map-pane') ||
       mapEl.closest('.viabilidade-content');
-    forceCaptureBox(mapHost, { stage: true });
-    forceCaptureBox(mainArea, { stage: true });
-    forceCaptureBox(mapContainer);
-    forceCaptureBox(mapEl);
+
+    // Fundo cobre a tela toda (atrás do box)
+    setBox(mapHost, viewW, viewH, {
+      position: 'fixed',
+      left: '0',
+      top: '0',
+      right: '0',
+      bottom: '0',
+      'z-index': '5000'
+    });
+    setBox(mainArea, viewW, viewH, {
+      position: 'relative',
+      left: '0',
+      top: '0',
+      'z-index': '1'
+    });
+
+    // Mapa landscape centralizado — mesma proporção da captura oficial
+    const mapLeft = Math.max(0, Math.round((viewW - captureW) / 2));
+    const mapTop = Math.max(0, Math.round((viewH - captureH) / 2));
+    setBox(mapContainer, captureW, captureH, {
+      position: 'absolute',
+      left: `${mapLeft}px`,
+      top: `${mapTop}px`,
+      right: 'auto',
+      bottom: 'auto',
+      margin: '0'
+    });
+    setBox(mapEl, captureW, captureH, {
+      position: 'relative',
+      left: '0',
+      top: '0',
+      margin: '0'
+    });
 
     try {
       google.maps.event.trigger(map, 'resize');
       await waitMapIdleWorkbench(1200);
-      await new Promise((r) => setTimeout(r, 200));
+      await new Promise((r) => setTimeout(r, 250));
 
-      // Mesma rotina da oficial — ajuste do mapa acontece atrás do box
+      // Garante que o Maps renderizou no tamanho landscape (evita canvas CSS esticado)
+      if (mapEl.clientWidth > 0 && mapEl.clientHeight > 0) {
+        google.maps.event.trigger(map, 'resize');
+        await waitMapIdleWorkbench(800);
+      }
+
       const imageData = await captureMapAutomatically();
       if (!imageData || imageData.length < 1000) {
         throw new Error('Captura do mapa retornou imagem vazia');
@@ -7067,7 +7099,7 @@
               }
               .map-image { 
                 display: block; 
-                width: 100%;
+                width: auto;
                 height: auto;
                 max-width: 100%;
                 max-height: 320px;
@@ -7078,7 +7110,7 @@
                 opacity: 1 !important; 
                 filter: none !important;
                 border-radius: 3px;
-                margin: 0;
+                margin: 0 auto;
                 padding: 0;
               }
               .map-image::before,
@@ -7212,13 +7244,13 @@
                 }
                 .map-image { 
                   display: block !important;
-                  width: 100% !important;
+                  width: auto !important;
                   height: auto !important;
                   max-width: 100% !important;
                   max-height: 320px !important;
                   object-fit: contain !important;
                   object-position: center !important;
-                  margin: 0 !important;
+                  margin: 0 auto !important;
                   padding: 0 !important;
                   page-break-inside: avoid; 
                   background: transparent !important; 
