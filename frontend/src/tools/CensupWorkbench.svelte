@@ -401,6 +401,34 @@
   }
 
   /**
+   * Recarrega tabulações da mesma fonte do oficial (API + lista da Viabilidade).
+   * Evita dropdown desatualizado na extensão após novas tabulações no Config.
+   */
+  async function refreshTabulacoesForReport() {
+    let list = [];
+
+    if (viabilidadeRef && typeof viabilidadeRef.refreshTabulacoesList === 'function') {
+      try {
+        list = await viabilidadeRef.refreshTabulacoesList();
+      } catch {
+        /* fallback abaixo */
+      }
+    }
+
+    if (!Array.isArray(list) || list.length === 0) {
+      try {
+        list = await fetchTabulacoesList();
+      } catch {
+        list = [];
+      }
+    }
+
+    if (Array.isArray(list) && list.length > 0) {
+      tabulacoes = list;
+    }
+  }
+
+  /**
    * Igual openReportModal da Viabilidade: abre o formulário e captura a prévia do mapa.
    * Usado pelo botão "Gerar Relatório" do overlay.
    */
@@ -413,6 +441,8 @@
     error = '';
     mapPreviewImage = '';
     ensureProjetistaFromLogin();
+    // Atualiza opções do select antes de mostrar o modal
+    await refreshTabulacoesForReport();
     showInfoModal = true;
     capturingMapPreview = true;
     statusMsg = 'Capturando prévia do mapa…';
@@ -754,6 +784,10 @@
     } catch {
       tabulacoes = [];
     }
+    // Segunda chance após o mapa montar (mesma lista que a Viabilidade oficial usa)
+    setTimeout(() => {
+      void refreshTabulacoesForReport();
+    }, 1500);
 
     // Bootstrap via query (fallback sem postMessage)
     const params = new URLSearchParams(window.location.search);
