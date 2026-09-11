@@ -1081,7 +1081,7 @@
   async function loadViAlas() {
     try {
       console.log('📥 Carregando VI ALAs...');
-      const response = await fetch(getApiUrl('/api/vi-ala/list'));
+      const response = await fetch(getApiUrl('/api/vi-ala/list'), { cache: 'no-store' });
       
       if (!response.ok) {
         console.warn('⚠️ Erro ao carregar VI ALAs (status:', response.status, ')');
