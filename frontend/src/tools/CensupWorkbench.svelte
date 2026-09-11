@@ -761,11 +761,43 @@
     postToParent('CLOSE');
   }
 
+  function resetWorkbenchUi() {
+    chamado = null;
+    chamadoId = '';
+    equipamentos = [];
+    sugeridaOriginal = '';
+    error = '';
+    statusMsg = 'Aguardando chamado…';
+    mapPreviewImage = '';
+    capturingMapPreview = false;
+    showInfoModal = false;
+    pinCoords = null;
+    form = {
+      numeroALA: '',
+      cidade: '',
+      enderecoCompleto: '',
+      numeroEndereco: '',
+      cep: '',
+      coordenadas: '',
+      tabulacaoFinal: '',
+      projetista: usuario || ''
+    };
+    try {
+      viabilidadeRef?.clearWorkbenchMap?.();
+    } catch {
+      /* ignore */
+    }
+    requestMapResize(80);
+  }
+
   function onMessage(event) {
     const data = event?.data;
     if (!data || data.source !== PARENT_SOURCE) return;
     if (data.type === 'INIT' || data.type === 'LOAD') {
       applyInitPayload(data);
+    }
+    if (data.type === 'CLEAR' || data.type === 'RESET') {
+      resetWorkbenchUi();
     }
   }
 
