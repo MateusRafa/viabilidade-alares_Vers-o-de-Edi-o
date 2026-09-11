@@ -78,13 +78,26 @@ export async function sendPortalCensupFeedback(usuario, id, { correto, tabulacao
   return data;
 }
 
-export async function analisarPortalCensupChamado(usuario, id, { force = false } = {}) {
+export async function analisarPortalCensupChamado(
+  usuario,
+  id,
+  { force = false, lat = null, lng = null, endereco = null } = {}
+) {
+  const body = { force };
+  if (lat != null && lng != null && !Number.isNaN(Number(lat)) && !Number.isNaN(Number(lng))) {
+    body.lat = Number(lat);
+    body.lng = Number(lng);
+  }
+  if (endereco && typeof endereco === 'object') {
+    body.endereco = endereco;
+  }
+
   const response = await fetch(
     getApiUrl(`/api/portal-censup/chamados/${encodeURIComponent(id)}/analisar`),
     {
       method: 'POST',
       headers: authHeaders(usuario),
-      body: JSON.stringify({ force })
+      body: JSON.stringify(body)
     }
   );
 
@@ -97,9 +110,13 @@ export async function analisarPortalCensupChamado(usuario, id, { force = false }
 }
 
 export async function fetchTabulacoesList() {
-  const response = await fetch(getApiUrl('/api/tabulacoes'));
+  const response = await fetch(getApiUrl('/api/tabulacoes'), {
+    cache: 'no-store',
+    headers: { Accept: 'application/json' }
+  });
   const data = await response.json().catch(() => ({}));
   if (!response.ok || !data.success) {
+    // Fallback mínimo — a lista real vem do Supabase/API (igual ao oficial)
     return [
       'Aprovado Com Portas',
       'Aprovado Com Alívio de Rede/Cleanup',
@@ -109,7 +126,7 @@ export async function fetchTabulacoesList() {
       'MDU não adequada'
     ];
   }
-  return data.tabulacoes || [];
+  return Array.isArray(data.tabulacoes) ? data.tabulacoes : [];
 }
 
 export async function fetchAgendaBotStatus(usuario) {
