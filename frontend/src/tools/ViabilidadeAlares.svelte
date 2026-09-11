@@ -2076,13 +2076,13 @@
   // Função para carregar tabulações da API ou localStorage
   async function loadTabulacoes() {
     try {
-      const response = await fetch(getApiUrl('/api/tabulacoes'));
+      const response = await fetch(getApiUrl('/api/tabulacoes'), { cache: 'no-store' });
       if (response.ok) {
         const text = await response.text();
         if (text && text.trim() !== '') {
           const data = JSON.parse(text);
-          if (data.success) {
-            tabulacoesList = data.tabulacoes || tabulacoesList;
+          if (data.success && Array.isArray(data.tabulacoes) && data.tabulacoes.length > 0) {
+            tabulacoesList = data.tabulacoes;
             // Sincronizar com localStorage
             try {
               localStorage.setItem('tabulacoesList', JSON.stringify(tabulacoesList));
@@ -2105,6 +2105,16 @@
     } catch (localErr) {
       console.error('Erro ao carregar do localStorage:', localErr);
     }
+  }
+
+  /** WORKBENCH — lista atualizada das tabulações (mesma fonte do oficial). */
+  export async function refreshTabulacoesList() {
+    await loadTabulacoes();
+    return Array.isArray(tabulacoesList) ? [...tabulacoesList] : [];
+  }
+
+  export function getTabulacoesList() {
+    return Array.isArray(tabulacoesList) ? [...tabulacoesList] : [];
   }
 
   // Função para abrir modal de adicionar tabulação
