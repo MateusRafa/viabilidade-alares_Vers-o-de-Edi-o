@@ -6335,9 +6335,10 @@
       el.style.zIndex = '2147483646';
     });
 
-    // Expande o mapa por trás do box (z-index abaixo do modal)
-    const captureW = 900;
-    const captureH = 560;
+    // Expande o mapa por trás do box preenchendo TODA a tela do embed
+    // (evita a faixa em branco à direita que o usuário via com 900×560 fixo)
+    const captureW = Math.max(900, Math.floor(window.innerWidth || 900));
+    const captureH = Math.max(560, Math.floor(window.innerHeight || 560));
     const styled = [];
     const forceCaptureBox = (el, { stage = false } = {}) => {
       if (!el) return;
@@ -6346,6 +6347,8 @@
         el.style.setProperty('position', 'fixed', 'important');
         el.style.setProperty('left', '0', 'important');
         el.style.setProperty('top', '0', 'important');
+        el.style.setProperty('right', '0', 'important');
+        el.style.setProperty('bottom', '0', 'important');
         // Abaixo do modal — usuário continua vendo o box aberto
         el.style.setProperty('z-index', '5000', 'important');
       } else {
@@ -6355,8 +6358,8 @@
       el.style.setProperty('height', `${captureH}px`, 'important');
       el.style.setProperty('min-width', `${captureW}px`, 'important');
       el.style.setProperty('min-height', `${captureH}px`, 'important');
-      el.style.setProperty('max-width', `${captureW}px`, 'important');
-      el.style.setProperty('max-height', `${captureH}px`, 'important');
+      el.style.setProperty('max-width', 'none', 'important');
+      el.style.setProperty('max-height', 'none', 'important');
       el.style.setProperty('flex', 'none', 'important');
       el.style.setProperty('overflow', 'hidden', 'important');
       el.style.setProperty('visibility', 'visible', 'important');
@@ -6365,6 +6368,12 @@
       el.style.setProperty('background', '#ffffff', 'important');
     };
 
+    // Também cobre o host do workbench para não sobrar fundo escuro ao redor
+    const mapHost =
+      mapEl.closest('.wb-map-host') ||
+      mapEl.closest('.wb-map-pane') ||
+      mapEl.closest('.viabilidade-content');
+    forceCaptureBox(mapHost, { stage: true });
     forceCaptureBox(mainArea, { stage: true });
     forceCaptureBox(mapContainer);
     forceCaptureBox(mapEl);
