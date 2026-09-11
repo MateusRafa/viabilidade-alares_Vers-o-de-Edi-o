@@ -6472,6 +6472,44 @@
   }
 
   /**
+   * WORKBENCH ONLY — limpa mapa/pesquisa ao voltar da Agenda (Fechar no detalhe).
+   */
+  export function clearWorkbenchMap() {
+    if (!workbenchMode) return;
+    try {
+      clearMap();
+    } catch {
+      /* ignore */
+    }
+    addressInput = '';
+    clientAddressData = {
+      cidade: '',
+      enderecoCompleto: '',
+      numero: '',
+      cep: ''
+    };
+    mapPreviewImage = '';
+    capturingMap = false;
+    notifyMapPreviewChange(false, '');
+    if (typeof onEquipamentosChange === 'function') {
+      try {
+        onEquipamentosChange({ items: [] });
+      } catch {
+        /* ignore */
+      }
+    }
+    requestAnimationFrame(() => {
+      try {
+        if (map && typeof google !== 'undefined') {
+          google.maps.event.trigger(map, 'resize');
+        }
+      } catch {
+        /* ignore */
+      }
+    });
+  }
+
+  /**
    * WORKBENCH ONLY — captura prévia do mapa (mesmo método do PDF).
    * Não altera openReportModal / captureMapAutomatically do standalone.
    */
