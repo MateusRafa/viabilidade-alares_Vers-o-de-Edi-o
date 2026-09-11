@@ -1305,7 +1305,7 @@
     border: 2px solid #ddd;
     border-radius: 6px;
     overflow: hidden;
-    background: #f9f9f9;
+    background: #fff;
     line-height: 0;
   }
 
@@ -1314,6 +1314,7 @@
     width: 100%;
     height: auto;
     max-width: 100%;
+    vertical-align: top;
   }
 
   .wb-preview-loading {
@@ -1322,7 +1323,7 @@
     background: #f5f5f5;
     border: 2px dashed #ddd;
     border-radius: 6px;
-    min-height: 220px;
+    min-height: 280px;
     display: flex;
     flex-direction: column;
     align-items: center;
