@@ -6289,8 +6289,8 @@
   }
 
   /**
-   * WORKBENCH ONLY — captura idêntica à oficial, com mapa em estágio fixo
-   * (tamanho real) para o print preencher a prévia e enquadrar todos os equipamentos.
+   * WORKBENCH ONLY — igual Viabilidade oficial:
+   * o box "Preencher Relatório" permanece aberto; o mapa ajusta/captura por trás.
    */
   async function captureMapForWorkbench() {
     if (!map || !clientCoords) {
@@ -6309,6 +6309,7 @@
       : null;
     const prevZoom = map.getZoom();
 
+    // Só esconde o box Localizar — o modal do relatório fica aberto (por cima)
     const searchBoxes = Array.from(document.querySelectorAll('.wb-map-search-box'));
     const searchPrev = searchBoxes.map((el) => ({
       el,
@@ -6320,31 +6321,33 @@
       el.style.pointerEvents = 'none';
     });
 
+    // Garante modal acima do mapa durante o ajuste/captura
     const overlays = Array.from(document.querySelectorAll('.wb-modal-overlay'));
     const overlayPrev = overlays.map((el) => ({
       el,
+      zIndex: el.style.zIndex,
       visibility: el.style.visibility,
-      opacity: el.style.opacity,
-      pointerEvents: el.style.pointerEvents
+      opacity: el.style.opacity
     }));
     overlays.forEach((el) => {
-      el.style.visibility = 'hidden';
-      el.style.opacity = '0';
-      el.style.pointerEvents = 'none';
+      el.style.visibility = 'visible';
+      el.style.opacity = '1';
+      el.style.zIndex = '2147483646';
     });
 
-    // Estágio fixo com tamanho real (evita canvas “achatado” / faixa branca)
+    // Expande o mapa por trás do box (z-index abaixo do modal)
     const captureW = 900;
     const captureH = 560;
     const styled = [];
-    const forceCaptureBox = (el, { fixed = false } = {}) => {
+    const forceCaptureBox = (el, { stage = false } = {}) => {
       if (!el) return;
       styled.push({ el, cssText: el.getAttribute('style') || '' });
-      if (fixed) {
+      if (stage) {
         el.style.setProperty('position', 'fixed', 'important');
         el.style.setProperty('left', '0', 'important');
         el.style.setProperty('top', '0', 'important');
-        el.style.setProperty('z-index', '2147483000', 'important');
+        // Abaixo do modal — usuário continua vendo o box aberto
+        el.style.setProperty('z-index', '5000', 'important');
       } else {
         el.style.setProperty('position', 'relative', 'important');
       }
@@ -6362,24 +6365,16 @@
       el.style.setProperty('background', '#ffffff', 'important');
     };
 
-    forceCaptureBox(mainArea, { fixed: true });
-    forceCaptureBox(mapContainer, { fixed: false });
-    forceCaptureBox(mapEl, { fixed: false });
+    forceCaptureBox(mainArea, { stage: true });
+    forceCaptureBox(mapContainer);
+    forceCaptureBox(mapEl);
 
     try {
       google.maps.event.trigger(map, 'resize');
       await waitMapIdleWorkbench(1200);
       await new Promise((r) => setTimeout(r, 200));
 
-      // Confirma que o mapa realmente ocupou o estágio (senão o print fica “achatado”)
-      if (mapEl.clientWidth < captureW * 0.8 || mapEl.clientHeight < captureH * 0.8) {
-        console.warn(
-          '[Workbench] Tamanho do mapa para captura abaixo do esperado:',
-          mapEl.clientWidth,
-          mapEl.clientHeight
-        );
-      }
-
+      // Mesma rotina da oficial — ajuste do mapa acontece atrás do box
       const imageData = await captureMapAutomatically();
       if (!imageData || imageData.length < 1000) {
         throw new Error('Captura do mapa retornou imagem vazia');
@@ -6395,10 +6390,10 @@
         el.style.visibility = visibility;
         el.style.pointerEvents = pointerEvents;
       });
-      overlayPrev.forEach(({ el, visibility, opacity, pointerEvents }) => {
+      overlayPrev.forEach(({ el, zIndex, visibility, opacity }) => {
+        el.style.zIndex = zIndex;
         el.style.visibility = visibility;
         el.style.opacity = opacity;
-        el.style.pointerEvents = pointerEvents;
       });
 
       await tick();
