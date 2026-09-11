@@ -322,7 +322,7 @@
       cep: normalizeCep(end.cep),
       coordenadas: coords ? formatCoords(coords.lat, coords.lng) : form.coordenadas || '',
       tabulacaoFinal: item?.tabulacaoFinal || '',
-      projetista: usuario || item?.viabilidadeResumo?.projetista || ''
+      projetista: String(usuario || '').trim() || item?.viabilidadeResumo?.projetista || ''
     };
     // Se o mapa já resolveu o endereço do pin, não voltar para o texto da Agenda/busca
     if (addressFromMap) {
@@ -335,6 +335,17 @@
     form = next;
     if (coords) pinCoords = coords;
     sugeridaOriginal = item?.tabulacaoFinal || item?.analiseIa?.tabulacaoSugerida || '';
+    ensureProjetistaFromLogin();
+  }
+
+  /** Projetista = usuário do login da extensão (campo da tela de entrada). */
+  function ensureProjetistaFromLogin() {
+    const name = String(usuario || '').trim();
+    if (!name) return;
+    if (form.projetista !== name) {
+      form.projetista = name;
+      form = form;
+    }
   }
 
   /** Digitar no overlay só altera o texto — pesquisa só no botão Localizar. */
@@ -381,6 +392,7 @@
 
   function openInfoModal() {
     error = '';
+    ensureProjetistaFromLogin();
     showInfoModal = true;
   }
 
@@ -400,6 +412,7 @@
 
     error = '';
     mapPreviewImage = '';
+    ensureProjetistaFromLogin();
     showInfoModal = true;
     capturingMapPreview = true;
     statusMsg = 'Capturando prévia do mapa…';
@@ -412,6 +425,7 @@
       if (typeof viabilidadeRef.syncWorkbenchAddressFromMap === 'function') {
         applyMapAddressToForm(await viabilidadeRef.syncWorkbenchAddressFromMap());
       }
+      ensureProjetistaFromLogin();
 
       const preview = await viabilidadeRef.refreshWorkbenchMapPreview();
       if (!preview) {
@@ -427,6 +441,7 @@
       mapPreviewImage = '';
     } finally {
       capturingMapPreview = false;
+      ensureProjetistaFromLogin();
     }
   }
 
@@ -542,6 +557,7 @@
   async function applyInitPayload(payload = {}) {
     usuario = String(payload.usuario || '').trim();
     chamadoId = String(payload.chamadoId || payload.id || '').trim();
+    ensureProjetistaFromLogin();
 
     if (payload.seed) {
       const seed = payload.seed;
@@ -556,6 +572,7 @@
         projetista: usuario || seed.projetista || ''
       };
       form.cep = normalizeCep(form.cep);
+      ensureProjetistaFromLogin();
     }
 
     if (!usuario) {
@@ -577,9 +594,11 @@
     capturingMapPreview = false;
     error = '';
     statusMsg = 'Mapa pronto — sincronize um chamado para preencher o formulário';
+    ensureProjetistaFromLogin();
   }
 
   function buildReportPayload() {
+    ensureProjetistaFromLogin();
     return {
       numeroALA: form.numeroALA.trim(),
       cidade: form.cidade.trim(),
@@ -590,7 +609,7 @@
       latitude: pinCoords?.lat ?? null,
       longitude: pinCoords?.lng ?? null,
       tabulacaoFinal: form.tabulacaoFinal.trim(),
-      projetista: form.projetista.trim(),
+      projetista: (form.projetista || usuario || '').trim(),
       tabulacaoSugeridaOriginal: sugeridaOriginal || null
     };
   }
