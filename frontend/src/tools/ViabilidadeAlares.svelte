@@ -6852,10 +6852,10 @@
         viAla: currentVIALA
       });
 
-      // Buscar data de atualização da base (fresca da API; localStorage só como fallback)
+      // Buscar data de atualização da base (fresca do Supabase primary — igual oficial)
       let baseLastModifiedText = '';
       try {
-        const baseRes = await fetch(getApiUrl('/api/base-last-modified'));
+        const baseRes = await fetch(getApiUrl('/api/base-last-modified'), { cache: 'no-store' });
         const baseData = await baseRes.json();
         if (baseData?.success && baseData.lastModified) {
           try {
@@ -6878,9 +6878,10 @@
               });
           }
         }
-      } catch {
-        // fallback abaixo
+      } catch (err) {
+        console.warn('[PDF] Falha ao buscar lastModified da API:', err);
       }
+      // Só usa localStorage se a API falhar de verdade (não sobrescreve data fresca)
       if (!baseLastModifiedText) {
         try {
           const savedLastModified = localStorage.getItem('baseLastModified');
@@ -7056,7 +7057,7 @@
                 flex-direction: column; 
                 background: transparent !important;
                 min-height: 0;
-                align-items: center;
+                align-items: stretch;
                 position: relative;
                 z-index: 1;
               }
@@ -7076,6 +7077,7 @@
                 display: flex;
                 flex-direction: column;
                 align-items: stretch;
+                justify-content: center;
                 width: 100%;
                 max-width: 100%;
                 flex: 1;
@@ -7099,10 +7101,9 @@
               }
               .map-image { 
                 display: block; 
-                width: auto;
+                width: 100%;
                 height: auto;
                 max-width: 100%;
-                max-height: 320px;
                 object-fit: contain;
                 object-position: center;
                 box-shadow: none; 
@@ -7110,7 +7111,7 @@
                 opacity: 1 !important; 
                 filter: none !important;
                 border-radius: 3px;
-                margin: 0 auto;
+                margin: 0;
                 padding: 0;
               }
               .map-image::before,
@@ -7244,13 +7245,13 @@
                 }
                 .map-image { 
                   display: block !important;
-                  width: auto !important;
+                  width: 100% !important;
                   height: auto !important;
                   max-width: 100% !important;
-                  max-height: 320px !important;
+                  max-height: none !important;
                   object-fit: contain !important;
                   object-position: center !important;
-                  margin: 0 auto !important;
+                  margin: 0 !important;
                   padding: 0 !important;
                   page-break-inside: avoid; 
                   background: transparent !important; 
