@@ -3362,9 +3362,12 @@ app.get('/api/base-last-modified', async (req, res) => {
     let hasData = false;
     let totalCTOs = 0; // Declarar fora do bloco para estar disponível em todo o escopo
 
-    if (supabase && isSupabaseAvailable()) {
+    // Sempre primary — mesma data da ferramenta oficial (evita Excel/réplica antigos)
+    const dbClient = getPrimaryClient() || supabasePrimary || (isSupabaseAvailable() ? supabase : null);
+
+    if (dbClient) {
       // Primeiro verificar se existe dados na tabela ctos
-      const { count, error: countError } = await supabase
+      const { count, error: countError } = await dbClient
         .from('ctos')
         .select('*', { count: 'exact', head: true });
 
@@ -3378,7 +3381,7 @@ app.get('/api/base-last-modified', async (req, res) => {
 
       // Se houver dados, tentar obter a data da última modificação
       if (hasData) {
-        const { data, error } = await supabase
+        const { data, error } = await dbClient
           .from('upload_history')
           .select('uploaded_at')
           .order('uploaded_at', { ascending: false })
@@ -3395,7 +3398,7 @@ app.get('/api/base-last-modified', async (req, res) => {
         // Se ainda não tem lastModified mas tem dados, usar data atual como fallback
         if (!lastModified && hasData) {
           // Buscar última CTO inserida para usar sua data de criação
-          const { data: lastCto, error: ctoError } = await supabase
+          const { data: lastCto, error: ctoError } = await dbClient
             .from('ctos')
             .select('created_at')
             .order('created_at', { ascending: false })
@@ -3414,7 +3417,7 @@ app.get('/api/base-last-modified', async (req, res) => {
     }
 
     // Se Supabase não está disponível, verificar arquivo local
-    if (!supabase || !isSupabaseAvailable()) {
+    if (!dbClient) {
       const currentBasePath = await findCurrentBaseFile();
       if (currentBasePath && fs.existsSync(currentBasePath)) {
         const stats = await fsPromises.stat(currentBasePath);
