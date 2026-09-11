@@ -969,8 +969,6 @@
   <div
     class="wb-modal-overlay"
     role="presentation"
-    on:click={closeInfoModal}
-    on:keydown={(e) => e.key === 'Escape' && closeInfoModal()}
   >
     <div
       class="wb-modal-content"
