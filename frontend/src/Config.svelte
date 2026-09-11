@@ -572,12 +572,12 @@
   // Carregar tabulações
   async function loadTabulacoes() {
     try {
-      const response = await fetch(getApiUrl('/api/tabulacoes'));
+      const response = await fetch(getApiUrl('/api/tabulacoes'), { cache: 'no-store' });
       const text = await response.text();
       if (text && text.trim() !== '') {
         const data = JSON.parse(text);
-        if (data.success) {
-          tabulacoesList = data.tabulacoes || tabulacoesList;
+        if (data.success && Array.isArray(data.tabulacoes) && data.tabulacoes.length > 0) {
+          tabulacoesList = data.tabulacoes;
           try {
             localStorage.setItem('tabulacoesList', JSON.stringify(tabulacoesList));
           } catch (err) {
