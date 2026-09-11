@@ -4560,15 +4560,85 @@ function getMissingSupabaseColumn(errorMessage) {
   return match ? match[1] : null;
 }
 
+/**
+ * Clientes onde VI ALA deve ser gravado/lido para ficar visível na ferramenta e na extensão.
+ * Diferente do dualWrite genérico (só o backend ativo): aqui sempre tenta primary + réplica.
+ */
+function getVIALASyncClients() {
+  const clients = [];
+  const primary = getPrimaryClient() || supabasePrimary;
+  if (primary) {
+    clients.push({ label: 'primary', client: primary });
+  }
+  if (isClusterEnabled()) {
+    const replica = getReplicaClient();
+    if (replica && replica !== primary) {
+      clients.push({ label: 'replica', client: replica });
+    }
+  }
+  if (!clients.length) {
+    const active = getActiveSupabaseClient() || (isSupabaseAvailable() ? supabase : null);
+    if (active) clients.push({ label: 'active', client: active });
+  }
+  return clients;
+}
+
+async function writeVIALAToAllClients(fn) {
+  const clients = getVIALASyncClients();
+  if (!clients.length) {
+    throw new Error('Nenhum cliente Supabase disponível para VI ALA');
+  }
+
+  const settled = await Promise.allSettled(
+    clients.map(({ client, label }) => Promise.resolve(fn(client, label)))
+  );
+
+  const values = [];
+  const failures = [];
+  settled.forEach((result, i) => {
+    const label = clients[i].label;
+    if (result.status === 'fulfilled') {
+      values.push({ label, value: result.value });
+    } else {
+      failures.push({ label, error: result.reason });
+      console.error(
+        `❌ [VI ALA] write ${label}:`,
+        result.reason?.message || result.reason
+      );
+    }
+  });
+
+  // Exige pelo menos um backend gravado com sucesso
+  if (values.length === 0) {
+    const first = failures[0]?.error;
+    throw first instanceof Error ? first : new Error(first?.message || 'Falha ao gravar VI ALA');
+  }
+  if (failures.length) {
+    console.warn(
+      `⚠️ [VI ALA] Gravado parcialmente (${values.map((v) => v.label).join(', ')}); falhas: ${failures
+        .map((f) => f.label)
+        .join(', ')}`
+    );
+  }
+  return values;
+}
+
 async function insertVIALAIntoSupabase(dataToSave) {
   const payload = { ...dataToSave };
   const maxAttempts = 12;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      await clusterAwareWrite(async (client) => {
+      // Sempre primary + réplica — extensão e ferramenta veem a mesma sequência/lista
+      await writeVIALAToAllClients(async (client) => {
         const { error } = await client.from('vi_ala').insert([payload]);
-        if (error) throw error;
+        if (error) {
+          // Já existe neste backend (retry / espelho parcial) — ok
+          if (/duplicate key|unique constraint|23505/i.test(`${error.message || ''} ${error.code || ''}`)) {
+            return;
+          }
+          throw error;
+        }
       });
       return { success: true, payload };
     } catch (error) {
@@ -4603,9 +4673,14 @@ async function insertVIALABatchIntoSupabase(records) {
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      await clusterAwareWrite(async (client) => {
+      await writeVIALAToAllClients(async (client) => {
         const { error } = await client.from('vi_ala').insert(payload);
-        if (error) throw error;
+        if (error) {
+          if (/duplicate key|unique constraint|23505/i.test(`${error.message || ''} ${error.code || ''}`)) {
+            return;
+          }
+          throw error;
+        }
       });
       return { success: true, count: payload.length };
     } catch (error) {
@@ -8784,49 +8859,12 @@ app.post('/api/vi-ala/save', async (req, res) => {
 app.get('/api/vi-ala/list', async (req, res) => {
   try {
     console.log('📥 [API] Requisição recebida para listar VI ALAs');
-    
-    // Garantir que a base existe
-    await _ensureVIALABaseInternal();
-    
-    // Ler dados da base
-    const data = await _readVIALABaseInternal();
-    console.log(`📊 [API] Total de registros na base: ${data.length}`);
-    
-    // Converter para formato esperado pelo frontend
-    const viAlas = data.map((row, index) => {
-      const viAla = row['VI ALA'] || '';
-      // Extrair número do VI ALA
-      let numero = 0;
-      if (viAla && typeof viAla === 'string') {
-        const match = viAla.match(/VI\s*ALA[-\s]*(\d+)/i);
-        if (match) {
-          numero = parseInt(match[1], 10);
-        }
-      }
-      
-      return {
-        id: viAla,
-        numero: numero,
-        numero_ala: row['ALA'] || '',
-        projetista: row['PROJETISTA'] || '',
-        cidade: row['CIDADE'] || '',
-        endereco: row['ENDEREÇO'] || '',
-        data_geracao: row['DATA'] || '',
-        latitude: row['LATITUDE'] || '',
-        longitude: row['LONGITUDE'] || '',
-        tabulacao_final: row['TABULAÇÃO FINAL'] || '',
-        hora: row['HORA'] || ''
-      };
-    });
-    
-    // Ordenar por número (mais recente primeiro)
-    viAlas.sort((a, b) => b.numero - a.numero);
-    
-    // Limitar aos 10 mais recentes
-    const recentViAlas = viAlas.slice(0, 10);
-    
-    console.log(`✅ [API] Retornando ${recentViAlas.length} VI ALAs (de ${viAlas.length} total)`);
-    
+
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 10, 1), 50);
+    const recentViAlas = await listRecentVIALAsForUi(limit);
+
+    console.log(`✅ [API] Retornando ${recentViAlas.length} VI ALAs recentes (primary + réplica)`);
+
     res.json({ success: true, viAlas: recentViAlas });
   } catch (err) {
     console.error('❌ [API] Erro ao listar VI ALAs:', err);
@@ -8835,6 +8873,149 @@ app.get('/api/vi-ala/list', async (req, res) => {
   }
 });
 
+/**
+ * Lista os N VI ALAs mais recentes unindo primary + réplica.
+ * Assim registros gerados na extensão (ou na ferramenta) aparecem na mesma sequência.
+ */
+async function listRecentVIALAsForUi(limit = 10) {
+  const fetchLimit = Math.max(limit * 3, 30);
+  const byKey = new Map();
+
+  const clients = getVIALASyncClients();
+  if (clients.length) {
+    for (const { client, label } of clients) {
+      try {
+        let data = null;
+        let error = null;
+
+        // Preferir ordem por vi_ala (zero-padded); fallback created_at
+        ({ data, error } = await client
+          .from('vi_ala')
+          .select('*')
+          .order('vi_ala', { ascending: false })
+          .limit(fetchLimit));
+
+        if (error) {
+          console.warn(`⚠️ [VI ALA list/${label}] ordem vi_ala falhou:`, error.message);
+          ({ data, error } = await client
+            .from('vi_ala')
+            .select('*')
+            .order('created_at', { ascending: false })
+            .limit(fetchLimit));
+        }
+
+        if (error) {
+          console.error(`❌ [VI ALA list/${label}]:`, error.message || error);
+          continue;
+        }
+
+        for (const row of data || []) {
+          const key = String(row.vi_ala || '').trim();
+          if (!key) continue;
+          const existing = byKey.get(key);
+          const numero = parseVIALANumber(key);
+          if (!existing || numero >= (existing.numero || 0)) {
+            byKey.set(key, mapSupabaseVIALARowToUi(row, numero));
+          }
+        }
+        console.log(`📋 [VI ALA list/${label}] ${(data || []).length} linha(s)`);
+      } catch (err) {
+        console.error(`❌ [VI ALA list/${label}]:`, err?.message || err);
+      }
+    }
+  }
+
+  let viAlas = Array.from(byKey.values());
+
+  // Fallback Excel se Supabase não retornou nada
+  if (!viAlas.length) {
+    try {
+      await _ensureVIALABaseInternal();
+      const data = await _readVIALAExcelFileOnly();
+      viAlas = (data || []).map((row) => {
+        const viAla = row['VI ALA'] || '';
+        return {
+          id: viAla,
+          numero: parseVIALANumber(viAla),
+          numero_ala: row['ALA'] || '',
+          projetista: row['PROJETISTA'] || '',
+          cidade: row['CIDADE'] || '',
+          endereco: row['ENDEREÇO'] || '',
+          data_geracao: row['DATA'] || '',
+          latitude: row['LATITUDE'] || '',
+          longitude: row['LONGITUDE'] || '',
+          tabulacao_final: row['TABULAÇÃO FINAL'] || '',
+          hora: row['HORA'] || ''
+        };
+      });
+    } catch (excelErr) {
+      console.warn('⚠️ [VI ALA list] Fallback Excel falhou:', excelErr?.message || excelErr);
+    }
+  }
+
+  viAlas.sort((a, b) => (b.numero || 0) - (a.numero || 0));
+  return viAlas.slice(0, limit);
+}
+
+function mapSupabaseVIALARowToUi(row, numeroOverride) {
+  const viAla = String(row.vi_ala || '').trim();
+  const numero =
+    typeof numeroOverride === 'number' ? numeroOverride : parseVIALANumber(viAla);
+
+  let dataGeracao = '';
+  if (row.created_at) {
+    try {
+      const dateObj = new Date(row.created_at);
+      const dateBr = new Intl.DateTimeFormat('pt-BR', {
+        timeZone: 'America/Sao_Paulo',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false
+      }).formatToParts(dateObj);
+      const day = dateBr.find((p) => p.type === 'day')?.value;
+      const month = dateBr.find((p) => p.type === 'month')?.value;
+      const year = dateBr.find((p) => p.type === 'year')?.value;
+      const hour = dateBr.find((p) => p.type === 'hour')?.value;
+      const minute = dateBr.find((p) => p.type === 'minute')?.value;
+      if (day && month && year) {
+        dataGeracao = `${day}/${month}/${year}${hour && minute ? ` ${hour}:${minute}` : ''}`;
+      }
+    } catch {
+      // ignore
+    }
+  }
+  if (!dataGeracao && row.data) {
+    const dataStr = String(row.data);
+    if (dataStr.match(/^\d{4}-\d{2}-\d{2}/)) {
+      const partes = dataStr.split(' ')[0].split('-');
+      if (partes.length === 3) {
+        const horaFmt = row.hora ? String(row.hora).replace(/h$/, '') : '';
+        dataGeracao = horaFmt
+          ? `${partes[2]}/${partes[1]}/${partes[0]} ${horaFmt}`
+          : `${partes[2]}/${partes[1]}/${partes[0]}`;
+      }
+    } else {
+      dataGeracao = dataStr;
+    }
+  }
+
+  return {
+    id: viAla,
+    numero,
+    numero_ala: row.ala || '',
+    projetista: row.projetista || '',
+    cidade: row.cidade || '',
+    endereco: row.endereco || '',
+    data_geracao: dataGeracao,
+    latitude: row.latitude || '',
+    longitude: row.longitude || '',
+    tabulacao_final: row.tabulacao_final || '',
+    hora: row.hora || ''
+  };
+}
 // Função auxiliar para parsear data do formato "DD/MM/YYYY HH:MM" ou "DD/MM/YYYY" ou "YYYY-MM-DD"
 function parseDateFromString(dateStr) {
   if (!dateStr || typeof dateStr !== 'string') {
