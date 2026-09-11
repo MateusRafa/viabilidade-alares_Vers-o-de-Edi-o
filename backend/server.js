@@ -15,6 +15,8 @@ import {
   resolveReadDbForRequest,
   dualWrite,
   getWriteClients,
+  getPrimaryClient,
+  getReplicaClient,
   mirrorClusterTables,
   isClusterEnabled,
   isClusterAvailable,
@@ -4284,60 +4286,110 @@ function parseVIALANumber(viAla) {
   return Number.isFinite(number) ? number : 0;
 }
 
+/** Maior número VI ALA já usado em um cliente Supabase (primary/réplica). */
+async function getMaxVIALANumberFromClient(client, label = 'supabase') {
+  if (!client) return 0;
+
+  // 1) RPC oficial (retorna o PRÓXIMO número)
+  try {
+    const { data, error } = await client.rpc('get_next_vi_ala_number');
+    if (!error && data !== null && data !== undefined) {
+      const next = Number(data);
+      if (Number.isFinite(next) && next >= 1) {
+        console.log(`✅ [Supabase/${label}] RPC get_next_vi_ala_number → próximo ${next}`);
+        return next - 1;
+      }
+    }
+    if (error) {
+      console.log(`⚠️ [Supabase/${label}] RPC indisponível:`, error.message || error);
+    }
+  } catch (rpcErr) {
+    console.log(`⚠️ [Supabase/${label}] RPC falhou:`, rpcErr?.message || rpcErr);
+  }
+
+  // 2) Maior vi_ala textual (zero-padded ordena corretamente)
+  try {
+    const { data, error } = await client
+      .from('vi_ala')
+      .select('vi_ala')
+      .order('vi_ala', { ascending: false })
+      .limit(50);
+
+    if (!error && data?.length) {
+      let maxNumber = 0;
+      for (const row of data) {
+        maxNumber = Math.max(maxNumber, parseVIALANumber(row.vi_ala || ''));
+      }
+      if (maxNumber > 0) {
+        console.log(`✅ [Supabase/${label}] Max por vi_ala desc: ${maxNumber}`);
+        return maxNumber;
+      }
+    }
+  } catch (err) {
+    console.warn(`⚠️ [Supabase/${label}] Falha ao ordenar por vi_ala:`, err?.message || err);
+  }
+
+  // 3) Amostra recente por id
+  try {
+    const { data, error } = await client
+      .from('vi_ala')
+      .select('vi_ala')
+      .order('id', { ascending: false })
+      .limit(500);
+
+    if (!error && data?.length) {
+      let maxNumber = 0;
+      for (const row of data) {
+        maxNumber = Math.max(maxNumber, parseVIALANumber(row.vi_ala || ''));
+      }
+      console.log(`✅ [Supabase/${label}] Max por id recente: ${maxNumber} (amostra ${data.length})`);
+      return maxNumber;
+    }
+  } catch (err) {
+    console.warn(`⚠️ [Supabase/${label}] Falha ao buscar por id:`, err?.message || err);
+  }
+
+  return 0;
+}
+
 // Função para obter o próximo VI ALA do Supabase (nova versão)
 async function getNextVIALAFromSupabase() {
   try {
-    if (!supabase || !isSupabaseAvailable()) {
-      return null; // Retorna null para indicar que deve usar fallback
+    if (!isDbAvailable()) {
+      return null;
     }
-    
-    console.log('🔍 [Supabase] Obtendo próximo VI ALA do Supabase...');
-    
-    // Tentar usar a função SQL primeiro (mais eficiente)
-    try {
-      const { data, error } = await supabase.rpc('get_next_vi_ala_number');
-      
-      if (error) {
-        // Se a função não existir, buscar manualmente
-        throw error;
+
+    console.log('🔍 [Supabase] Obtendo próximo VI ALA (primary + réplica se houver)…');
+
+    const clients = [];
+    const primary = getPrimaryClient() || supabasePrimary;
+    if (primary) clients.push({ client: primary, label: 'primary' });
+
+    if (isClusterEnabled()) {
+      const replica = getReplicaClient();
+      if (replica && replica !== primary) {
+        clients.push({ client: replica, label: 'replica' });
       }
-      
-      // data pode ser 0 (primeiro número), então verificar explicitamente
-      const nextNumber = (data !== null && data !== undefined) ? data : 1;
-      const nextVIALA = `VI ALA-${String(nextNumber).padStart(7, '0')}`;
-      
-      console.log(`✅ [Supabase] Próximo VI ALA gerado: ${nextVIALA} (número: ${nextNumber})`);
-      return nextVIALA;
-    } catch (rpcError) {
-      // Fallback rápido: últimos registros por id (não varrer a tabela inteira)
-      console.log('⚠️ [Supabase] Função SQL não disponível, buscando maior número nos registros recentes...');
-
-      const { data, error } = await supabase
-        .from('vi_ala')
-        .select('vi_ala')
-        .order('id', { ascending: false })
-        .limit(200);
-
-      if (error) {
-        console.error('❌ [Supabase] Erro ao buscar VI ALAs recentes:', error);
-        return null;
-      }
-
-      let maxNumber = 0;
-      for (const row of data || []) {
-        const number = parseVIALANumber(row.vi_ala || '');
-        if (number > maxNumber) maxNumber = number;
-      }
-
-      const nextNumber = maxNumber + 1;
-      const nextVIALA = `VI ALA-${String(nextNumber).padStart(7, '0')}`;
-
-      console.log(`✅ [Supabase] Próximo VI ALA gerado: ${nextVIALA} (max recente: ${maxNumber}, amostra: ${(data || []).length})`);
-      return nextVIALA;
     }
+
+    if (!clients.length) {
+      return null;
+    }
+
+    // Usa o MAIOR número entre backends — mesma sequência da ferramenta oficial
+    let maxNumber = 0;
+    for (const { client, label } of clients) {
+      const n = await getMaxVIALANumberFromClient(client, label);
+      if (n > maxNumber) maxNumber = n;
+    }
+
+    const nextNumber = maxNumber + 1;
+    const nextVIALA = `VI ALA-${String(nextNumber).padStart(7, '0')}`;
+    console.log(`✅ [Supabase] Próximo VI ALA unificado: ${nextVIALA} (max visto: ${maxNumber})`);
+    return nextVIALA;
   } catch (err) {
     console.error('❌ [Supabase] Erro ao obter próximo VI ALA:', err);
-    return null; // Fallback para Excel
+    return null;
   }
 }
 
@@ -4405,13 +4457,14 @@ async function getNextVIALAFromExcel() {
 
 // Função para obter o próximo VI ALA (tenta Supabase primeiro, fallback para Excel)
 async function getNextVIALA() {
-  // Tentar Supabase primeiro
+  // Sempre prioriza Supabase (mesma sequência da Viabilidade oficial).
+  // Excel só entra se o banco estiver indisponível — evita números “antigos”.
   const supabaseResult = await getNextVIALAFromSupabase();
   if (supabaseResult !== null) {
     return supabaseResult;
   }
-  
-  // Fallback para Excel
+
+  console.warn('⚠️ [VI ALA] Supabase indisponível — fallback Excel (pode estar desatualizado)');
   return await getNextVIALAFromExcel();
 }
 
