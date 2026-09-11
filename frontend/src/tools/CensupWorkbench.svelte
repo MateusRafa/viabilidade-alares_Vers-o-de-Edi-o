@@ -697,10 +697,12 @@
       if (result?.preview) {
         mapPreviewImage = result.preview;
       }
-      statusMsg = 'PDF gerado (modelo Viabilidade Alares)';
+      statusMsg = result?.viAla
+        ? `PDF gerado (${result.viAla})`
+        : 'PDF gerado (modelo Viabilidade Alares)';
       showInfoModal = false;
       if (chamadoId) {
-        postToParent('REPORT_GENERATED', { chamadoId });
+        postToParent('REPORT_GENERATED', { chamadoId, viAla: result?.viAla || null });
       }
     } catch (err) {
       error = err?.message || String(err);
