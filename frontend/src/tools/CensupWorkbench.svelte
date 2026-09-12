@@ -552,16 +552,29 @@
     try {
       chamado = await fetchPortalCensupChamadoById(usuario, id);
       fillFormFromChamado(chamado);
-      statusMsg = 'Analisando tabulação…';
+      // Libera o mapa na posição assim que as coords/endereço chegam (não espera a análise)
+      loading = false;
+      statusMsg = form.coordenadas || pinCoords ? 'Posicionando mapa…' : 'Analisando tabulação…';
+      requestMapResize(40);
+      // Se ainda não há coords, tenta localizar pelo endereço em paralelo com a análise
+      const locatePromise =
+        !pinCoords && (form.enderecoCompleto || '').trim()
+          ? localizarNoMapa().catch((err) => {
+              console.warn('[Workbench] Localizar:', err?.message || err);
+            })
+          : Promise.resolve();
+
       try {
         const analyzed = await analisarPortalCensupChamado(usuario, id, { force: false });
         if (analyzed?.chamado) {
           chamado = analyzed.chamado;
           fillFormFromChamado(chamado);
+          requestMapResize(40);
         }
       } catch (analyzeErr) {
         console.warn('[Workbench] Análise:', analyzeErr?.message || analyzeErr);
       }
+      await locatePromise;
       if (!form.tabulacaoFinal && chamado?.tabulacaoFinal) {
         form.tabulacaoFinal = chamado.tabulacaoFinal;
       }
