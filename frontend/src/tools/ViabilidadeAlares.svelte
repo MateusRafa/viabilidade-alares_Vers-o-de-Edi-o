@@ -1228,7 +1228,10 @@
         let statusClass = '';
         if (statusUpper.includes('ATIVADO')) statusClass = 'ativado';
         else if (statusUpper.includes('DESATIVADO') || statusUpper.includes('INATIVO')) statusClass = 'desativado';
+        const ctoKey = getCTOKey(cto);
         return {
+          ctoKey,
+          visible: ctoVisibility.get(ctoKey) !== false,
           n: ctoNumbers.get(cto) || rowIndex + 1,
           nome: cto.nome || '',
           status: statusCto,
@@ -1241,6 +1244,31 @@
     } catch (err) {
       console.warn('[Workbench] onEquipamentosChange:', err);
     }
+  }
+
+  /** WORKBENCH — marca/desmarca CTO no mapa a partir da tabela espelho. */
+  export async function setWorkbenchCtoVisible(ctoKey, visible) {
+    if (!workbenchMode || !ctoKey) return;
+    ctoVisibility.set(String(ctoKey), !!visible);
+    ctoVisibility = ctoVisibility;
+    ctoNumbersVersion++;
+    await tick();
+    await updateMapVisibility();
+    emitEquipamentosChange();
+  }
+
+  /** WORKBENCH — marca/desmarca todas as CTOs no mapa. */
+  export async function setAllWorkbenchCtosVisible(visible) {
+    if (!workbenchMode) return;
+    const on = !!visible;
+    (ctosRua || []).forEach((cto) => {
+      ctoVisibility.set(getCTOKey(cto), on);
+    });
+    ctoVisibility = ctoVisibility;
+    ctoNumbersVersion++;
+    await tick();
+    await updateMapVisibility();
+    emitEquipamentosChange();
   }
 
   $: if (workbenchMode) {
