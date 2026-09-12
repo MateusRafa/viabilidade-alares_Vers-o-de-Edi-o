@@ -540,23 +540,23 @@
     }
   }
 
-  async function loadChamado(id) {
+  async function loadChamado(id, { preserveMap = false } = {}) {
     loading = true;
     error = '';
-    pinCoords = null;
-    addressFromMap = false;
-    mapPreviewImage = '';
-    capturingMapPreview = false;
+    if (!preserveMap) {
+      pinCoords = null;
+      addressFromMap = false;
+      mapPreviewImage = '';
+      capturingMapPreview = false;
+    }
     equipamentos = [];
     statusMsg = 'Carregando chamado…';
     try {
       chamado = await fetchPortalCensupChamadoById(usuario, id);
       fillFormFromChamado(chamado);
-      // Libera o mapa na posição assim que as coords/endereço chegam (não espera a análise)
       loading = false;
       statusMsg = form.coordenadas || pinCoords ? 'Posicionando mapa…' : 'Analisando tabulação…';
       requestMapResize(40);
-      // Se ainda não há coords, tenta localizar pelo endereço em paralelo com a análise
       const locatePromise =
         !pinCoords && (form.enderecoCompleto || '').trim()
           ? localizarNoMapa().catch((err) => {
@@ -597,16 +597,29 @@
     }
   }
 
+  function coordsFromSeed(seed) {
+    if (!seed) return null;
+    const c = seed.mapaCoords || seed.localizacao || null;
+    const lat = c?.lat ?? seed.lat ?? null;
+    const lng = c?.lng ?? seed.lng ?? null;
+    if (lat == null || lng == null || Number.isNaN(Number(lat)) || Number.isNaN(Number(lng))) {
+      return null;
+    }
+    return { lat: Number(lat), lng: Number(lng) };
+  }
+
   async function applyInitPayload(payload = {}) {
     usuario = String(payload.usuario || '').trim();
     chamadoId = String(payload.chamadoId || payload.id || '').trim();
     ensureProjetistaFromLogin();
 
+    let positionedFromSeed = false;
+
     if (payload.seed) {
       const seed = payload.seed;
       form = {
         numeroALA: String(seed.pedido || seed.numeroALA || '').replace(/\D/g, ''),
-        cidade: seed.cidade || '',
+        cidade: seed.cidade || seed.endereco?.cidade || '',
         enderecoCompleto: seed.enderecoCompleto || seed.endereco?.completo || '',
         numeroEndereco: seed.numeroEndereco || seed.endereco?.numero || '',
         cep: seed.cep || seed.endereco?.cep || '',
@@ -616,6 +629,24 @@
       };
       form.cep = normalizeCep(form.cep);
       ensureProjetistaFromLogin();
+
+      // Prioridade: coords da Agenda → pin imediato (sem geocode)
+      const seedCoords = coordsFromSeed(seed);
+      if (seedCoords) {
+        pinCoords = seedCoords;
+        form.coordenadas = formatCoords(seedCoords.lat, seedCoords.lng);
+        form = form;
+        positionedFromSeed = true;
+        statusMsg = 'Endereço posicionado no mapa';
+        requestMapResize(30);
+      } else if ((form.enderecoCompleto || '').trim()) {
+        // Sem coords: pesquisa já, sem esperar a API do chamado
+        statusMsg = 'Localizando endereço no mapa…';
+        positionedFromSeed = true;
+        void localizarNoMapa().catch((err) => {
+          console.warn('[Workbench] Localizar (seed):', err?.message || err);
+        });
+      }
     }
 
     if (!usuario) {
@@ -626,17 +657,20 @@
     }
 
     if (chamadoId) {
-      await loadChamado(chamadoId);
+      // Formulário/tabulação em paralelo; mapa já pode estar posicionado pelo seed
+      await loadChamado(chamadoId, { preserveMap: positionedFromSeed });
       return;
     }
 
     loading = false;
-    chamado = null;
-    equipamentos = [];
-    mapPreviewImage = '';
-    capturingMapPreview = false;
-    error = '';
-    statusMsg = 'Mapa pronto — sincronize um chamado para preencher o formulário';
+    if (!positionedFromSeed) {
+      chamado = null;
+      equipamentos = [];
+      mapPreviewImage = '';
+      capturingMapPreview = false;
+      error = '';
+      statusMsg = 'Mapa pronto — sincronize um chamado para preencher o formulário';
+    }
     ensureProjetistaFromLogin();
   }
 
