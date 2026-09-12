@@ -79,7 +79,7 @@
   let equipSelectedRows = [];
   let equipSelectedColumns = [];
   let equipSelectionStart = null;
-  $: equipSelectionKey = `${equipSelectedCells.length}-${equipSelectedRows.length}-${equipSelectedColumns.join(',')}`;
+  $: equipSelectionKey = `${equipSelectedCells.length}-${equipSelectedRows.length}-${equipSelectedColumns.length}-${equipSelectedColumns.join(',')}-${equipSelectedRows.join(',')}`;
   $: equipAllVisible =
     equipamentos.length > 0 && equipamentos.every((item) => item.visible !== false);
   $: equipSomeVisible =
@@ -91,7 +91,8 @@
 
   function isEquipCellSelected(rowIndex, colIndex) {
     void equipSelectionKey;
-    if (equipSelectedCells.includes(equipCellKey(rowIndex, colIndex))) return true;
+    const cellKey = equipCellKey(rowIndex, colIndex);
+    if (equipSelectedCells.includes(cellKey)) return true;
     if (equipSelectedRows.includes(rowIndex)) return true;
     if (equipSelectedColumns.includes(colIndex)) return true;
     return false;
@@ -104,10 +105,55 @@
     equipSelectionStart = null;
   }
 
+  function selectEquipCell(rowIndex, colIndex) {
+    equipSelectedCells = [equipCellKey(rowIndex, colIndex)];
+    equipSelectedRows = [];
+    equipSelectedColumns = [];
+    equipSelectionStart = { row: rowIndex, col: colIndex };
+  }
+
+  function selectEquipRow(rowIndex, addToSelection = false) {
+    if (!addToSelection) {
+      equipSelectedCells = [];
+      equipSelectedRows = [rowIndex];
+      equipSelectedColumns = [];
+    } else if (!equipSelectedRows.includes(rowIndex)) {
+      equipSelectedRows = [...equipSelectedRows, rowIndex];
+    }
+    equipSelectionStart = { row: rowIndex, col: 1 };
+  }
+
+  function selectEquipColumn(colIndex, addToSelection = false) {
+    if (!addToSelection) {
+      equipSelectedCells = [];
+      equipSelectedRows = [];
+      equipSelectedColumns = [colIndex];
+    } else if (!equipSelectedColumns.includes(colIndex)) {
+      equipSelectedColumns = [...equipSelectedColumns, colIndex];
+    }
+    equipSelectionStart = null;
+  }
+
+  function selectEquipRange(startRow, startCol, endRow, endCol) {
+    const minRow = Math.min(startRow, endRow);
+    const maxRow = Math.max(startRow, endRow);
+    const minCol = Math.min(startCol, endCol);
+    const maxCol = Math.max(startCol, endCol);
+    const next = [];
+    for (let row = minRow; row <= maxRow; row++) {
+      for (let col = Math.max(1, minCol); col <= maxCol; col++) {
+        next.push(equipCellKey(row, col));
+      }
+    }
+    equipSelectedCells = next;
+    equipSelectedRows = [];
+    equipSelectedColumns = [];
+  }
+
   function getEquipCellValue(item, colIndex) {
     switch (colIndex) {
       case 1:
-        return String(item?.n ?? '');
+        return String(item?.n ?? '-');
       case 2:
         return String(item?.nome ?? '');
       case 3:
@@ -123,61 +169,87 @@
 
   function handleEquipCellClick(event, rowIndex, colIndex) {
     if (colIndex === 0) return;
+    if (
+      event.target?.tagName === 'INPUT' ||
+      event.target?.type === 'checkbox' ||
+      event.target?.closest?.('input[type="checkbox"]')
+    ) {
+      return;
+    }
+
     event.preventDefault();
     event.stopPropagation();
-    const multi = event.ctrlKey || event.metaKey;
-    const range = event.shiftKey && equipSelectionStart;
 
-    if (range) {
-      const r0 = Math.min(equipSelectionStart.row, rowIndex);
-      const r1 = Math.max(equipSelectionStart.row, rowIndex);
-      const c0 = Math.min(equipSelectionStart.col, colIndex);
-      const c1 = Math.max(equipSelectionStart.col, colIndex);
-      const next = [];
-      for (let r = r0; r <= r1; r++) {
-        for (let c = Math.max(1, c0); c <= c1; c++) {
-          next.push(equipCellKey(r, c));
-        }
-      }
-      equipSelectedCells = multi ? [...new Set([...equipSelectedCells, ...next])] : next;
+    // Clique na coluna Nº seleciona a linha inteira (como “cabeçalho de linha”)
+    if (colIndex === 1 && !event.shiftKey) {
+      selectEquipRow(rowIndex, event.ctrlKey || event.metaKey);
+      return;
+    }
+
+    if (event.shiftKey && equipSelectionStart) {
+      selectEquipRange(
+        equipSelectionStart.row,
+        equipSelectionStart.col,
+        rowIndex,
+        colIndex
+      );
+    } else if (event.ctrlKey || event.metaKey) {
+      const key = equipCellKey(rowIndex, colIndex);
       equipSelectedRows = [];
       equipSelectedColumns = [];
-    } else if (multi) {
-      const key = equipCellKey(rowIndex, colIndex);
       equipSelectedCells = equipSelectedCells.includes(key)
         ? equipSelectedCells.filter((k) => k !== key)
         : [...equipSelectedCells, key];
-      equipSelectedRows = [];
-      equipSelectedColumns = [];
       equipSelectionStart = { row: rowIndex, col: colIndex };
     } else {
-      equipSelectedCells = [equipCellKey(rowIndex, colIndex)];
-      equipSelectedRows = [];
-      equipSelectedColumns = [];
-      equipSelectionStart = { row: rowIndex, col: colIndex };
+      selectEquipCell(rowIndex, colIndex);
     }
   }
 
   function handleEquipColumnHeaderClick(event, colIndex) {
     if (colIndex === 0) return;
+    if (
+      event.target?.tagName === 'INPUT' ||
+      event.target?.type === 'checkbox' ||
+      event.target?.closest?.('input[type="checkbox"]')
+    ) {
+      return;
+    }
+
     event.preventDefault();
     event.stopPropagation();
-    const multi = event.ctrlKey || event.metaKey;
-    if (multi) {
-      equipSelectedColumns = equipSelectedColumns.includes(colIndex)
-        ? equipSelectedColumns.filter((c) => c !== colIndex)
-        : [...equipSelectedColumns, colIndex];
+
+    if (event.ctrlKey || event.metaKey) {
+      equipSelectedCells = [];
+      equipSelectedRows = [];
+      if (equipSelectedColumns.includes(colIndex)) {
+        equipSelectedColumns = equipSelectedColumns.filter((c) => c !== colIndex);
+      } else {
+        equipSelectedColumns = [...equipSelectedColumns, colIndex];
+      }
     } else {
-      equipSelectedColumns = [colIndex];
+      selectEquipColumn(colIndex, false);
     }
-    equipSelectedCells = [];
-    equipSelectedRows = [];
-    equipSelectionStart = null;
   }
 
   function preventEquipTextSelection(event) {
-    if (event.target?.closest?.('input, textarea, button')) return;
-    event.preventDefault();
+    if (
+      event.target?.tagName === 'INPUT' ||
+      event.target?.tagName === 'TEXTAREA' ||
+      event.target?.closest?.('input') ||
+      event.target?.closest?.('textarea')
+    ) {
+      return;
+    }
+    if (event.target?.closest?.('.wb-equip-table')) {
+      event.preventDefault();
+    }
+  }
+
+  function handleEquipDocumentClick(event) {
+    if (!event.target?.closest?.('.wb-equip-table')) {
+      clearEquipSelection();
+    }
   }
 
   async function copyEquipSelectionToClipboard() {
@@ -188,38 +260,44 @@
     ) {
       return;
     }
-    const lines = [];
+    let textToCopy = '';
     if (equipSelectedColumns.length) {
       const cols = [...equipSelectedColumns].filter((c) => c >= 1).sort((a, b) => a - b);
       for (let r = 0; r < equipamentos.length; r++) {
-        lines.push(cols.map((c) => getEquipCellValue(equipamentos[r], c)).join('\t'));
+        textToCopy += cols.map((c) => getEquipCellValue(equipamentos[r], c)).join('\t') + '\n';
       }
     } else if (equipSelectedRows.length) {
       const rows = [...equipSelectedRows].sort((a, b) => a - b);
       for (const r of rows) {
         const item = equipamentos[r];
         if (!item) continue;
-        lines.push([1, 2, 3, 4, 5].map((c) => getEquipCellValue(item, c)).join('\t'));
+        textToCopy += [1, 2, 3, 4, 5].map((c) => getEquipCellValue(item, c)).join('\t') + '\n';
       }
     } else {
-      const parsed = equipSelectedCells
-        .map((k) => {
-          const [r, c] = String(k).split('-').map(Number);
-          return { r, c };
-        })
-        .filter((x) => Number.isFinite(x.r) && Number.isFinite(x.c) && x.c >= 1);
-      const byRow = new Map();
-      for (const { r, c } of parsed) {
-        if (!byRow.has(r)) byRow.set(r, []);
-        byRow.get(r).push(c);
-      }
-      const rowKeys = [...byRow.keys()].sort((a, b) => a - b);
-      for (const r of rowKeys) {
-        const cols = [...new Set(byRow.get(r))].sort((a, b) => a - b);
-        lines.push(cols.map((c) => getEquipCellValue(equipamentos[r], c)).join('\t'));
-      }
+      const cellsByRow = {};
+      equipSelectedCells.forEach((cellKey) => {
+        const [row, col] = String(cellKey).split('-').map(Number);
+        if (!Number.isFinite(row) || !Number.isFinite(col) || col < 1) return;
+        if (!cellsByRow[row]) cellsByRow[row] = {};
+        if (equipamentos[row]) {
+          cellsByRow[row][col] = getEquipCellValue(equipamentos[row], col);
+        }
+      });
+      const sortedRows = Object.keys(cellsByRow)
+        .map(Number)
+        .sort((a, b) => a - b);
+      const allColumns = new Set();
+      sortedRows.forEach((row) => {
+        Object.keys(cellsByRow[row]).forEach((col) => allColumns.add(Number(col)));
+      });
+      const sortedColumns = [...allColumns].sort((a, b) => a - b);
+      sortedRows.forEach((rowIndex) => {
+        textToCopy +=
+          sortedColumns.map((colIndex) => cellsByRow[rowIndex][colIndex] || '').join('\t') +
+          '\n';
+      });
     }
-    const text = lines.join('\n').trim();
+    const text = textToCopy.trim();
     if (!text) return;
     try {
       await navigator.clipboard.writeText(text);
@@ -229,6 +307,7 @@
       ta.style.position = 'fixed';
       ta.style.left = '-9999px';
       document.body.appendChild(ta);
+      ta.focus();
       ta.select();
       try {
         document.execCommand('copy');
@@ -240,9 +319,7 @@
   }
 
   function onEquipCopyKeydown(event) {
-    if (!(event.ctrlKey || event.metaKey) || String(event.key).toLowerCase() !== 'c') return;
-    const tag = event.target?.tagName;
-    if (tag === 'INPUT' || tag === 'TEXTAREA' || event.target?.isContentEditable) return;
+    if (!(event.ctrlKey || event.metaKey) || (event.key !== 'c' && event.key !== 'C')) return;
     if (
       !equipSelectedCells.length &&
       !equipSelectedRows.length &&
@@ -250,7 +327,14 @@
     ) {
       return;
     }
+    const active = document.activeElement;
+    const isInput =
+      active?.tagName === 'INPUT' ||
+      active?.tagName === 'TEXTAREA' ||
+      active?.contentEditable === 'true';
+    if (isInput) return;
     event.preventDefault();
+    event.stopPropagation();
     copyEquipSelectionToClipboard();
   }
 
@@ -1062,7 +1146,8 @@
 
   onMount(async () => {
     window.addEventListener('message', onMessage);
-    window.addEventListener('keydown', onEquipCopyKeydown);
+    document.addEventListener('keydown', onEquipCopyKeydown);
+    document.addEventListener('click', handleEquipDocumentClick);
     // Equipamentos inicia minimizado — mapa ocupa o split desde o boot
     equipCollapsed = true;
     equipPaneHeightPx = EQUIP_HEADER_H;
@@ -1110,7 +1195,8 @@
 
   onDestroy(() => {
     window.removeEventListener('message', onMessage);
-    window.removeEventListener('keydown', onEquipCopyKeydown);
+    document.removeEventListener('keydown', onEquipCopyKeydown);
+    document.removeEventListener('click', handleEquipDocumentClick);
     if (reanaliseTimer) clearTimeout(reanaliseTimer);
     endSplitDrag();
     if (splitResizeRaf) cancelAnimationFrame(splitResizeRaf);
@@ -1145,12 +1231,8 @@
         {#if !equipCollapsed}
           <div class="wb-equip-body">
             {#if equipamentos.length > 0}
-              <div
-                class="wb-equip-table-wrap"
-                on:mousedown={preventEquipTextSelection}
-                role="presentation"
-              >
-                <table class="wb-equip-table">
+              <div class="wb-equip-table-wrap" role="presentation">
+                <table class="wb-equip-table" on:selectstart={preventEquipTextSelection}>
                   <thead>
                     <tr>
                       <th class="wb-equip-check-col" title="Mostrar/ocultar no mapa">
@@ -1198,7 +1280,9 @@
                           />
                         </td>
                         <td
+                          class="wb-equip-num-col"
                           class:cell-selected={isEquipCellSelected(rowIndex, 1)}
+                          title="Clique para selecionar a linha"
                           on:click={(e) => handleEquipCellClick(e, rowIndex, 1)}
                         >{item.n}</td>
                         <td
@@ -1580,18 +1664,26 @@
     border-collapse: collapse;
     font-size: 0.68rem;
     user-select: none;
+    -webkit-user-select: none;
   }
 
   .wb-equip-table th,
   .wb-equip-table td {
     padding: 0.28rem 0.35rem;
-    text-align: left;
+    text-align: center;
     border-bottom: 1px solid #e5e7eb;
+    border-right: 1px solid #e5e7eb;
     white-space: nowrap;
     max-width: 9rem;
     overflow: hidden;
     text-overflow: ellipsis;
     cursor: cell;
+    vertical-align: middle;
+  }
+
+  .wb-equip-table th:last-child,
+  .wb-equip-table td:last-child {
+    border-right: none;
   }
 
   .wb-equip-table th {
@@ -1602,21 +1694,28 @@
     font-weight: 700;
     z-index: 1;
     cursor: pointer;
+    border-bottom: 2px solid #e5e7eb;
   }
 
   .wb-equip-table th.selected {
-    background: #dbeafe;
+    background: rgba(100, 149, 237, 0.2) !important;
     color: #1e40af;
+    border-bottom: 2px solid #6495ed !important;
   }
 
   .wb-equip-table td.cell-selected {
-    background: #dbeafe;
-    outline: 1px solid #93c5fd;
-    outline-offset: -1px;
+    background: rgba(100, 149, 237, 0.15) !important;
+    outline: 2px solid #6495ed;
+    outline-offset: -2px;
+    position: relative;
   }
 
   .wb-equip-table tr.row-selected td {
-    background: #eff6ff;
+    background: rgba(100, 149, 237, 0.1) !important;
+  }
+
+  .wb-equip-table tr.row-selected td.cell-selected {
+    background: rgba(100, 149, 237, 0.18) !important;
   }
 
   .wb-equip-table .wb-equip-check-col {
@@ -1633,6 +1732,13 @@
     margin: 0;
     cursor: pointer;
     accent-color: #7b68ee;
+  }
+
+  .wb-equip-table .wb-equip-num-col {
+    width: 2rem;
+    max-width: 2.5rem;
+    cursor: pointer;
+    font-variant-numeric: tabular-nums;
   }
 
   .wb-equip-table td:nth-child(2),
