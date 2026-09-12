@@ -26,6 +26,9 @@
   let sugeridaOriginal = '';
   let showInfoModal = false;
   let equipamentos = [];
+  /** Box “Fora do Limite” (CTO > 250m) — espelho do oficial. */
+  let foraLimiteInfo = null;
+  let showInfoForaLimite = false;
   /** Altura do box Equipamentos (px) dentro do split; null = padrão ~32%. */
   let equipPaneHeightPx = null;
   let equipCollapsed = true;
@@ -79,6 +82,24 @@
       next.map((i) => i.ctoKey || i.nome).join('|');
     equipamentos = next;
     if (!sameSet) clearEquipSelection();
+  }
+
+  function onForaLimiteFromViabilidade(payload = {}) {
+    if (!payload?.active) {
+      foraLimiteInfo = null;
+      showInfoForaLimite = false;
+      return;
+    }
+    foraLimiteInfo = {
+      nome: payload.nome || 'N/A',
+      distancia: Number(payload.distancia) || 0
+    };
+  }
+
+  function formatForaLimiteDistancia(metros) {
+    const d = Number(metros) || 0;
+    if (d >= 1000) return `${(d / 1000).toFixed(2)} km`;
+    return `${Math.round(d)} m`;
   }
 
   // ——— Seleção / cópia da tabela Equipamentos (igual ao oficial, só cols Nº…POP) ———
@@ -1106,6 +1127,8 @@
     chamadoId = '';
     equipamentos = [];
     clearEquipSelection();
+    foraLimiteInfo = null;
+    showInfoForaLimite = false;
     sugeridaOriginal = '';
     error = '';
     statusMsg = 'Aguardando chamado…';
@@ -1351,6 +1374,7 @@
               onClientLocationChange={onClientLocationFromMap}
               onMapPreviewChange={onMapPreviewFromViabilidade}
               onEquipamentosChange={onEquipamentosFromViabilidade}
+              onForaLimiteChange={onForaLimiteFromViabilidade}
               onMapReady={onMapReadyFromViabilidade}
             />
           </div>
@@ -1392,12 +1416,71 @@
             {#if mapSearchError}
               <p class="wb-map-search-error" role="alert">{mapSearchError}</p>
             {/if}
+            {#if foraLimiteInfo}
+              <div class="wb-fora-limite-box" role="status">
+                <div class="wb-fora-limite-header">
+                  <span class="wb-fora-limite-icon" aria-hidden="true">📍</span>
+                  <span class="wb-fora-limite-title">Fora do Limite</span>
+                  <button
+                    type="button"
+                    class="wb-fora-limite-info"
+                    title="Informação"
+                    aria-label="Informação sobre CTO fora do limite"
+                    on:click={() => (showInfoForaLimite = !showInfoForaLimite)}
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                      <circle cx="12" cy="12" r="10" fill="#FF9800" stroke="#FF9800" stroke-width="1"/>
+                      <path d="M12 16V12" stroke="white" stroke-width="2" stroke-linecap="round"/>
+                      <circle cx="12" cy="8" r="1" fill="white"/>
+                    </svg>
+                  </button>
+                </div>
+                <p class="wb-fora-limite-text">
+                  Equipamento mais próximo é <strong>{foraLimiteInfo.nome}</strong> a
+                  <strong>{formatForaLimiteDistancia(foraLimiteInfo.distancia)}</strong>.
+                </p>
+              </div>
+            {/if}
           </div>
         {/if}
       </section>
     </div>
   </div>
 </div>
+
+{#if showInfoForaLimite}
+  <div
+    class="wb-modal-overlay"
+    role="button"
+    tabindex="-1"
+    aria-label="Fechar modal de informação"
+    on:click={() => (showInfoForaLimite = false)}
+    on:keydown={(e) => e.key === 'Escape' && (showInfoForaLimite = false)}
+  >
+    <div
+      class="wb-modal-content wb-fora-limite-modal"
+      role="dialog"
+      tabindex="0"
+      aria-modal="true"
+      aria-labelledby="wb-fora-limite-modal-title"
+      on:click|stopPropagation
+      on:keydown={(e) => e.key === 'Enter' && e.stopPropagation()}
+    >
+      <div class="wb-modal-header">
+        <h2 id="wb-fora-limite-modal-title">Informação</h2>
+        <button type="button" class="wb-modal-close" on:click={() => (showInfoForaLimite = false)} aria-label="Fechar">×</button>
+      </div>
+      <div class="wb-modal-body">
+        <p>
+          Nenhuma CTO foi encontrada dentro do limite padrão de 250 metros do endereço pesquisado.
+          O sistema realizou uma busca progressiva e encontrou a CTO mais próxima disponível,
+          que está além da metragem limite padrão para atendimento. A distância informada representa
+          a distância real calculada através de rotas.
+        </p>
+      </div>
+    </div>
+  </div>
+{/if}
 
 {#if showInfoModal}
   <div
@@ -2122,6 +2205,82 @@
     background: #fef2f2;
     color: #b91c1c;
     font-size: 0.68rem;
+    line-height: 1.3;
+  }
+
+  .wb-fora-limite-box {
+    margin-top: 0.15rem;
+    padding: 0.45rem 0.5rem;
+    background: linear-gradient(135deg, #ffe0b2 0%, #ffcc80 100%);
+    border: 1.5px solid #ff9800;
+    border-radius: 8px;
+    box-shadow: 0 2px 6px rgba(255, 152, 0, 0.18);
+  }
+
+  .wb-fora-limite-header {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    margin-bottom: 0.2rem;
+  }
+
+  .wb-fora-limite-icon {
+    font-size: 0.85rem;
+    line-height: 1;
+    flex-shrink: 0;
+  }
+
+  .wb-fora-limite-title {
+    flex: 1;
+    min-width: 0;
+    font-size: 0.72rem;
+    font-weight: 700;
+    color: #e65100;
+    line-height: 1.2;
+  }
+
+  .wb-fora-limite-info {
+    all: unset;
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    border-radius: 999px;
+    flex-shrink: 0;
+  }
+
+  .wb-fora-limite-info:focus-visible {
+    outline: 2px solid #ff9800;
+    outline-offset: 1px;
+  }
+
+  .wb-fora-limite-text {
+    margin: 0;
+    font-size: 0.66rem;
+    line-height: 1.35;
+    color: #e65100;
+  }
+
+  .wb-fora-limite-text strong {
+    color: #e65100;
+    font-weight: 700;
+  }
+
+  .wb-fora-limite-modal {
+    max-width: min(420px, calc(100vw - 2rem));
+  }
+
+  .wb-fora-limite-modal .wb-modal-body {
+    padding: 0.85rem 1rem 1rem;
+    font-size: 0.82rem;
+    line-height: 1.45;
+    color: #374151;
+  }
+
+  .wb-fora-limite-modal .wb-modal-body p {
+    margin: 0;
+  }
     font-weight: 600;
     line-height: 1.3;
   }
