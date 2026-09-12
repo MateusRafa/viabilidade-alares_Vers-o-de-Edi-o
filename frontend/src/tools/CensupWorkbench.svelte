@@ -67,10 +67,18 @@
 
   function onEquipamentosFromViabilidade(payload = {}) {
     const next = Array.isArray(payload.items) ? payload.items : [];
-    const prevKey = equipamentos.map((i) => i.ctoKey || i.nome).join('|');
-    const nextKey = next.map((i) => i.ctoKey || i.nome).join('|');
+    const signature = (list) =>
+      list
+        .map((i) => `${i.ctoKey || i.nome}:${i.visible !== false ? 1 : 0}:${i.n}`)
+        .join('|');
+    const prevKey = signature(equipamentos);
+    const nextKey = signature(next);
+    if (prevKey === nextKey) return;
+    const sameSet =
+      equipamentos.map((i) => i.ctoKey || i.nome).join('|') ===
+      next.map((i) => i.ctoKey || i.nome).join('|');
     equipamentos = next;
-    if (prevKey !== nextKey) clearEquipSelection();
+    if (!sameSet) clearEquipSelection();
   }
 
   // ——— Seleção / cópia da tabela Equipamentos (igual ao oficial, só cols Nº…POP) ———
@@ -79,7 +87,6 @@
   let equipSelectedRows = [];
   let equipSelectedColumns = [];
   let equipSelectionStart = null;
-  $: equipSelectionKey = `${equipSelectedCells.length}-${equipSelectedRows.length}-${equipSelectedColumns.length}-${equipSelectedColumns.join(',')}-${equipSelectedRows.join(',')}`;
   $: equipAllVisible =
     equipamentos.length > 0 && equipamentos.every((item) => item.visible !== false);
   $: equipSomeVisible =
@@ -87,15 +94,6 @@
 
   function equipCellKey(rowIndex, colIndex) {
     return `${rowIndex}-${colIndex}`;
-  }
-
-  function isEquipCellSelected(rowIndex, colIndex) {
-    void equipSelectionKey;
-    const cellKey = equipCellKey(rowIndex, colIndex);
-    if (equipSelectedCells.includes(cellKey)) return true;
-    if (equipSelectedRows.includes(rowIndex)) return true;
-    if (equipSelectedColumns.includes(colIndex)) return true;
-    return false;
   }
 
   function clearEquipSelection() {
@@ -1269,6 +1267,11 @@
                   </thead>
                   <tbody>
                     {#each equipamentos as item, rowIndex (item.ctoKey || item.n + '-' + item.nome)}
+                      {@const cellKey1 = `${rowIndex}-1`}
+                      {@const cellKey2 = `${rowIndex}-2`}
+                      {@const cellKey3 = `${rowIndex}-3`}
+                      {@const cellKey4 = `${rowIndex}-4`}
+                      {@const cellKey5 = `${rowIndex}-5`}
                       <tr class:row-selected={equipSelectedRows.includes(rowIndex)}>
                         <td class="wb-equip-check-col">
                           <input
@@ -1281,17 +1284,17 @@
                         </td>
                         <td
                           class="wb-equip-num-col"
-                          class:cell-selected={isEquipCellSelected(rowIndex, 1)}
+                          class:cell-selected={equipSelectedCells.includes(cellKey1) || equipSelectedRows.includes(rowIndex) || equipSelectedColumns.includes(1)}
                           title="Clique para selecionar a linha"
                           on:click={(e) => handleEquipCellClick(e, rowIndex, 1)}
                         >{item.n}</td>
                         <td
                           title={item.nome}
-                          class:cell-selected={isEquipCellSelected(rowIndex, 2)}
+                          class:cell-selected={equipSelectedCells.includes(cellKey2) || equipSelectedRows.includes(rowIndex) || equipSelectedColumns.includes(2)}
                           on:click={(e) => handleEquipCellClick(e, rowIndex, 2)}
                         >{item.nome}</td>
                         <td
-                          class:cell-selected={isEquipCellSelected(rowIndex, 3)}
+                          class:cell-selected={equipSelectedCells.includes(cellKey3) || equipSelectedRows.includes(rowIndex) || equipSelectedColumns.includes(3)}
                           on:click={(e) => handleEquipCellClick(e, rowIndex, 3)}
                         >
                           <span class="wb-status-badge" class:ativado={item.statusClass === 'ativado'} class:desativado={item.statusClass === 'desativado'}>
@@ -1299,11 +1302,11 @@
                           </span>
                         </td>
                         <td
-                          class:cell-selected={isEquipCellSelected(rowIndex, 4)}
+                          class:cell-selected={equipSelectedCells.includes(cellKey4) || equipSelectedRows.includes(rowIndex) || equipSelectedColumns.includes(4)}
                           on:click={(e) => handleEquipCellClick(e, rowIndex, 4)}
                         >{item.cidade}</td>
                         <td
-                          class:cell-selected={isEquipCellSelected(rowIndex, 5)}
+                          class:cell-selected={equipSelectedCells.includes(cellKey5) || equipSelectedRows.includes(rowIndex) || equipSelectedColumns.includes(5)}
                           on:click={(e) => handleEquipCellClick(e, rowIndex, 5)}
                         >{item.pop}</td>
                       </tr>
