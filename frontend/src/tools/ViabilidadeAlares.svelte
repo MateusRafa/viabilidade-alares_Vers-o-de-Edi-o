@@ -45,6 +45,11 @@
    */
   export let onEquipamentosChange = null;
   /**
+   * Workbench only: CTO mais próxima fora do limite de 250m.
+   * Payload: { active, nome, distancia } | { active: false }
+   */
+  export let onForaLimiteChange = null;
+  /**
    * Workbench only: mapa Google já inicializado (idle).
    */
   export let onMapReady = null;
@@ -1277,6 +1282,36 @@
     void ctosRua?.length;
     void ctoNumbersVersion;
     emitEquipamentosChange();
+  }
+
+  function emitForaLimiteChange() {
+    if (!workbenchMode || typeof onForaLimiteChange !== 'function') return;
+    try {
+      const cto = nearestCTOOutsideLimit;
+      const dist = cto
+        ? Number(cto.distancia_real || cto.distancia_metros || 0)
+        : 0;
+      const active = !!(cto && Number.isFinite(dist) && dist > 0);
+      onForaLimiteChange(
+        active
+          ? {
+              active: true,
+              nome: cto.nome || 'N/A',
+              distancia: dist
+            }
+          : { active: false }
+      );
+    } catch (err) {
+      console.warn('[Workbench] onForaLimiteChange:', err);
+    }
+  }
+
+  $: if (workbenchMode) {
+    void nearestCTOOutsideLimit;
+    void nearestCTOOutsideLimit?.nome;
+    void nearestCTOOutsideLimit?.distancia_real;
+    void nearestCTOOutsideLimit?.distancia_metros;
+    emitForaLimiteChange();
   }
 
   // Função para determinar a cor do marcador baseada na porcentagem de ocupação (pct_ocup)
