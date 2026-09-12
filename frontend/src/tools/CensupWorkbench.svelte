@@ -555,38 +555,46 @@
       chamado = await fetchPortalCensupChamadoById(usuario, id);
       fillFormFromChamado(chamado);
       loading = false;
-      statusMsg = form.coordenadas || pinCoords ? 'Posicionando mapa…' : 'Analisando tabulação…';
-      requestMapResize(40);
-      const locatePromise =
-        !pinCoords && (form.enderecoCompleto || '').trim()
-          ? localizarNoMapa().catch((err) => {
-              console.warn('[Workbench] Localizar:', err?.message || err);
-            })
-          : Promise.resolve();
+      statusMsg = form.coordenadas || pinCoords ? 'Posicionando mapa…' : 'Localizando endereço…';
+      requestMapResize(30);
 
-      try {
-        const analyzed = await analisarPortalCensupChamado(usuario, id, { force: false });
-        if (analyzed?.chamado) {
-          chamado = analyzed.chamado;
-          fillFormFromChamado(chamado);
-          requestMapResize(40);
+      // Posiciona na hora; tabulação em background (não bloqueia o mapa)
+      if (!pinCoords && (form.enderecoCompleto || '').trim()) {
+        void localizarNoMapa().catch((err) => {
+          console.warn('[Workbench] Localizar:', err?.message || err);
+        });
+      } else if (pinCoords) {
+        statusMsg = 'Endereço posicionado no mapa';
+      }
+
+      void (async () => {
+        try {
+          const analyzed = await analisarPortalCensupChamado(usuario, id, { force: false });
+          if (analyzed?.chamado) {
+            chamado = analyzed.chamado;
+            fillFormFromChamado(chamado);
+            requestMapResize(30);
+          }
+          if (!form.tabulacaoFinal && chamado?.tabulacaoFinal) {
+            form.tabulacaoFinal = chamado.tabulacaoFinal;
+          }
+          sugeridaOriginal =
+            chamado?.analiseIa?.tabulacaoSugerida ||
+            chamado?.tabulacaoFinal ||
+            sugeridaOriginal ||
+            '';
+          if (!form.tabulacaoFinal && sugeridaOriginal) {
+            form.tabulacaoFinal = sugeridaOriginal;
+          }
+          if (!statusMsg || /Posicionando|Localizando|Carregando/i.test(statusMsg)) {
+            statusMsg = 'Pronto para revisar';
+          }
+        } catch (analyzeErr) {
+          console.warn('[Workbench] Análise:', analyzeErr?.message || analyzeErr);
+          statusMsg = statusMsg || 'Pronto para revisar';
         }
-      } catch (analyzeErr) {
-        console.warn('[Workbench] Análise:', analyzeErr?.message || analyzeErr);
-      }
-      await locatePromise;
-      if (!form.tabulacaoFinal && chamado?.tabulacaoFinal) {
-        form.tabulacaoFinal = chamado.tabulacaoFinal;
-      }
-      sugeridaOriginal =
-        chamado?.analiseIa?.tabulacaoSugerida ||
-        chamado?.tabulacaoFinal ||
-        sugeridaOriginal ||
-        '';
-      if (!form.tabulacaoFinal && sugeridaOriginal) {
-        form.tabulacaoFinal = sugeridaOriginal;
-      }
-      statusMsg = 'Pronto para revisar';
+      })();
+
       postToParent('READY', { chamadoId: chamado.id, pedido: chamado.pedido });
     } catch (err) {
       error = err?.message || String(err);
