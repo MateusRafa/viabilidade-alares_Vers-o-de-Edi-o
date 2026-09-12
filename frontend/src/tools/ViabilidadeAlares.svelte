@@ -1222,7 +1222,7 @@
   function emitEquipamentosChange() {
     if (!workbenchMode || typeof onEquipamentosChange !== 'function') return;
     try {
-      const items = (ctosRua || []).map((cto, rowIndex) => {
+      const items = (ctosRua || []).map((cto) => {
         const statusCto = getStatusCTO(cto) || 'N/A';
         const statusUpper = String(statusCto).toUpperCase();
         let statusClass = '';
@@ -1232,7 +1232,8 @@
         return {
           ctoKey,
           visible: ctoVisibility.get(ctoKey) !== false,
-          n: ctoNumbers.get(cto) || rowIndex + 1,
+          // Igual à tabela oficial: desmarcado → "-" (só visíveis entram na numeração 1..N)
+          n: ctoNumbers.get(cto) || '-',
           nome: cto.nome || '',
           status: statusCto,
           statusClass,
