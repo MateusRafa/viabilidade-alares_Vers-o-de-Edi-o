@@ -66,7 +66,210 @@
   }
 
   function onEquipamentosFromViabilidade(payload = {}) {
-    equipamentos = Array.isArray(payload.items) ? payload.items : [];
+    const next = Array.isArray(payload.items) ? payload.items : [];
+    const prevKey = equipamentos.map((i) => i.ctoKey || i.nome).join('|');
+    const nextKey = next.map((i) => i.ctoKey || i.nome).join('|');
+    equipamentos = next;
+    if (prevKey !== nextKey) clearEquipSelection();
+  }
+
+  // ——— Seleção / cópia da tabela Equipamentos (igual ao oficial, só cols Nº…POP) ———
+  // Colunas: 0=checkbox, 1=Nº, 2=CTO, 3=Status, 4=Cidade, 5=POP
+  let equipSelectedCells = [];
+  let equipSelectedRows = [];
+  let equipSelectedColumns = [];
+  let equipSelectionStart = null;
+  $: equipSelectionKey = `${equipSelectedCells.length}-${equipSelectedRows.length}-${equipSelectedColumns.join(',')}`;
+  $: equipAllVisible =
+    equipamentos.length > 0 && equipamentos.every((item) => item.visible !== false);
+  $: equipSomeVisible =
+    equipamentos.some((item) => item.visible !== false) && !equipAllVisible;
+
+  function equipCellKey(rowIndex, colIndex) {
+    return `${rowIndex}-${colIndex}`;
+  }
+
+  function isEquipCellSelected(rowIndex, colIndex) {
+    void equipSelectionKey;
+    if (equipSelectedCells.includes(equipCellKey(rowIndex, colIndex))) return true;
+    if (equipSelectedRows.includes(rowIndex)) return true;
+    if (equipSelectedColumns.includes(colIndex)) return true;
+    return false;
+  }
+
+  function clearEquipSelection() {
+    equipSelectedCells = [];
+    equipSelectedRows = [];
+    equipSelectedColumns = [];
+    equipSelectionStart = null;
+  }
+
+  function getEquipCellValue(item, colIndex) {
+    switch (colIndex) {
+      case 1:
+        return String(item?.n ?? '');
+      case 2:
+        return String(item?.nome ?? '');
+      case 3:
+        return String(item?.status ?? '');
+      case 4:
+        return String(item?.cidade ?? '');
+      case 5:
+        return String(item?.pop ?? '');
+      default:
+        return '';
+    }
+  }
+
+  function handleEquipCellClick(event, rowIndex, colIndex) {
+    if (colIndex === 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const multi = event.ctrlKey || event.metaKey;
+    const range = event.shiftKey && equipSelectionStart;
+
+    if (range) {
+      const r0 = Math.min(equipSelectionStart.row, rowIndex);
+      const r1 = Math.max(equipSelectionStart.row, rowIndex);
+      const c0 = Math.min(equipSelectionStart.col, colIndex);
+      const c1 = Math.max(equipSelectionStart.col, colIndex);
+      const next = [];
+      for (let r = r0; r <= r1; r++) {
+        for (let c = Math.max(1, c0); c <= c1; c++) {
+          next.push(equipCellKey(r, c));
+        }
+      }
+      equipSelectedCells = multi ? [...new Set([...equipSelectedCells, ...next])] : next;
+      equipSelectedRows = [];
+      equipSelectedColumns = [];
+    } else if (multi) {
+      const key = equipCellKey(rowIndex, colIndex);
+      equipSelectedCells = equipSelectedCells.includes(key)
+        ? equipSelectedCells.filter((k) => k !== key)
+        : [...equipSelectedCells, key];
+      equipSelectedRows = [];
+      equipSelectedColumns = [];
+      equipSelectionStart = { row: rowIndex, col: colIndex };
+    } else {
+      equipSelectedCells = [equipCellKey(rowIndex, colIndex)];
+      equipSelectedRows = [];
+      equipSelectedColumns = [];
+      equipSelectionStart = { row: rowIndex, col: colIndex };
+    }
+  }
+
+  function handleEquipColumnHeaderClick(event, colIndex) {
+    if (colIndex === 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const multi = event.ctrlKey || event.metaKey;
+    if (multi) {
+      equipSelectedColumns = equipSelectedColumns.includes(colIndex)
+        ? equipSelectedColumns.filter((c) => c !== colIndex)
+        : [...equipSelectedColumns, colIndex];
+    } else {
+      equipSelectedColumns = [colIndex];
+    }
+    equipSelectedCells = [];
+    equipSelectedRows = [];
+    equipSelectionStart = null;
+  }
+
+  function preventEquipTextSelection(event) {
+    if (event.target?.closest?.('input, textarea, button')) return;
+    event.preventDefault();
+  }
+
+  async function copyEquipSelectionToClipboard() {
+    if (
+      !equipSelectedCells.length &&
+      !equipSelectedRows.length &&
+      !equipSelectedColumns.length
+    ) {
+      return;
+    }
+    const lines = [];
+    if (equipSelectedColumns.length) {
+      const cols = [...equipSelectedColumns].filter((c) => c >= 1).sort((a, b) => a - b);
+      for (let r = 0; r < equipamentos.length; r++) {
+        lines.push(cols.map((c) => getEquipCellValue(equipamentos[r], c)).join('\t'));
+      }
+    } else if (equipSelectedRows.length) {
+      const rows = [...equipSelectedRows].sort((a, b) => a - b);
+      for (const r of rows) {
+        const item = equipamentos[r];
+        if (!item) continue;
+        lines.push([1, 2, 3, 4, 5].map((c) => getEquipCellValue(item, c)).join('\t'));
+      }
+    } else {
+      const parsed = equipSelectedCells
+        .map((k) => {
+          const [r, c] = String(k).split('-').map(Number);
+          return { r, c };
+        })
+        .filter((x) => Number.isFinite(x.r) && Number.isFinite(x.c) && x.c >= 1);
+      const byRow = new Map();
+      for (const { r, c } of parsed) {
+        if (!byRow.has(r)) byRow.set(r, []);
+        byRow.get(r).push(c);
+      }
+      const rowKeys = [...byRow.keys()].sort((a, b) => a - b);
+      for (const r of rowKeys) {
+        const cols = [...new Set(byRow.get(r))].sort((a, b) => a - b);
+        lines.push(cols.map((c) => getEquipCellValue(equipamentos[r], c)).join('\t'));
+      }
+    }
+    const text = lines.join('\n').trim();
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.left = '-9999px';
+      document.body.appendChild(ta);
+      ta.select();
+      try {
+        document.execCommand('copy');
+      } catch {
+        /* ignore */
+      }
+      ta.remove();
+    }
+  }
+
+  function onEquipCopyKeydown(event) {
+    if (!(event.ctrlKey || event.metaKey) || String(event.key).toLowerCase() !== 'c') return;
+    const tag = event.target?.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || event.target?.isContentEditable) return;
+    if (
+      !equipSelectedCells.length &&
+      !equipSelectedRows.length &&
+      !equipSelectedColumns.length
+    ) {
+      return;
+    }
+    event.preventDefault();
+    copyEquipSelectionToClipboard();
+  }
+
+  async function toggleEquipVisible(item, checked) {
+    if (!item?.ctoKey || !viabilidadeRef) return;
+    try {
+      await viabilidadeRef.setWorkbenchCtoVisible?.(item.ctoKey, checked);
+    } catch (err) {
+      console.warn('[Workbench] toggle CTO:', err?.message || err);
+    }
+  }
+
+  async function toggleAllEquipVisible(checked) {
+    if (!viabilidadeRef) return;
+    try {
+      await viabilidadeRef.setAllWorkbenchCtosVisible?.(checked);
+    } catch (err) {
+      console.warn('[Workbench] toggle all CTO:', err?.message || err);
+    }
   }
 
   function clampEquipHeight(height, splitHeight) {
@@ -820,6 +1023,7 @@
     chamado = null;
     chamadoId = '';
     equipamentos = [];
+    clearEquipSelection();
     sugeridaOriginal = '';
     error = '';
     statusMsg = 'Aguardando chamado…';
@@ -858,6 +1062,7 @@
 
   onMount(async () => {
     window.addEventListener('message', onMessage);
+    window.addEventListener('keydown', onEquipCopyKeydown);
     // Equipamentos inicia minimizado — mapa ocupa o split desde o boot
     equipCollapsed = true;
     equipPaneHeightPx = EQUIP_HEADER_H;
@@ -905,6 +1110,7 @@
 
   onDestroy(() => {
     window.removeEventListener('message', onMessage);
+    window.removeEventListener('keydown', onEquipCopyKeydown);
     if (reanaliseTimer) clearTimeout(reanaliseTimer);
     endSplitDrag();
     if (splitResizeRaf) cancelAnimationFrame(splitResizeRaf);
@@ -939,29 +1145,83 @@
         {#if !equipCollapsed}
           <div class="wb-equip-body">
             {#if equipamentos.length > 0}
-              <div class="wb-equip-table-wrap">
+              <div
+                class="wb-equip-table-wrap"
+                on:mousedown={preventEquipTextSelection}
+                role="presentation"
+              >
                 <table class="wb-equip-table">
                   <thead>
                     <tr>
-                      <th>Nº</th>
-                      <th>CTO</th>
-                      <th>Status</th>
-                      <th>Cidade</th>
-                      <th>POP</th>
+                      <th class="wb-equip-check-col" title="Mostrar/ocultar no mapa">
+                        <input
+                          type="checkbox"
+                          checked={equipAllVisible}
+                          indeterminate={equipSomeVisible}
+                          aria-label="Marcar todos os equipamentos no mapa"
+                          on:change={(e) => toggleAllEquipVisible(e.currentTarget.checked)}
+                          on:click|stopPropagation
+                        />
+                      </th>
+                      <th
+                        class:selected={equipSelectedColumns.includes(1)}
+                        on:click={(e) => handleEquipColumnHeaderClick(e, 1)}
+                      >Nº</th>
+                      <th
+                        class:selected={equipSelectedColumns.includes(2)}
+                        on:click={(e) => handleEquipColumnHeaderClick(e, 2)}
+                      >CTO</th>
+                      <th
+                        class:selected={equipSelectedColumns.includes(3)}
+                        on:click={(e) => handleEquipColumnHeaderClick(e, 3)}
+                      >Status</th>
+                      <th
+                        class:selected={equipSelectedColumns.includes(4)}
+                        on:click={(e) => handleEquipColumnHeaderClick(e, 4)}
+                      >Cidade</th>
+                      <th
+                        class:selected={equipSelectedColumns.includes(5)}
+                        on:click={(e) => handleEquipColumnHeaderClick(e, 5)}
+                      >POP</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {#each equipamentos as item (item.n + '-' + item.nome)}
-                      <tr>
-                        <td>{item.n}</td>
-                        <td title={item.nome}>{item.nome}</td>
-                        <td>
+                    {#each equipamentos as item, rowIndex (item.ctoKey || item.n + '-' + item.nome)}
+                      <tr class:row-selected={equipSelectedRows.includes(rowIndex)}>
+                        <td class="wb-equip-check-col">
+                          <input
+                            type="checkbox"
+                            checked={item.visible !== false}
+                            aria-label={`Mostrar ${item.nome || 'equipamento'} no mapa`}
+                            on:change={(e) => toggleEquipVisible(item, e.currentTarget.checked)}
+                            on:click|stopPropagation
+                          />
+                        </td>
+                        <td
+                          class:cell-selected={isEquipCellSelected(rowIndex, 1)}
+                          on:click={(e) => handleEquipCellClick(e, rowIndex, 1)}
+                        >{item.n}</td>
+                        <td
+                          title={item.nome}
+                          class:cell-selected={isEquipCellSelected(rowIndex, 2)}
+                          on:click={(e) => handleEquipCellClick(e, rowIndex, 2)}
+                        >{item.nome}</td>
+                        <td
+                          class:cell-selected={isEquipCellSelected(rowIndex, 3)}
+                          on:click={(e) => handleEquipCellClick(e, rowIndex, 3)}
+                        >
                           <span class="wb-status-badge" class:ativado={item.statusClass === 'ativado'} class:desativado={item.statusClass === 'desativado'}>
                             {item.status}
                           </span>
                         </td>
-                        <td>{item.cidade}</td>
-                        <td>{item.pop}</td>
+                        <td
+                          class:cell-selected={isEquipCellSelected(rowIndex, 4)}
+                          on:click={(e) => handleEquipCellClick(e, rowIndex, 4)}
+                        >{item.cidade}</td>
+                        <td
+                          class:cell-selected={isEquipCellSelected(rowIndex, 5)}
+                          on:click={(e) => handleEquipCellClick(e, rowIndex, 5)}
+                        >{item.pop}</td>
                       </tr>
                     {/each}
                   </tbody>
@@ -1319,6 +1579,7 @@
     width: 100%;
     border-collapse: collapse;
     font-size: 0.68rem;
+    user-select: none;
   }
 
   .wb-equip-table th,
@@ -1330,6 +1591,7 @@
     max-width: 9rem;
     overflow: hidden;
     text-overflow: ellipsis;
+    cursor: cell;
   }
 
   .wb-equip-table th {
@@ -1339,10 +1601,42 @@
     color: #4b5563;
     font-weight: 700;
     z-index: 1;
+    cursor: pointer;
   }
 
-  .wb-equip-table td:nth-child(1),
-  .wb-equip-table th:nth-child(1) {
+  .wb-equip-table th.selected {
+    background: #dbeafe;
+    color: #1e40af;
+  }
+
+  .wb-equip-table td.cell-selected {
+    background: #dbeafe;
+    outline: 1px solid #93c5fd;
+    outline-offset: -1px;
+  }
+
+  .wb-equip-table tr.row-selected td {
+    background: #eff6ff;
+  }
+
+  .wb-equip-table .wb-equip-check-col {
+    width: 1.75rem;
+    max-width: 2rem;
+    text-align: center;
+    cursor: default;
+    overflow: visible;
+  }
+
+  .wb-equip-table .wb-equip-check-col input[type='checkbox'] {
+    width: 0.85rem;
+    height: 0.85rem;
+    margin: 0;
+    cursor: pointer;
+    accent-color: #7b68ee;
+  }
+
+  .wb-equip-table td:nth-child(2),
+  .wb-equip-table th:nth-child(2) {
     width: 2rem;
     max-width: 2.5rem;
   }
