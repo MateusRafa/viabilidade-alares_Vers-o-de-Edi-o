@@ -1284,26 +1284,67 @@
     emitEquipamentosChange();
   }
 
+  const FORA_LIMITE_METROS = 250;
+
+  function ctoRouteDistanceMeters(cto) {
+    if (!cto) return 0;
+    const raw = Number(cto.distancia_real ?? cto.distancia_metros ?? 0);
+    return Number.isFinite(raw) ? raw : 0;
+  }
+
+  /**
+   * CTO que dispara o box "Fora do Limite":
+   * a mais próxima (rua) com rota/distância acima de 250m —
+   * independente de estar dentro da área de cobertura.
+   */
+  function resolveForaLimiteCto() {
+    if (nearestCTOOutsideLimit) {
+      const d = ctoRouteDistanceMeters(nearestCTOOutsideLimit);
+      if (d > FORA_LIMITE_METROS) return nearestCTOOutsideLimit;
+    }
+
+    const flagged = [...(ctosRua || []), ...(ctos || [])].find((cto) => {
+      if (!cto || cto.is_condominio) return false;
+      if (!cto.is_out_of_limit) return false;
+      return ctoRouteDistanceMeters(cto) > FORA_LIMITE_METROS;
+    });
+    if (flagged) return flagged;
+
+    // Fallback: menor distância real entre CTOs de rua; se > 250m → fora do limite
+    const street = (ctosRua || []).filter((cto) => cto && !cto.is_condominio);
+    if (!street.length) return null;
+    const sorted = [...street].sort(
+      (a, b) => ctoRouteDistanceMeters(a) - ctoRouteDistanceMeters(b)
+    );
+    const nearest = sorted[0];
+    return ctoRouteDistanceMeters(nearest) > FORA_LIMITE_METROS ? nearest : null;
+  }
+
+  function buildForaLimitePayload() {
+    const cto = resolveForaLimiteCto();
+    const dist = ctoRouteDistanceMeters(cto);
+    if (!cto || !(dist > FORA_LIMITE_METROS)) {
+      return { active: false };
+    }
+    return {
+      active: true,
+      nome: cto.nome || 'N/A',
+      distancia: dist
+    };
+  }
+
   function emitForaLimiteChange() {
     if (!workbenchMode || typeof onForaLimiteChange !== 'function') return;
     try {
-      const cto = nearestCTOOutsideLimit;
-      const dist = cto
-        ? Number(cto.distancia_real || cto.distancia_metros || 0)
-        : 0;
-      const active = !!(cto && Number.isFinite(dist) && dist > 0);
-      onForaLimiteChange(
-        active
-          ? {
-              active: true,
-              nome: cto.nome || 'N/A',
-              distancia: dist
-            }
-          : { active: false }
-      );
+      onForaLimiteChange(buildForaLimitePayload());
     } catch (err) {
       console.warn('[Workbench] onForaLimiteChange:', err);
     }
+  }
+
+  /** Workbench: leitura síncrona do estado Fora do Limite (após busca). */
+  export function getWorkbenchForaLimiteInfo() {
+    return buildForaLimitePayload();
   }
 
   $: if (workbenchMode) {
@@ -1311,6 +1352,11 @@
     void nearestCTOOutsideLimit?.nome;
     void nearestCTOOutsideLimit?.distancia_real;
     void nearestCTOOutsideLimit?.distancia_metros;
+    void ctos;
+    void ctos?.length;
+    void ctosRua;
+    void ctosRua?.length;
+    void (ctosRua || []).map((c) => `${c?.nome}:${c?.is_out_of_limit}:${c?.distancia_real || c?.distancia_metros || 0}`).join('|');
     emitForaLimiteChange();
   }
 
@@ -1793,6 +1839,7 @@
     await tick();
     try {
       await searchClientLocation();
+      emitForaLimiteChange();
       if (map && google?.maps) {
         google.maps.event.trigger(map, 'resize');
       }
@@ -3293,18 +3340,13 @@
         const data = await response.json();
         
         if (!data.success || !data.ctos || data.ctos.length === 0) {
-          // Se não há CTOs mas há prédios, está OK - não precisa buscar mais
-          if (predios.length > 0) {
-            loadingCTOs = false;
-            return;
-          }
-          // Se não há CTOs dentro de 250m, continuar para buscar progressivamente (500m, 700m, 900m, 1200m)
-          // Não mostrar erro ainda - só mostrar se não encontrar até 1200m
+          // Sem CTOs no raio de 250m → seguir para busca progressiva
+          // (mesmo se houver prédios próximos — o box Fora do Limite depende disso)
           console.log(`⚠️ [Frontend] Nenhuma CTO retornada pela API dentro de 250m. Continuando busca progressiva...`);
         }
         
         // Filtrar apenas CTOs dentro de 250m
-        const validCTOs = data.ctos
+        const validCTOs = (data.success && Array.isArray(data.ctos) ? data.ctos : [])
           .filter(cto => cto.distancia_metros <= 250)
           .map(cto => ({
             ...cto,
@@ -3312,13 +3354,6 @@
           }));
         
         if (validCTOs.length === 0) {
-          // Se não há CTOs mas há prédios, está OK - não precisa buscar mais
-          if (predios.length > 0) {
-            loadingCTOs = false;
-            return;
-          }
-          // Se não há CTOs dentro de 250m, continuar para buscar progressivamente (500m, 700m, 900m, 1200m)
-          // Não mostrar erro ainda - só mostrar se não encontrar até 1200m
           console.log(`⚠️ [Frontend] Nenhuma CTO encontrada dentro de 250m. Continuando busca progressiva...`);
         }
         
@@ -3807,6 +3842,15 @@
       // GARANTIR que loadingCTOs seja sempre desativado, mesmo em caso de erro
       loadingCTOs = false;
       console.log(`✅ [Frontend] Loading desativado. Busca de CTOs finalizada.`);
+
+      // Workbench: notificar box "Fora do Limite" após a busca (não depender só do $:)
+      if (workbenchMode) {
+        try {
+          emitForaLimiteChange();
+        } catch {
+          /* ignore */
+        }
+      }
       
       // IMPORTANTE: Se searchCTOs foi chamado de searchClientLocation, garantir que loading também seja desativado
       // Isso evita que o botão fique travado em "Localizando.."
@@ -4984,11 +5028,17 @@
               distancia_km: nearestCTOOutsideLimit.distancia_km,
               distancia_real: nearestCTOOutsideLimit.distancia_real
             });
+            if (workbenchMode) emitForaLimiteChange();
           } else {
             console.log(`⚠️ CTO editada não corresponde à nearestCTOOutsideLimit. IDs: ${nearestId} vs ${updatedId}, Nomes: ${nearestNome} vs ${updatedNome}`);
           }
         } else {
           console.log(`⚠️ CTO editada está fora do limite mas nearestCTOOutsideLimit é null`);
+          // Workbench: ainda assim tenta emitir a partir da CTO marcada is_out_of_limit
+          if (workbenchMode) {
+            nearestCTOOutsideLimit = { ...updatedCTO };
+            emitForaLimiteChange();
+          }
         }
       }
       
@@ -6642,6 +6692,9 @@
 
     await tick();
     await searchClientLocation();
+    if (workbenchMode) {
+      emitForaLimiteChange();
+    }
     if (map && google?.maps) {
       try {
         google.maps.event.trigger(map, 'resize');
