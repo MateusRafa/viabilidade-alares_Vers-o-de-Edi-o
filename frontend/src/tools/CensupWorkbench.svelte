@@ -1689,6 +1689,18 @@
     color: #a78bfa;
   }
 
+  .workbench.theme-dark .wb-pane-toggle {
+    background: #1e293b;
+    border-color: #475569;
+    color: #cbd5e1;
+  }
+
+  .workbench.theme-dark .wb-pane-toggle:hover {
+    background: #334155;
+    border-color: #a78bfa;
+    color: #c4b5fd;
+  }
+
   .workbench.theme-dark .wb-equip-table th {
     background: #1e293b;
     color: #cbd5e1;
