@@ -6,6 +6,7 @@
     fetchTabulacoesList
   } from './portalCensupApi.js';
   import { getApiUrl } from '../config.js';
+  import { theme } from '../themeStore.js';
 
   // Import dinâmico — evita ciclo com registry/Config no bundle principal
   let ViabilidadeAlares = null;
@@ -13,6 +14,20 @@
 
   const MSG_SOURCE = 'censup-workbench';
   const PARENT_SOURCE = 'censup-extension';
+
+  $: isDarkUi = $theme === 'dark';
+
+  function applyUiTheme(next) {
+    const value = next === 'dark' ? 'dark' : 'light';
+    theme.set(value);
+    try {
+      document.documentElement.dataset.theme = value;
+      document.documentElement.classList.toggle('wb-theme-dark', value === 'dark');
+      document.body?.classList.toggle('wb-theme-dark', value === 'dark');
+    } catch {
+      /* ignore */
+    }
+  }
 
   let usuario = '';
   let chamadoId = '';
@@ -1176,7 +1191,14 @@
   function onMessage(event) {
     const data = event?.data;
     if (!data || data.source !== PARENT_SOURCE) return;
+    if (data.type === 'THEME') {
+      applyUiTheme(data.theme);
+      return;
+    }
     if (data.type === 'INIT' || data.type === 'LOAD') {
+      if (data.theme === 'dark' || data.theme === 'light') {
+        applyUiTheme(data.theme);
+      }
       applyInitPayload(data);
     }
     if (data.type === 'CLEAR' || data.type === 'RESET') {
@@ -1210,6 +1232,10 @@
 
     // Bootstrap via query (fallback sem postMessage)
     const params = new URLSearchParams(window.location.search);
+    const qTheme = params.get('theme');
+    if (qTheme === 'dark' || qTheme === 'light') {
+      applyUiTheme(qTheme);
+    }
     const qUser = params.get('usuario') || '';
     const qId = params.get('chamadoId') || params.get('id') || '';
     if (qUser || qId) {
@@ -1247,7 +1273,7 @@
   });
 </script>
 
-<div class="workbench">
+<div class="workbench" class:theme-dark={isDarkUi}>
   {#if error}
     <p class="wb-error" role="alert">{error}</p>
   {/if}
@@ -1628,6 +1654,56 @@
     background: #eef1f8;
     color: #1f2937;
     box-sizing: border-box;
+  }
+
+  .workbench.theme-dark {
+    background: #0b1220;
+    color: #e2e8f0;
+  }
+
+  .workbench.theme-dark .wb-equip-pane,
+  .workbench.theme-dark .wb-form-toolbar {
+    background: #111827;
+    border-color: #334155;
+  }
+
+  .workbench.theme-dark .wb-form-toolbar-title {
+    color: #a78bfa;
+  }
+
+  .workbench.theme-dark .wb-equip-table th {
+    background: #1e293b;
+    color: #cbd5e1;
+  }
+
+  .workbench.theme-dark .wb-equip-table td {
+    border-bottom-color: #334155;
+    border-right-color: #334155;
+    color: #e2e8f0;
+  }
+
+  .workbench.theme-dark .wb-map-search-box {
+    background: rgba(15, 23, 42, 0.96);
+    border-color: #334155;
+  }
+
+  .workbench.theme-dark .wb-map-search-label {
+    color: #a78bfa;
+  }
+
+  .workbench.theme-dark .wb-map-search-input {
+    background: #0f172a;
+    border-color: #475569;
+    color: #f1f5f9;
+  }
+
+  .workbench.theme-dark .wb-equip-empty {
+    color: #94a3b8;
+  }
+
+  .workbench.theme-dark .wb-modal-content {
+    background: #1e293b;
+    color: #e2e8f0;
   }
 
   .wb-error {
