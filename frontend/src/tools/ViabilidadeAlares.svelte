@@ -9434,6 +9434,17 @@
     box-sizing: border-box !important;
   }
 
+  .viabilidade-content.workbench-mode.theme-dark .map-container {
+    background: #121826 !important;
+    border-color: #3f4b63 !important;
+  }
+
+  .viabilidade-content.workbench-mode.theme-dark,
+  .viabilidade-content.workbench-mode.theme-dark .main-layout,
+  .viabilidade-content.workbench-mode.theme-dark .main-area {
+    background: #0b1220 !important;
+  }
+
   .viabilidade-content.workbench-mode .map-header {
     display: none !important;
   }
