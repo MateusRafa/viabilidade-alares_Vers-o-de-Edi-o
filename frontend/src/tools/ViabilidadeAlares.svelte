@@ -3374,20 +3374,27 @@
       // Função para criar conteúdo do InfoWindow
       async function createInfoWindowContent(lat, lng, isManual = false) {
         const address = await getAddressFromCoords(lat, lng);
+        // Cores explícitas: o InfoWindow do Google é fundo claro e herda
+        // a cor clara do tema escuro do portal (texto ficava ilegível).
+        const wrap =
+          'padding:8px;max-width:280px;color:#1f2937;font-family:Inter,system-ui,sans-serif;font-size:13px;line-height:1.45;';
+        const title = 'color:#111827;font-size:14px;';
+        const label = 'color:#374151;';
+        const muted = 'color:#6b7280;font-size:12px;';
 
-        let content = '<div style="padding: 8px;">';
-        content += '<strong>Localização do Cliente</strong><br><br>';
+        let content = `<div class="wb-client-iw" style="${wrap}">`;
+        content += `<strong style="${title}">Localização do Cliente</strong><br><br>`;
 
         if (address) {
-          content += `<strong>Endereço:</strong><br>${address}<br><br>`;
+          content += `<strong style="${label}">Endereço:</strong><br><span style="${label}">${address}</span><br><br>`;
         }
 
-        content += `<strong>Latitude/Longitude:</strong><br>${(lat || 0).toFixed(10)}, ${(lng || 0).toFixed(10)}<br><br>`;
+        content += `<strong style="${label}">Latitude/Longitude:</strong><br><span style="${label}">${(lat || 0).toFixed(10)}, ${(lng || 0).toFixed(10)}</span><br><br>`;
 
         if (isManual) {
-          content += '<small>Posição ajustada manualmente</small>';
+          content += `<small style="${muted}">Posição ajustada manualmente</small>`;
         } else {
-          content += '<small>Arraste para ajustar a posição</small>';
+          content += `<small style="${muted}">Arraste para ajustar a posição</small>`;
         }
 
         content += '</div>';
@@ -10137,6 +10144,28 @@
   .viabilidade-content.theme-dark {
     background: #0f1220;
     color: #e5e7eb;
+  }
+
+  /* InfoWindow do Google (fundo claro) — não herdar texto claro do tema escuro */
+  .viabilidade-content.theme-dark :global(.gm-style-iw),
+  .viabilidade-content.theme-dark :global(.gm-style-iw-c),
+  .viabilidade-content.theme-dark :global(.gm-style-iw-d) {
+    color: #1f2937 !important;
+  }
+
+  .viabilidade-content.theme-dark :global(.gm-style-iw-d),
+  .viabilidade-content.theme-dark :global(.gm-style-iw-c) {
+    background-color: #ffffff !important;
+  }
+
+  .viabilidade-content.theme-dark :global(.gm-style-iw-d *),
+  .viabilidade-content.theme-dark :global(.wb-client-iw),
+  .viabilidade-content.theme-dark :global(.wb-client-iw *) {
+    color: #1f2937 !important;
+  }
+
+  .viabilidade-content.theme-dark :global(.wb-client-iw small) {
+    color: #6b7280 !important;
   }
 
   .loading-fullscreen.theme-dark {
