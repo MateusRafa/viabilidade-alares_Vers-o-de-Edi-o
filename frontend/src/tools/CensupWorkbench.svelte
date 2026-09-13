@@ -86,7 +86,7 @@
 
   function onForaLimiteFromViabilidade(payload = {}) {
     if (!payload?.active) {
-      foraLimiteInfo = null;
+      if (foraLimiteInfo !== null) foraLimiteInfo = null;
       showInfoForaLimite = false;
       return;
     }
@@ -94,6 +94,18 @@
       nome: payload.nome || 'N/A',
       distancia: Number(payload.distancia) || 0
     };
+  }
+
+  function syncForaLimiteFromRef() {
+    try {
+      const info =
+        typeof viabilidadeRef?.getWorkbenchForaLimiteInfo === 'function'
+          ? viabilidadeRef.getWorkbenchForaLimiteInfo()
+          : null;
+      onForaLimiteFromViabilidade(info || { active: false });
+    } catch (err) {
+      console.warn('[Workbench] sync Fora do Limite:', err?.message || err);
+    }
   }
 
   function formatForaLimiteDistancia(metros) {
@@ -687,6 +699,11 @@
       } else if (typeof viabilidadeRef.syncWorkbenchAddressFromMap === 'function') {
         applyMapAddressToForm(await viabilidadeRef.syncWorkbenchAddressFromMap());
       }
+      await tick();
+      syncForaLimiteFromRef();
+      // Rotas podem atualizar a distância um pouco depois
+      setTimeout(() => syncForaLimiteFromRef(), 800);
+      setTimeout(() => syncForaLimiteFromRef(), 2000);
       statusMsg = 'Endereço localizado no mapa';
     } catch (err) {
       error = err?.message || String(err);
@@ -871,6 +888,8 @@
         });
       } else if (pinCoords) {
         statusMsg = 'Endereço posicionado no mapa';
+        setTimeout(() => syncForaLimiteFromRef(), 1200);
+        setTimeout(() => syncForaLimiteFromRef(), 3000);
       }
 
       void (async () => {
@@ -1205,6 +1224,10 @@
 
   function onMapReadyFromViabilidade() {
     postToParent('MAP_READY');
+    // Agenda → coords: a busca de CTOs roda no mapa; sincroniza o box depois
+    setTimeout(() => syncForaLimiteFromRef(), 600);
+    setTimeout(() => syncForaLimiteFromRef(), 1800);
+    setTimeout(() => syncForaLimiteFromRef(), 4000);
   }
 
   function onMapPreviewFromViabilidade(payload = {}) {
@@ -2153,7 +2176,7 @@
     position: absolute;
     top: 10px;
     right: 10px;
-    z-index: 8;
+    z-index: 25;
     width: min(280px, calc(100% - 20px));
     display: flex;
     flex-direction: column;
@@ -2165,6 +2188,9 @@
     box-shadow: 0 4px 14px rgba(15, 23, 42, 0.12);
     box-sizing: border-box;
     pointer-events: auto;
+    max-height: calc(100% - 20px);
+    overflow-x: hidden;
+    overflow-y: auto;
   }
 
   .wb-map-search-label {
