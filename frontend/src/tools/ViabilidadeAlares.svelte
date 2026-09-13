@@ -9493,6 +9493,20 @@
     background: #f5f3ff !important;
   }
 
+  .viabilidade-content.workbench-mode.theme-dark .results-table-container .minimize-button,
+  .viabilidade-content.workbench-mode.theme-dark .empty-state .minimize-button {
+    border-color: #475569 !important;
+    background: #1e293b !important;
+    color: #cbd5e1 !important;
+  }
+
+  .viabilidade-content.workbench-mode.theme-dark .results-table-container .minimize-button:hover,
+  .viabilidade-content.workbench-mode.theme-dark .empty-state .minimize-button:hover {
+    border-color: #a78bfa !important;
+    background: #334155 !important;
+    color: #c4b5fd !important;
+  }
+
   .viabilidade-content.workbench-mode .table-header {
     justify-content: space-between !important;
     align-items: center !important;
