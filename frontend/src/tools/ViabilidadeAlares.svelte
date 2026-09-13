@@ -8777,7 +8777,13 @@
 
         {#if workbenchMode && !isMapMinimized}
           <div class="wb-map-controls" aria-label="Controles do mapa">
-            <div class="wb-map-type" role="group" aria-label="Tipo de mapa">
+            <div
+              class="wb-map-type"
+              class:wb-map-type-hidden={wbStreetViewOpen}
+              role="group"
+              aria-label="Tipo de mapa"
+              aria-hidden={wbStreetViewOpen}
+            >
               <button
                 type="button"
                 class="wb-map-type-btn"
@@ -9874,6 +9880,15 @@
     background: rgba(255, 255, 255, 0.96);
     box-shadow: 0 2px 8px rgba(15, 23, 42, 0.14);
     pointer-events: auto;
+    transition: transform 0.22s ease, opacity 0.22s ease;
+    transform: translateY(0);
+    opacity: 1;
+  }
+
+  .viabilidade-content.workbench-mode .wb-map-type.wb-map-type-hidden {
+    transform: translateY(calc(-100% - 16px));
+    opacity: 0;
+    pointer-events: none;
   }
 
   .viabilidade-content.workbench-mode .wb-map-type-btn {
