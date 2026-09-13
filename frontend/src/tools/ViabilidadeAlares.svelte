@@ -62,6 +62,14 @@
 
   $: isDarkTheme = (embedded || workbenchMode) && $theme === 'dark';
 
+  /** Controles custom do mapa (workbench) — substituem os nativos do Google. */
+  let wbMapType = 'roadmap';
+  let wbStreetViewOpen = false;
+  let wbFullscreen = false;
+  let wbStreetViewMsg = '';
+  let wbStreetViewMsgTimer = null;
+  let wbMapControlsBound = false;
+
   // Estilo escuro nativo via JSON do Maps JavaScript API (sem Map ID)
   const GOOGLE_MAP_DARK_STYLES = [
     { elementType: 'geometry', stylers: [{ color: '#242f3e' }] },
@@ -100,6 +108,136 @@
 
   function getMapElement() {
     return typeof document !== 'undefined' ? document.getElementById(mapDomId) : null;
+  }
+
+  function getWorkbenchMapContainer() {
+    const mapEl = getMapElement();
+    return mapEl?.closest?.('.map-container') || null;
+  }
+
+  function flashWorkbenchStreetViewMsg(text) {
+    wbStreetViewMsg = text || '';
+    if (wbStreetViewMsgTimer) clearTimeout(wbStreetViewMsgTimer);
+    if (!text) return;
+    wbStreetViewMsgTimer = setTimeout(() => {
+      wbStreetViewMsg = '';
+      wbStreetViewMsgTimer = null;
+    }, 2200);
+  }
+
+  function setWorkbenchMapType(type) {
+    if (!map || !workbenchMode) return;
+    const next = type === 'satellite' ? 'satellite' : 'roadmap';
+    wbMapType = next;
+    try {
+      map.setMapTypeId(next);
+    } catch (err) {
+      console.warn('[Mapa] Falha ao trocar tipo:', err?.message || err);
+    }
+  }
+
+  function toggleWorkbenchStreetView() {
+    if (!map || !workbenchMode || !google?.maps) return;
+    const sv = map.getStreetView?.();
+    if (!sv) return;
+
+    if (sv.getVisible()) {
+      sv.setVisible(false);
+      wbStreetViewOpen = false;
+      flashWorkbenchStreetViewMsg('');
+      return;
+    }
+
+    const center = map.getCenter();
+    if (!center) return;
+
+    const service = new google.maps.StreetViewService();
+    service.getPanorama({ location: center, radius: 120 }, (data, status) => {
+      if (status === 'OK' && data?.location?.latLng) {
+        sv.setPosition(data.location.latLng);
+        sv.setPov({ heading: map.getHeading?.() || 0, pitch: 0 });
+        sv.setVisible(true);
+        wbStreetViewOpen = true;
+        flashWorkbenchStreetViewMsg('');
+      } else {
+        wbStreetViewOpen = false;
+        flashWorkbenchStreetViewMsg('Street View indisponível neste local');
+      }
+    });
+  }
+
+  async function toggleWorkbenchFullscreen() {
+    if (!workbenchMode) return;
+    const el = getWorkbenchMapContainer();
+    if (!el) return;
+    try {
+      if (!document.fullscreenElement) {
+        if (el.requestFullscreen) await el.requestFullscreen();
+        else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen();
+      } else if (document.exitFullscreen) {
+        await document.exitFullscreen();
+      } else if (document.webkitExitFullscreen) {
+        document.webkitExitFullscreen();
+      }
+    } catch (err) {
+      console.warn('[Mapa] Fullscreen:', err?.message || err);
+    }
+  }
+
+  function syncWorkbenchFullscreenState() {
+    if (!workbenchMode) return;
+    const el = getWorkbenchMapContainer();
+    wbFullscreen = !!(document.fullscreenElement && el && document.fullscreenElement === el);
+  }
+
+  function bindWorkbenchMapControls() {
+    if (!workbenchMode || !map || !google?.maps || wbMapControlsBound) return;
+    wbMapControlsBound = true;
+
+    try {
+      const typeId = map.getMapTypeId?.();
+      wbMapType = typeId === 'satellite' || typeId === 'hybrid' ? 'satellite' : 'roadmap';
+    } catch {
+      wbMapType = 'roadmap';
+    }
+
+    try {
+      google.maps.event.addListener(map, 'maptypeid_changed', () => {
+        const typeId = map.getMapTypeId?.();
+        wbMapType = typeId === 'satellite' || typeId === 'hybrid' ? 'satellite' : 'roadmap';
+      });
+    } catch {
+      // ignore
+    }
+
+    try {
+      const sv = map.getStreetView?.();
+      if (sv) {
+        wbStreetViewOpen = !!sv.getVisible?.();
+        google.maps.event.addListener(sv, 'visible_changed', () => {
+          wbStreetViewOpen = !!sv.getVisible?.();
+        });
+      }
+    } catch {
+      // ignore
+    }
+
+    if (typeof document !== 'undefined') {
+      document.addEventListener('fullscreenchange', syncWorkbenchFullscreenState);
+      document.addEventListener('webkitfullscreenchange', syncWorkbenchFullscreenState);
+    }
+  }
+
+  function unbindWorkbenchMapControls() {
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('fullscreenchange', syncWorkbenchFullscreenState);
+      document.removeEventListener('webkitfullscreenchange', syncWorkbenchFullscreenState);
+    }
+    if (wbStreetViewMsgTimer) {
+      clearTimeout(wbStreetViewMsgTimer);
+      wbStreetViewMsgTimer = null;
+    }
+    wbMapControlsBound = false;
   }
 
   // Helper para URL da API - usando função do config.js
@@ -2129,6 +2267,7 @@
       clearTimeout(workbenchPreviewTimer);
       workbenchPreviewTimer = null;
     }
+    unbindWorkbenchMapControls();
     cleanup();
   });
 
@@ -2458,9 +2597,11 @@
     map = new google.maps.Map(mapElement, {
       center: { lat: -23.5505, lng: -46.6333 }, // São Paulo como padrão
       zoom: 13,
-      mapTypeControl: true,
-      streetViewControl: true,
-      fullscreenControl: true,
+      // Workbench: controles nativos ocultos — UI própria abaixo
+      mapTypeControl: !workbenchMode,
+      streetViewControl: !workbenchMode,
+      fullscreenControl: !workbenchMode,
+      zoomControl: !workbenchMode,
       scrollwheel: true, // Permite zoom com scroll do mouse
       gestureHandling: 'greedy', // Permite zoom direto com scroll, sem precisar Ctrl
       styles: isDarkTheme ? GOOGLE_MAP_DARK_STYLES : []
@@ -2469,6 +2610,7 @@
     // Carregar mancha de cobertura após inicializar o mapa
     if (map) {
       applyGoogleMapTheme(isDarkTheme);
+      if (workbenchMode) bindWorkbenchMapControls();
       loadCoveragePolygon().then(loaded => {
         if (loaded && coveragePolygonGeoJSON) {
           drawCoverageArea();
@@ -8453,6 +8595,63 @@
           </button>
         </div>
         <div id={mapDomId} class="map" class:hidden={isMapMinimized}></div>
+
+        {#if workbenchMode && !isMapMinimized}
+          <div class="wb-map-controls" aria-label="Controles do mapa">
+            <div class="wb-map-type" role="group" aria-label="Tipo de mapa">
+              <button
+                type="button"
+                class="wb-map-type-btn"
+                class:active={wbMapType === 'roadmap'}
+                on:click={() => setWorkbenchMapType('roadmap')}
+              >Mapa</button>
+              <button
+                type="button"
+                class="wb-map-type-btn"
+                class:active={wbMapType === 'satellite'}
+                on:click={() => setWorkbenchMapType('satellite')}
+              >Satélite</button>
+            </div>
+
+            <div class="wb-map-tools">
+              <button
+                type="button"
+                class="wb-map-tool-btn"
+                class:active={wbStreetViewOpen}
+                on:click={toggleWorkbenchStreetView}
+                title={wbStreetViewOpen ? 'Fechar Street View' : 'Street View'}
+                aria-label={wbStreetViewOpen ? 'Fechar Street View' : 'Street View'}
+                aria-pressed={wbStreetViewOpen}
+              >
+                <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">
+                  <circle cx="12" cy="5.5" r="2.4" fill="currentColor"/>
+                  <path fill="currentColor" d="M9.2 9.2c.7-.5 1.6-.8 2.8-.8s2.1.3 2.8.8c.7.5 1.1 1.2 1.1 2v5.2h-1.7v5.6h-4.4V16.4H8.1V11.2c0-.8.4-1.5 1.1-2z"/>
+                </svg>
+              </button>
+              <button
+                type="button"
+                class="wb-map-tool-btn"
+                class:active={wbFullscreen}
+                on:click={toggleWorkbenchFullscreen}
+                title={wbFullscreen ? 'Sair da tela cheia' : 'Tela cheia'}
+                aria-label={wbFullscreen ? 'Sair da tela cheia' : 'Tela cheia'}
+                aria-pressed={wbFullscreen}
+              >
+                <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false">
+                  {#if wbFullscreen}
+                    <path fill="currentColor" d="M9 3H7v4H3v2h6V3zm8 0h-2v6h6V7h-4V3zM3 15v2h4v4h2v-6H3zm12 0v6h2v-4h4v-2h-6z"/>
+                  {:else}
+                    <path fill="currentColor" d="M3 3h6v2H5v4H3V3zm12 0h6v6h-2V5h-4V3zM3 15h2v4h4v2H3v-6zm16 0h2v6h-6v-2h4v-4z"/>
+                  {/if}
+                </svg>
+              </button>
+            </div>
+
+            {#if wbStreetViewMsg}
+              <div class="wb-map-toast" role="status">{wbStreetViewMsg}</div>
+            {/if}
+          </div>
+        {/if}
         
         <!-- Popup de informações da rota -->
         {#if selectedRouteIndex !== null && selectedRouteIndex < routes.length}
@@ -9459,6 +9658,151 @@
     min-height: 160px !important;
     height: 100% !important;
     border-radius: 10px !important;
+  }
+
+  /* Controles custom (Mapa / Satélite / Street View / tela cheia) */
+  .viabilidade-content.workbench-mode .wb-map-controls {
+    position: absolute;
+    inset: 0;
+    z-index: 20;
+    pointer-events: none;
+  }
+
+  .viabilidade-content.workbench-mode .wb-map-type {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    display: inline-flex;
+    align-items: stretch;
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    overflow: hidden;
+    background: rgba(255, 255, 255, 0.96);
+    box-shadow: 0 2px 8px rgba(15, 23, 42, 0.14);
+    pointer-events: auto;
+  }
+
+  .viabilidade-content.workbench-mode .wb-map-type-btn {
+    border: none;
+    background: transparent;
+    color: #374151;
+    font-size: 0.72rem;
+    font-weight: 700;
+    line-height: 1;
+    padding: 0.45rem 0.7rem;
+    cursor: pointer;
+    font-family: inherit;
+  }
+
+  .viabilidade-content.workbench-mode .wb-map-type-btn + .wb-map-type-btn {
+    border-left: 1px solid #e5e7eb;
+  }
+
+  .viabilidade-content.workbench-mode .wb-map-type-btn.active {
+    background: #7b68ee;
+    color: #ffffff;
+  }
+
+  .viabilidade-content.workbench-mode .wb-map-type-btn:hover:not(.active) {
+    background: #f5f3ff;
+    color: #5b4bd6;
+  }
+
+  .viabilidade-content.workbench-mode .wb-map-tools {
+    position: absolute;
+    right: 10px;
+    bottom: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    pointer-events: auto;
+  }
+
+  .viabilidade-content.workbench-mode .wb-map-tool-btn {
+    width: 36px;
+    height: 36px;
+    border: 1px solid #d1d5db;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.96);
+    color: #374151;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    box-shadow: 0 2px 8px rgba(15, 23, 42, 0.14);
+    padding: 0;
+  }
+
+  .viabilidade-content.workbench-mode .wb-map-tool-btn:hover {
+    border-color: #a78bfa;
+    color: #7b68ee;
+    background: #f5f3ff;
+  }
+
+  .viabilidade-content.workbench-mode .wb-map-tool-btn.active {
+    background: #7b68ee;
+    border-color: #7b68ee;
+    color: #ffffff;
+  }
+
+  .viabilidade-content.workbench-mode .wb-map-toast {
+    position: absolute;
+    left: 50%;
+    bottom: 14px;
+    transform: translateX(-50%);
+    max-width: calc(100% - 24px);
+    padding: 0.4rem 0.7rem;
+    border-radius: 8px;
+    background: rgba(15, 23, 42, 0.9);
+    color: #f8fafc;
+    font-size: 0.72rem;
+    font-weight: 600;
+    line-height: 1.3;
+    pointer-events: none;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+  }
+
+  .viabilidade-content.workbench-mode.theme-dark .wb-map-type {
+    background: rgba(30, 41, 59, 0.96);
+    border-color: #475569;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+  }
+
+  .viabilidade-content.workbench-mode.theme-dark .wb-map-type-btn {
+    color: #e2e8f0;
+  }
+
+  .viabilidade-content.workbench-mode.theme-dark .wb-map-type-btn + .wb-map-type-btn {
+    border-left-color: #475569;
+  }
+
+  .viabilidade-content.workbench-mode.theme-dark .wb-map-type-btn.active {
+    background: #7b68ee;
+    color: #ffffff;
+  }
+
+  .viabilidade-content.workbench-mode.theme-dark .wb-map-type-btn:hover:not(.active) {
+    background: #334155;
+    color: #c4b5fd;
+  }
+
+  .viabilidade-content.workbench-mode.theme-dark .wb-map-tool-btn {
+    background: rgba(30, 41, 59, 0.96);
+    border-color: #475569;
+    color: #e2e8f0;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+  }
+
+  .viabilidade-content.workbench-mode.theme-dark .wb-map-tool-btn:hover {
+    background: #334155;
+    border-color: #a78bfa;
+    color: #c4b5fd;
+  }
+
+  .viabilidade-content.workbench-mode.theme-dark .wb-map-tool-btn.active {
+    background: #7b68ee;
+    border-color: #7b68ee;
+    color: #ffffff;
   }
 
   .viabilidade-content.workbench-mode .map-container .minimize-button,
