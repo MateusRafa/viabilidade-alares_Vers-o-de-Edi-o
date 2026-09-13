@@ -2307,9 +2307,6 @@
   .wb-fora-limite-modal .wb-modal-body p {
     margin: 0;
   }
-    font-weight: 600;
-    line-height: 1.3;
-  }
 
   .wb-map-btn {
     flex: 1 1 0;
