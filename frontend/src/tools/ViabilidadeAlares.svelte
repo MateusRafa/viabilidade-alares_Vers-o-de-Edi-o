@@ -69,6 +69,13 @@
   let wbStreetViewMsg = '';
   let wbStreetViewMsgTimer = null;
   let wbMapControlsBound = false;
+  let wbPegmanDragging = false;
+  let wbPegmanJustDragged = false;
+  let wbPegmanGhostX = 0;
+  let wbPegmanGhostY = 0;
+  let wbStreetViewCoverage = null;
+  let wbPixelOverlay = null;
+  let wbPegmanPointerId = null;
 
   // Estilo escuro nativo via JSON do Maps JavaScript API (sem Map ID)
   const GOOGLE_MAP_DARK_STYLES = [
@@ -95,7 +102,10 @@
   function applyGoogleMapTheme(dark) {
     if (!map) return;
     try {
-      map.setOptions({ styles: dark ? GOOGLE_MAP_DARK_STYLES : [] });
+      const typeId = map.getMapTypeId?.();
+      // Hybrid/satellite: estilos JSON escondem ou atrapalham labels de lojas/cidades
+      const imagery = typeId === 'hybrid' || typeId === 'satellite';
+      map.setOptions({ styles: dark && !imagery ? GOOGLE_MAP_DARK_STYLES : [] });
     } catch (err) {
       console.warn('[Mapa] Falha ao aplicar tema:', err?.message || err);
     }
@@ -125,34 +135,57 @@
     }, 2200);
   }
 
-  function setWorkbenchMapType(type) {
-    if (!map || !workbenchMode) return;
-    const next = type === 'satellite' ? 'satellite' : 'roadmap';
-    wbMapType = next;
+  function ensureWbPixelOverlay() {
+    if (!map || !google?.maps) return null;
+    if (wbPixelOverlay) return wbPixelOverlay;
+    wbPixelOverlay = new google.maps.OverlayView();
+    wbPixelOverlay.onAdd = function onAdd() {};
+    wbPixelOverlay.draw = function draw() {};
+    wbPixelOverlay.onRemove = function onRemove() {};
+    wbPixelOverlay.setMap(map);
+    return wbPixelOverlay;
+  }
+
+  function clientPointToLatLng(clientX, clientY) {
+    if (!map || !google?.maps) return null;
+    const mapDiv = map.getDiv?.();
+    if (!mapDiv) return null;
+    const rect = mapDiv.getBoundingClientRect();
+    const x = clientX - rect.left;
+    const y = clientY - rect.top;
+    if (x < 0 || y < 0 || x > rect.width || y > rect.height) return null;
+    const overlay = ensureWbPixelOverlay();
+    const proj = overlay?.getProjection?.();
+    if (!proj) return null;
     try {
-      map.setMapTypeId(next);
-    } catch (err) {
-      console.warn('[Mapa] Falha ao trocar tipo:', err?.message || err);
+      return proj.fromContainerPixelToLatLng(new google.maps.Point(x, y));
+    } catch {
+      return null;
     }
   }
 
-  function toggleWorkbenchStreetView() {
-    if (!map || !workbenchMode || !google?.maps) return;
+  function setStreetViewCoverageVisible(visible) {
+    if (!map || !google?.maps) return;
+    try {
+      if (visible) {
+        if (!wbStreetViewCoverage) {
+          wbStreetViewCoverage = new google.maps.StreetViewCoverageLayer();
+        }
+        wbStreetViewCoverage.setMap(map);
+      } else if (wbStreetViewCoverage) {
+        wbStreetViewCoverage.setMap(null);
+      }
+    } catch (err) {
+      console.warn('[Mapa] Coverage layer:', err?.message || err);
+    }
+  }
+
+  function openStreetViewAt(latLng) {
+    if (!map || !google?.maps || !latLng) return;
     const sv = map.getStreetView?.();
     if (!sv) return;
-
-    if (sv.getVisible()) {
-      sv.setVisible(false);
-      wbStreetViewOpen = false;
-      flashWorkbenchStreetViewMsg('');
-      return;
-    }
-
-    const center = map.getCenter();
-    if (!center) return;
-
     const service = new google.maps.StreetViewService();
-    service.getPanorama({ location: center, radius: 120 }, (data, status) => {
+    service.getPanorama({ location: latLng, radius: 80 }, (data, status) => {
       if (status === 'OK' && data?.location?.latLng) {
         sv.setPosition(data.location.latLng);
         sv.setPov({ heading: map.getHeading?.() || 0, pitch: 0 });
@@ -164,6 +197,135 @@
         flashWorkbenchStreetViewMsg('Street View indisponível neste local');
       }
     });
+  }
+
+  function closeWorkbenchStreetView() {
+    if (!map) return;
+    const sv = map.getStreetView?.();
+    if (!sv) return;
+    sv.setVisible(false);
+    wbStreetViewOpen = false;
+    flashWorkbenchStreetViewMsg('');
+  }
+
+  function onPegmanPointerMove(event) {
+    if (!wbPegmanDragging) return;
+    wbPegmanGhostX = event.clientX;
+    wbPegmanGhostY = event.clientY;
+  }
+
+  function endPegmanDrag(event) {
+    if (!wbPegmanDragging) return;
+    const clientX = event?.clientX ?? wbPegmanGhostX;
+    const clientY = event?.clientY ?? wbPegmanGhostY;
+
+    wbPegmanDragging = false;
+    wbPegmanPointerId = null;
+    wbPegmanJustDragged = true;
+    setStreetViewCoverageVisible(false);
+    try {
+      map?.setOptions?.({ draggable: true, gestureHandling: 'greedy' });
+    } catch {
+      // ignore
+    }
+
+    window.removeEventListener('pointermove', onPegmanPointerMove, true);
+    window.removeEventListener('pointerup', endPegmanDrag, true);
+    window.removeEventListener('pointercancel', cancelPegmanDrag, true);
+
+    const mapDiv = map?.getDiv?.();
+    const rect = mapDiv?.getBoundingClientRect?.();
+    const overMap =
+      rect &&
+      clientX >= rect.left &&
+      clientX <= rect.right &&
+      clientY >= rect.top &&
+      clientY <= rect.bottom;
+
+    if (!overMap) {
+      flashWorkbenchStreetViewMsg('Solte o boneco sobre uma rua azul');
+      setTimeout(() => {
+        wbPegmanJustDragged = false;
+      }, 0);
+      return;
+    }
+
+    const latLng = clientPointToLatLng(clientX, clientY);
+    if (latLng) openStreetViewAt(latLng);
+    else flashWorkbenchStreetViewMsg('Street View indisponível neste local');
+
+    setTimeout(() => {
+      wbPegmanJustDragged = false;
+    }, 0);
+  }
+
+  function cancelPegmanDrag() {
+    if (!wbPegmanDragging) return;
+    wbPegmanDragging = false;
+    wbPegmanPointerId = null;
+    setStreetViewCoverageVisible(false);
+    try {
+      map?.setOptions?.({ draggable: true, gestureHandling: 'greedy' });
+    } catch {
+      // ignore
+    }
+    window.removeEventListener('pointermove', onPegmanPointerMove, true);
+    window.removeEventListener('pointerup', endPegmanDrag, true);
+    window.removeEventListener('pointercancel', cancelPegmanDrag, true);
+  }
+
+  function startPegmanDrag(event) {
+    if (!map || !workbenchMode || !google?.maps) return;
+    if (event.button != null && event.button !== 0) return;
+    if (wbStreetViewOpen) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    ensureWbPixelOverlay();
+    wbPegmanDragging = true;
+    wbPegmanJustDragged = false;
+    wbPegmanPointerId = event.pointerId ?? null;
+    wbPegmanGhostX = event.clientX;
+    wbPegmanGhostY = event.clientY;
+    setStreetViewCoverageVisible(true);
+    try {
+      map.setOptions({ draggable: false, gestureHandling: 'none' });
+    } catch {
+      // ignore
+    }
+
+    try {
+      event.currentTarget?.setPointerCapture?.(event.pointerId);
+    } catch {
+      // ignore
+    }
+
+    window.addEventListener('pointermove', onPegmanPointerMove, true);
+    window.addEventListener('pointerup', endPegmanDrag, true);
+    window.addEventListener('pointercancel', cancelPegmanDrag, true);
+  }
+
+  function handlePegmanClick() {
+    if (wbPegmanJustDragged) {
+      wbPegmanJustDragged = false;
+      return;
+    }
+    if (wbStreetViewOpen) closeWorkbenchStreetView();
+  }
+
+  function setWorkbenchMapType(type) {
+    if (!map || !workbenchMode) return;
+    // UI "Satélite" usa hybrid para manter nomes de cidade/lojas/POIs
+    const nextUi = type === 'satellite' ? 'satellite' : 'roadmap';
+    const nextId = type === 'satellite' ? 'hybrid' : 'roadmap';
+    wbMapType = nextUi;
+    try {
+      map.setMapTypeId(nextId);
+      applyGoogleMapTheme(isDarkTheme);
+    } catch (err) {
+      console.warn('[Mapa] Falha ao trocar tipo:', err?.message || err);
+    }
   }
 
   async function toggleWorkbenchFullscreen() {
@@ -193,6 +355,7 @@
   function bindWorkbenchMapControls() {
     if (!workbenchMode || !map || !google?.maps || wbMapControlsBound) return;
     wbMapControlsBound = true;
+    ensureWbPixelOverlay();
 
     try {
       const typeId = map.getMapTypeId?.();
@@ -205,6 +368,7 @@
       google.maps.event.addListener(map, 'maptypeid_changed', () => {
         const typeId = map.getMapTypeId?.();
         wbMapType = typeId === 'satellite' || typeId === 'hybrid' ? 'satellite' : 'roadmap';
+        applyGoogleMapTheme(isDarkTheme);
       });
     } catch {
       // ignore
@@ -229,6 +393,16 @@
   }
 
   function unbindWorkbenchMapControls() {
+    cancelPegmanDrag();
+    setStreetViewCoverageVisible(false);
+    if (wbPixelOverlay) {
+      try {
+        wbPixelOverlay.setMap(null);
+      } catch {
+        // ignore
+      }
+      wbPixelOverlay = null;
+    }
     if (typeof document !== 'undefined') {
       document.removeEventListener('fullscreenchange', syncWorkbenchFullscreenState);
       document.removeEventListener('webkitfullscreenchange', syncWorkbenchFullscreenState);
@@ -8530,7 +8704,12 @@
     <!-- Área Principal (Mapa e Lista) -->
     <main class="main-area">
       <!-- Mapa -->
-      <div class="map-container" class:minimized={isMapMinimized} style={mapContainerStyle}>
+      <div
+        class="map-container"
+        class:minimized={isMapMinimized}
+        class:wb-pegman-drag-active={workbenchMode && wbPegmanDragging}
+        style={mapContainerStyle}
+      >
         <div class="map-header">
           <h3>Mapa</h3>
           <button 
@@ -8616,16 +8795,18 @@
             <div class="wb-map-tools">
               <button
                 type="button"
-                class="wb-map-tool-btn"
+                class="wb-map-tool-btn wb-pegman-btn"
                 class:active={wbStreetViewOpen}
-                on:click={toggleWorkbenchStreetView}
-                title={wbStreetViewOpen ? 'Fechar Street View' : 'Street View'}
-                aria-label={wbStreetViewOpen ? 'Fechar Street View' : 'Street View'}
+                class:dragging={wbPegmanDragging}
+                on:pointerdown={startPegmanDrag}
+                on:click={handlePegmanClick}
+                title={wbStreetViewOpen ? 'Fechar Street View' : 'Arraste o boneco para uma rua azul'}
+                aria-label={wbStreetViewOpen ? 'Fechar Street View' : 'Arrastar Street View'}
                 aria-pressed={wbStreetViewOpen}
               >
                 <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">
-                  <circle cx="12" cy="5.5" r="2.4" fill="currentColor"/>
-                  <path fill="currentColor" d="M9.2 9.2c.7-.5 1.6-.8 2.8-.8s2.1.3 2.8.8c.7.5 1.1 1.2 1.1 2v5.2h-1.7v5.6h-4.4V16.4H8.1V11.2c0-.8.4-1.5 1.1-2z"/>
+                  <circle cx="12" cy="5.5" r="2.4" fill="#fbbc04"/>
+                  <path fill="#4285f4" d="M9.2 9.2c.7-.5 1.6-.8 2.8-.8s2.1.3 2.8.8c.7.5 1.1 1.2 1.1 2v5.2h-1.7v5.6h-4.4V16.4H8.1V11.2c0-.8.4-1.5 1.1-2z"/>
                 </svg>
               </button>
               <button
@@ -8646,6 +8827,19 @@
                 </svg>
               </button>
             </div>
+
+            {#if wbPegmanDragging}
+              <div
+                class="wb-pegman-ghost"
+                style="left: {wbPegmanGhostX}px; top: {wbPegmanGhostY}px;"
+                aria-hidden="true"
+              >
+                <svg viewBox="0 0 24 40" width="28" height="40" focusable="false">
+                  <circle cx="12" cy="7" r="5" fill="#fbbc04" stroke="#f9ab00" stroke-width="1"/>
+                  <path fill="#4285f4" d="M6.5 14c1.2-.9 2.8-1.4 5.5-1.4s4.3.5 5.5 1.4c1.2.9 1.8 2.1 1.8 3.4V27h-3.2v9.5h-8.2V27H4.7V17.4c0-1.3.6-2.5 1.8-3.4z"/>
+                </svg>
+              </div>
+            {/if}
 
             {#if wbStreetViewMsg}
               <div class="wb-map-toast" role="status">{wbStreetViewMsg}</div>
@@ -9743,6 +9937,31 @@
     background: #7b68ee;
     border-color: #7b68ee;
     color: #ffffff;
+  }
+
+  .viabilidade-content.workbench-mode .wb-pegman-btn {
+    cursor: grab;
+    touch-action: none;
+    user-select: none;
+  }
+
+  .viabilidade-content.workbench-mode .wb-pegman-btn:active,
+  .viabilidade-content.workbench-mode .wb-pegman-btn.dragging {
+    cursor: grabbing;
+    opacity: 0.45;
+  }
+
+  .viabilidade-content.workbench-mode .wb-pegman-ghost {
+    position: fixed;
+    z-index: 2147483646;
+    pointer-events: none;
+    transform: translate(-50%, -88%);
+    filter: drop-shadow(0 3px 6px rgba(0, 0, 0, 0.45));
+  }
+
+  .viabilidade-content.workbench-mode .map-container.wb-pegman-drag-active,
+  .viabilidade-content.workbench-mode .map-container.wb-pegman-drag-active .map {
+    cursor: grabbing !important;
   }
 
   .viabilidade-content.workbench-mode .wb-map-toast {
