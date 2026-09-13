@@ -1661,6 +1661,24 @@
     color: #e2e8f0;
   }
 
+  .workbench.theme-dark .wb-body,
+  .workbench.theme-dark .wb-split,
+  .workbench.theme-dark .wb-map-pane,
+  .workbench.theme-dark .wb-map-host {
+    background: #0b1220;
+  }
+
+  .workbench.theme-dark .wb-map-placeholder {
+    background: #121826;
+    border-color: #3f4b63;
+    color: #94a3b8;
+  }
+
+  .workbench.theme-dark .wb-split-handle:hover::after,
+  .workbench.theme-dark .wb-split-handle.dragging::after {
+    background: rgba(123, 104, 238, 0.45);
+  }
+
   .workbench.theme-dark .wb-equip-pane,
   .workbench.theme-dark .wb-form-toolbar {
     background: #111827;
@@ -1704,6 +1722,11 @@
   .workbench.theme-dark .wb-modal-content {
     background: #1e293b;
     color: #e2e8f0;
+  }
+
+  .workbench.theme-dark .wb-map-host :global(.viabilidade-content.workbench-mode .map-container) {
+    background: #121826 !important;
+    border-color: #3f4b63 !important;
   }
 
   .wb-error {
