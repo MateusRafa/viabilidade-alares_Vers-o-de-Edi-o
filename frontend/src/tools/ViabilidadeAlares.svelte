@@ -60,7 +60,43 @@
   let workbenchPreviewTimer = null;
   let workbenchPreviewToken = 0;
 
-  $: isDarkTheme = embedded && $theme === 'dark';
+  $: isDarkTheme = (embedded || workbenchMode) && $theme === 'dark';
+
+  // Estilo escuro nativo via JSON do Maps JavaScript API (sem Map ID)
+  const GOOGLE_MAP_DARK_STYLES = [
+    { elementType: 'geometry', stylers: [{ color: '#242f3e' }] },
+    { elementType: 'labels.text.stroke', stylers: [{ color: '#242f3e' }] },
+    { elementType: 'labels.text.fill', stylers: [{ color: '#746855' }] },
+    { featureType: 'administrative.locality', elementType: 'labels.text.fill', stylers: [{ color: '#d59563' }] },
+    { featureType: 'poi', elementType: 'labels.text.fill', stylers: [{ color: '#d59563' }] },
+    { featureType: 'poi.park', elementType: 'geometry', stylers: [{ color: '#263c3f' }] },
+    { featureType: 'poi.park', elementType: 'labels.text.fill', stylers: [{ color: '#6b9a76' }] },
+    { featureType: 'road', elementType: 'geometry', stylers: [{ color: '#38414e' }] },
+    { featureType: 'road', elementType: 'geometry.stroke', stylers: [{ color: '#212a37' }] },
+    { featureType: 'road', elementType: 'labels.text.fill', stylers: [{ color: '#9ca5b3' }] },
+    { featureType: 'road.highway', elementType: 'geometry', stylers: [{ color: '#746855' }] },
+    { featureType: 'road.highway', elementType: 'geometry.stroke', stylers: [{ color: '#1f2835' }] },
+    { featureType: 'road.highway', elementType: 'labels.text.fill', stylers: [{ color: '#f3d19c' }] },
+    { featureType: 'transit', elementType: 'geometry', stylers: [{ color: '#2f3948' }] },
+    { featureType: 'transit.station', elementType: 'labels.text.fill', stylers: [{ color: '#d59563' }] },
+    { featureType: 'water', elementType: 'geometry', stylers: [{ color: '#17263c' }] },
+    { featureType: 'water', elementType: 'labels.text.fill', stylers: [{ color: '#515c6d' }] },
+    { featureType: 'water', elementType: 'labels.text.stroke', stylers: [{ color: '#17263c' }] }
+  ];
+
+  function applyGoogleMapTheme(dark) {
+    if (!map) return;
+    try {
+      map.setOptions({ styles: dark ? GOOGLE_MAP_DARK_STYLES : [] });
+    } catch (err) {
+      console.warn('[Mapa] Falha ao aplicar tema:', err?.message || err);
+    }
+  }
+
+  $: if (map && googleMapsLoaded) {
+    void isDarkTheme;
+    applyGoogleMapTheme(isDarkTheme);
+  }
 
   function getMapElement() {
     return typeof document !== 'undefined' ? document.getElementById(mapDomId) : null;
@@ -2426,11 +2462,13 @@
       streetViewControl: true,
       fullscreenControl: true,
       scrollwheel: true, // Permite zoom com scroll do mouse
-      gestureHandling: 'greedy' // Permite zoom direto com scroll, sem precisar Ctrl
+      gestureHandling: 'greedy', // Permite zoom direto com scroll, sem precisar Ctrl
+      styles: isDarkTheme ? GOOGLE_MAP_DARK_STYLES : []
     });
     
     // Carregar mancha de cobertura após inicializar o mapa
     if (map) {
+      applyGoogleMapTheme(isDarkTheme);
       loadCoveragePolygon().then(loaded => {
         if (loaded && coveragePolygonGeoJSON) {
           drawCoverageArea();
