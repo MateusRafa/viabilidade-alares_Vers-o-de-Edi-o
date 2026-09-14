@@ -7085,6 +7085,9 @@
     if (!workbenchMode) {
       throw new Error('generateWorkbenchReport só está disponível no Workbench');
     }
+    if (generatingPDF) {
+      throw new Error('Já existe um relatório sendo gerado. Aguarde.');
+    }
     if (!map || !clientCoords) {
       throw new Error('Aguarde o mapa localizar o endereço do chamado.');
     }
@@ -7302,6 +7305,9 @@
   }
 
   async function exportToPDF() {
+    if (generatingPDF) {
+      return;
+    }
     if (!validateReportForm()) {
         return;
       }
