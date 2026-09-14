@@ -5364,10 +5364,13 @@ app.post('/api/cluster/switch', requireAdmin, async (req, res) => {
     res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
     res.setHeader('Cache-Control', 'no-cache, no-transform');
     res.setHeader('X-Accel-Buffering', 'no');
+    res.setHeader('Connection', 'keep-alive');
     if (typeof res.flushHeaders === 'function') res.flushHeaders();
 
     const ac = new AbortController();
     const onClose = () => {
+      // Não cancelar quando a resposta já terminou (close dispara também no sucesso)
+      if (res.writableEnded || res.writableFinished) return;
       if (!ac.signal.aborted) {
         console.warn('⚠️ [Cluster] Cliente encerrou conexão — cancelando switch');
         ac.abort();
@@ -5385,21 +5388,48 @@ app.post('/api/cluster/switch', requireAdmin, async (req, res) => {
       message: `Preparando cópia ${sourceLabel} → ${targetLabel}…`
     });
 
-    const result = await mirrorClusterTables({
-      direction,
-      signal: ac.signal,
-      onProgress: (p) => {
-        sendEvent({
-          type: 'progress',
-          percent: Math.max(0, Math.min(99, Number(p.percent) || 0)),
-          message: p.message || '',
-          table: p.table || '',
-          tableIndex: p.tableIndex || 0,
-          tableTotal: p.tableTotal || 0,
-          phase: p.phase || ''
-        });
+    let lastPercent = 0;
+    let lastMessage = `Copiando ${sourceLabel} → ${targetLabel}…`;
+    const heartbeat = setInterval(() => {
+      if (res.writableEnded || ac.signal.aborted) return;
+      sendEvent({
+        type: 'progress',
+        percent: Math.max(0, Math.min(99, lastPercent)),
+        message: lastMessage || 'Sincronizando… (conexão ativa)'
+      });
+      try {
+        if (typeof res.flush === 'function') res.flush();
+      } catch {
+        // ignore
       }
-    });
+    }, 8000);
+
+    let result;
+    try {
+      result = await mirrorClusterTables({
+        direction,
+        signal: ac.signal,
+        onProgress: (p) => {
+          lastPercent = Math.max(0, Math.min(99, Number(p.percent) || 0));
+          lastMessage = p.message || lastMessage;
+          sendEvent({
+            type: 'progress',
+            percent: lastPercent,
+            message: lastMessage,
+            table: p.table || '',
+            tableIndex: p.tableIndex || 0,
+            tableTotal: p.tableTotal || 0,
+            phase: p.phase || ''
+          });
+        }
+      });
+    } finally {
+      clearInterval(heartbeat);
+      req.off?.('close', onClose);
+      req.off?.('aborted', onClose);
+      req.removeListener('close', onClose);
+      req.removeListener('aborted', onClose);
+    }
 
     if (result.cancelled || ac.signal.aborted) {
       sendEvent({
