@@ -29,6 +29,10 @@
     }
   }
 
+  function applyPreferredMapType(next) {
+    preferredMapType = next === 'satellite' ? 'satellite' : 'roadmap';
+  }
+
   let usuario = '';
   let chamadoId = '';
   let chamado = null;
@@ -38,6 +42,8 @@
   let generating = false;
   let statusMsg = '';
   let tabulacoes = [];
+  /** Preferência da extensão: 'roadmap' | 'satellite' */
+  let preferredMapType = 'roadmap';
   let sugeridaOriginal = '';
   let showInfoModal = false;
   let equipamentos = [];
@@ -1196,9 +1202,16 @@
       applyUiTheme(data.theme);
       return;
     }
+    if (data.type === 'MAP_TYPE') {
+      applyPreferredMapType(data.mapType);
+      return;
+    }
     if (data.type === 'INIT' || data.type === 'LOAD') {
       if (data.theme === 'dark' || data.theme === 'light') {
         applyUiTheme(data.theme);
+      }
+      if (data.mapType === 'satellite' || data.mapType === 'roadmap') {
+        applyPreferredMapType(data.mapType);
       }
       applyInitPayload(data);
     }
@@ -1236,6 +1249,10 @@
     const qTheme = params.get('theme');
     if (qTheme === 'dark' || qTheme === 'light') {
       applyUiTheme(qTheme);
+    }
+    const qMapType = params.get('mapType');
+    if (qMapType === 'satellite' || qMapType === 'roadmap') {
+      applyPreferredMapType(qMapType);
     }
     const qUser = params.get('usuario') || '';
     const qId = params.get('chamadoId') || params.get('id') || '';
@@ -1418,6 +1435,7 @@
               workbenchMode={true}
               mapDomId="censup-workbench-map"
               currentUser={usuario}
+              preferredMapType={preferredMapType}
               initialAddress={mapAddress}
               initialLat={mapLat}
               initialLng={mapLng}
