@@ -53,6 +53,11 @@
    * Workbench only: mapa Google já inicializado (idle).
    */
   export let onMapReady = null;
+  /**
+   * Workbench only: tipo padrão ao abrir — 'roadmap' | 'satellite'.
+   * Vem da configuração da extensão.
+   */
+  export let preferredMapType = 'roadmap';
 
   /** Workbench: chave da última localização aplicada (evita loop form↔mapa). */
   let lastWorkbenchLocKey = '';
@@ -326,6 +331,24 @@
     } catch (err) {
       console.warn('[Mapa] Falha ao trocar tipo:', err?.message || err);
     }
+  }
+
+  /** Aplica preferência da extensão (sem exigir clique nos botões Mapa/Satélite). */
+  function applyPreferredWorkbenchMapType(type = preferredMapType) {
+    if (!workbenchMode || !map) return;
+    const next = type === 'satellite' ? 'satellite' : 'roadmap';
+    const wantId = next === 'satellite' ? 'hybrid' : 'roadmap';
+    try {
+      const currentId = map.getMapTypeId?.();
+      if (wbMapType === next && (currentId === wantId || currentId === next)) return;
+    } catch {
+      /* ignore */
+    }
+    setWorkbenchMapType(next);
+  }
+
+  $: if (workbenchMode && preferredMapType) {
+    applyPreferredWorkbenchMapType(preferredMapType);
   }
 
   async function toggleWorkbenchFullscreen() {
@@ -2778,11 +2801,16 @@
       zoomControl: !workbenchMode,
       scrollwheel: true, // Permite zoom com scroll do mouse
       gestureHandling: 'greedy', // Permite zoom direto com scroll, sem precisar Ctrl
-      styles: isDarkTheme ? GOOGLE_MAP_DARK_STYLES : []
+      styles: isDarkTheme ? GOOGLE_MAP_DARK_STYLES : [],
+      mapTypeId:
+        workbenchMode && preferredMapType === 'satellite' ? 'hybrid' : 'roadmap'
     });
     
     // Carregar mancha de cobertura após inicializar o mapa
     if (map) {
+      if (workbenchMode) {
+        wbMapType = preferredMapType === 'satellite' ? 'satellite' : 'roadmap';
+      }
       applyGoogleMapTheme(isDarkTheme);
       if (workbenchMode) bindWorkbenchMapControls();
       loadCoveragePolygon().then(loaded => {
