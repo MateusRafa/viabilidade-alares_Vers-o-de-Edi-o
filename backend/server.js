@@ -560,9 +560,9 @@ const fileLocks = {
 };
 
 // Função para executar operação com lock (garante execução sequencial)
-async function withLock(lockName, operation) {
+async function withLock(lockName, operation, options = {}) {
   const startTime = Date.now();
-  const MAX_WAIT_TIME = 5000; // 5 segundos máximo de espera
+  const MAX_WAIT_TIME = Number(options.maxWaitMs) > 0 ? Number(options.maxWaitMs) : 5000;
   
   // Aguardar lock anterior ser liberado (com timeout)
   while (fileLocks[lockName]) {
@@ -4337,24 +4337,10 @@ function parseVIALANumber(viAla) {
 async function getMaxVIALANumberFromClient(client, label = 'supabase') {
   if (!client) return 0;
 
-  // 1) RPC oficial (retorna o PRÓXIMO número)
-  try {
-    const { data, error } = await client.rpc('get_next_vi_ala_number');
-    if (!error && data !== null && data !== undefined) {
-      const next = Number(data);
-      if (Number.isFinite(next) && next >= 1) {
-        console.log(`✅ [Supabase/${label}] RPC get_next_vi_ala_number → próximo ${next}`);
-        return next - 1;
-      }
-    }
-    if (error) {
-      console.log(`⚠️ [Supabase/${label}] RPC indisponível:`, error.message || error);
-    }
-  } catch (rpcErr) {
-    console.log(`⚠️ [Supabase/${label}] RPC falhou:`, rpcErr?.message || rpcErr);
-  }
+  // NÃO chamar RPC get_next_vi_ala_number aqui — ela aloca/incrementa sequência
+  // e gerava buracos + duplicatas quando usada só para "ler o max".
 
-  // 2) Maior vi_ala textual (zero-padded ordena corretamente)
+  // 1) Maior vi_ala textual (zero-padded ordena corretamente)
   try {
     const { data, error } = await client
       .from('vi_ala')
@@ -4376,7 +4362,7 @@ async function getMaxVIALANumberFromClient(client, label = 'supabase') {
     console.warn(`⚠️ [Supabase/${label}] Falha ao ordenar por vi_ala:`, err?.message || err);
   }
 
-  // 3) Amostra recente por id
+  // 2) Amostra recente por id
   try {
     const { data, error } = await client
       .from('vi_ala')
@@ -4630,16 +4616,31 @@ async function insertVIALAIntoSupabase(dataToSave) {
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
       // Sempre primary + réplica — extensão e ferramenta veem a mesma sequência/lista
-      await writeVIALAToAllClients(async (client) => {
+      const writeResults = await writeVIALAToAllClients(async (client) => {
         const { error } = await client.from('vi_ala').insert([payload]);
         if (error) {
-          // Já existe neste backend (retry / espelho parcial) — ok
-          if (/duplicate key|unique constraint|23505/i.test(`${error.message || ''} ${error.code || ''}`)) {
-            return;
+          const msg = `${error.message || ''} ${error.code || ''}`;
+          if (/duplicate key|unique constraint|23505/i.test(msg)) {
+            return { duplicate: true };
           }
           throw error;
         }
+        return { duplicate: false };
       });
+
+      const outcomes = writeResults.map((r) => r.value).filter(Boolean);
+      const allDuplicate =
+        outcomes.length > 0 && outcomes.every((o) => o && o.duplicate === true);
+
+      // Todos os backends já tinham esse VI ALA → registrar deve tentar o próximo
+      if (allDuplicate) {
+        return {
+          success: false,
+          error: `duplicate key value violates unique constraint (vi_ala=${payload.vi_ala})`,
+          code: '23505'
+        };
+      }
+
       return { success: true, payload };
     } catch (error) {
       const missingColumn = getMissingSupabaseColumn(error?.message);
@@ -4819,8 +4820,8 @@ async function _readVIALAExcelFileOnly() {
 }
 
 // Função para salvar registro na base_VI_ALA.xlsx (fallback / espelho local)
-async function saveVIALARecordToExcel(record) {
-  return await withLock('vi_ala', async () => {
+async function saveVIALARecordToExcel(record, options = {}) {
+  const run = async () => {
     try {
       await _ensureVIALABaseInternal();
       // Importante: NÃO usar _readVIALABaseInternal() aqui — ela carrega todo o Supabase e estoura timeout.
@@ -4835,20 +4836,24 @@ async function saveVIALARecordToExcel(record) {
       const worksheet = XLSX.utils.json_to_sheet(data);
       const workbook = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(workbook, worksheet, 'VI ALA');
-
       XLSX.writeFile(workbook, BASE_VI_ALA_FILE);
-      console.log('✅ [Excel] Registro VI ALA salvo:', record['VI ALA']);
-
-      return true;
+      return { success: true, storage: 'excel' };
     } catch (err) {
-      console.error('❌ [Excel] Erro ao salvar registro VI ALA:', err);
+      console.error('❌ [Excel] Erro ao salvar VI ALA:', err);
       throw err;
     }
-  });
+  };
+
+  // Evita deadlock quando já estamos dentro de withLock('vi_ala') no register
+  if (options.alreadyLocked) {
+    return run();
+  }
+  return await withLock('vi_ala', run);
 }
 
 // Função para salvar registro VI ALA (tenta Supabase primeiro, fallback para Excel)
-async function saveVIALARecord(record) {
+async function saveVIALARecord(record, options = {}) {
+  const alreadyLocked = !!options.alreadyLocked;
   const supabaseResult = await saveVIALARecordToSupabase(record);
 
   if (supabaseResult.success) {
@@ -4868,45 +4873,52 @@ async function saveVIALARecord(record) {
   }
 
   console.log('⚠️ [Save] Supabase indisponível, usando fallback Excel para salvar VI ALA');
-  await saveVIALARecordToExcel(record);
+  await saveVIALARecordToExcel(record, { alreadyLocked });
   return { success: true, storage: 'excel' };
 }
 
 // Gera o próximo VI ALA e salva o registro em uma única operação no backend
 async function registerVIALARecord(body) {
-  const maxAttempts = 3;
-  let lastError = 'Não foi possível registrar VI ALA';
+  // Lock serializa getNext+insert neste processo (evita 18856/18857 no mesmo segundo)
+  return await withLock(
+    'vi_ala',
+    async () => {
+      const maxAttempts = 5;
+      let lastError = 'Não foi possível registrar VI ALA';
 
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    const nextVIALA = await getNextVIALA();
-    if (!nextVIALA) {
-      throw new Error('Não foi possível gerar próximo VI ALA');
-    }
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        const nextVIALA = await getNextVIALA();
+        if (!nextVIALA) {
+          throw new Error('Não foi possível gerar próximo VI ALA');
+        }
 
-    const record = buildVIALARecordFromRequest(body, nextVIALA);
-    console.log(`📝 [Register] Tentativa ${attempt}/${maxAttempts} para registrar ${nextVIALA}`);
+        const record = buildVIALARecordFromRequest(body, nextVIALA);
+        console.log(`📝 [Register] Tentativa ${attempt}/${maxAttempts} para registrar ${nextVIALA}`);
 
-    try {
-      const saveResult = await saveVIALARecord(record);
-      return {
-        success: true,
-        viAla: nextVIALA,
-        storage: saveResult.storage || 'supabase'
-      };
-    } catch (err) {
-      lastError = err.message || lastError;
-      const isDuplicate = /duplicate key|unique constraint|23505/i.test(lastError);
+        try {
+          const saveResult = await saveVIALARecord(record, { alreadyLocked: true });
+          return {
+            success: true,
+            viAla: nextVIALA,
+            storage: saveResult.storage || 'supabase'
+          };
+        } catch (err) {
+          lastError = err.message || lastError;
+          const isDuplicate = /duplicate key|unique constraint|23505/i.test(lastError);
 
-      if (isDuplicate && attempt < maxAttempts) {
-        console.warn(`⚠️ [Register] VI ALA ${nextVIALA} já existe, tentando próximo número...`);
-        continue;
+          if (isDuplicate && attempt < maxAttempts) {
+            console.warn(`⚠️ [Register] VI ALA ${nextVIALA} já existe, tentando próximo número...`);
+            continue;
+          }
+
+          throw new Error(lastError);
+        }
       }
 
       throw new Error(lastError);
-    }
-  }
-
-  throw new Error(lastError);
+    },
+    { maxWaitMs: 60000 }
+  );
 }
 
 // Rota para listar projetistas
