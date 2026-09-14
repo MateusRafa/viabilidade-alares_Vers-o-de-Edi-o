@@ -24,18 +24,23 @@ function normalizeMode(mode) {
 }
 
 function readModeFromDisk() {
+  // Arquivo gravado pelo admin tem prioridade (evita ficar travado em B2 por env)
+  try {
+    const filePath = getModeFilePath();
+    if (fs.existsSync(filePath)) {
+      const raw = fs.readFileSync(filePath, 'utf8');
+      const parsed = JSON.parse(raw);
+      const fromFile = normalizeMode(parsed?.mode);
+      if (fromFile) return fromFile;
+    }
+  } catch {
+    // segue para env / default
+  }
+
   const envMode = normalizeMode(process.env.SUPABASE_CLUSTER_MODE);
   if (envMode) return envMode;
 
-  try {
-    const filePath = getModeFilePath();
-    if (!fs.existsSync(filePath)) return DEFAULT_CLUSTER_MODE;
-    const raw = fs.readFileSync(filePath, 'utf8');
-    const parsed = JSON.parse(raw);
-    return normalizeMode(parsed?.mode) || DEFAULT_CLUSTER_MODE;
-  } catch {
-    return DEFAULT_CLUSTER_MODE;
-  }
+  return DEFAULT_CLUSTER_MODE;
 }
 
 /** Inicializa persistência do modo (chamar após DATA_DIR estar definido). */
