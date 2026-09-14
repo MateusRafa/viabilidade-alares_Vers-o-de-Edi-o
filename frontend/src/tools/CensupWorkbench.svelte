@@ -1058,6 +1058,7 @@
   }
 
   async function gerarRelatorio() {
+    if (generating) return;
     if (!viabilidadeRef || typeof viabilidadeRef.generateWorkbenchReport !== 'function') {
       error = 'Mapa ainda carregando. Localize um endereço e tente de novo.';
       return;
