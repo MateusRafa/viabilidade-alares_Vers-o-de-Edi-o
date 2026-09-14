@@ -1238,39 +1238,54 @@
       let buffer = '';
       let finalEvent = null;
 
+      const handleEvent = (event) => {
+        if (!event || typeof event !== 'object') return;
+        if (event.type === 'progress' || event.type === 'start') {
+          clusterSwitchPercent = Math.max(clusterSwitchPercent, Number(event.percent) || 0);
+          clusterSwitchMessage = event.message || clusterSwitchMessage;
+        } else if (event.type === 'done') {
+          finalEvent = event;
+          clusterSwitchPercent = 100;
+          clusterSwitchMessage = event.message || `Backend ${targetLabel} ativo`;
+          clusterMode = event.mode || targetMode;
+          clusterSwitchStep = 'done';
+          clusterMessage = clusterSwitchMessage;
+        } else if (event.type === 'cancelled') {
+          finalEvent = event;
+          clusterSwitchStep = 'cancelled';
+          clusterSwitchMessage = event.message || 'Troca cancelada';
+        } else if (event.type === 'error') {
+          finalEvent = event;
+          throw new Error(event.error || 'Erro na sincronização');
+        }
+      };
+
       while (true) {
         const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
+        if (value) {
+          buffer += decoder.decode(value, { stream: !done });
+        }
         const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
+        buffer = done ? '' : lines.pop() || '';
         for (const line of lines) {
           const trimmed = line.trim();
           if (!trimmed) continue;
-          let event;
           try {
-            event = JSON.parse(trimmed);
+            handleEvent(JSON.parse(trimmed));
           } catch {
-            continue;
+            // ignore linha inválida
           }
-          if (event.type === 'progress' || event.type === 'start') {
-            clusterSwitchPercent = Math.max(clusterSwitchPercent, Number(event.percent) || 0);
-            clusterSwitchMessage = event.message || clusterSwitchMessage;
-          } else if (event.type === 'done') {
-            finalEvent = event;
-            clusterSwitchPercent = 100;
-            clusterSwitchMessage = event.message || `Backend ${targetLabel} ativo`;
-            clusterMode = event.mode || targetMode;
-            clusterSwitchStep = 'done';
-            clusterMessage = clusterSwitchMessage;
-          } else if (event.type === 'cancelled') {
-            finalEvent = event;
-            clusterSwitchStep = 'cancelled';
-            clusterSwitchMessage = event.message || 'Troca cancelada';
-          } else if (event.type === 'error') {
-            finalEvent = event;
-            throw new Error(event.error || 'Erro na sincronização');
+        }
+        if (done) {
+          const leftover = buffer.trim();
+          if (leftover) {
+            try {
+              handleEvent(JSON.parse(leftover));
+            } catch {
+              // ignore
+            }
           }
+          break;
         }
       }
 
