@@ -4,7 +4,7 @@
  */
 import fs from 'fs';
 import path from 'path';
-import { pickNextCensupSyncAssignee, listCensupSyncOnline } from './presenceStore.js';
+import { pickNextCensupSyncAssignee, listCensupSyncOnline, setLastEsteiraAssignee } from './presenceStore.js';
 
 const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), 'data');
 const STORE_PATH = path.join(DATA_DIR, 'portal-censup-fila-atribuicoes.json');
@@ -204,6 +204,7 @@ export function atribuirPedidoNaEsteira(pedido, usuario) {
   existing.claimManual = true;
   store.assignments[pedidoKey] = existing;
   writeStore(store);
+  setLastEsteiraAssignee(nome);
 
   return toPublicAssignment(existing);
 }
