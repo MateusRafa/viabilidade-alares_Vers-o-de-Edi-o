@@ -971,10 +971,10 @@
         const dataCriacao = cto.data_criacao || cto.data_cadastro || cto.created_at || '';
         return formatDateToMMYYYY(dataCriacao);
       }
-      case 11: return (cto.vagas_total || 0).toString(); // Portas Total
-      case 12: return (cto.clientes_conectados || 0).toString(); // Ocupadas
-      case 13: return ((cto.vagas_total || 0) - (cto.clientes_conectados || 0)).toString(); // Disponíveis
-      case 14: return `${parseFloat(cto.pct_ocup || 0).toFixed(1)}%`; // Ocupação
+      case 11: return (normalizeCtoPortCounts(cto).vagas_total || 0).toString(); // Portas Total
+      case 12: return (normalizeCtoPortCounts(cto).clientes_conectados || 0).toString(); // Ocupadas
+      case 13: return ctoPortasDisponiveis(cto).toString(); // Disponíveis
+      case 14: return `${parseFloat(normalizeCtoPortCounts(cto).pct_ocup || 0).toFixed(1)}%`; // Ocupação
       case 15: return (cto.latitude || '').toString(); // Latitude
       case 16: return (cto.longitude || '').toString(); // Longitude
       default: return '';
@@ -1732,6 +1732,35 @@
   }
 
   // Função para determinar a cor do marcador baseada na porcentagem de ocupação (pct_ocup)
+  /**
+   * Corrige inconsistência da base: total de portas < conectadas (ex.: 0 e 8)
+   * → total passa a ser igual às conectadas; disponíveis nunca ficam negativos.
+   */
+  function normalizeCtoPortCounts(cto) {
+    if (!cto || typeof cto !== 'object') return cto;
+    const conectadas = Math.max(0, Number(cto.clientes_conectados) || 0);
+    let total = Math.max(0, Number(cto.vagas_total) || 0);
+    if (total < conectadas) total = conectadas;
+    const disponiveis = Math.max(0, total - conectadas);
+    const prevTotal = Math.max(0, Number(cto.vagas_total) || 0);
+    let pctOcup = parseFloat(cto.pct_ocup);
+    if (!Number.isFinite(pctOcup) || total !== prevTotal) {
+      pctOcup = total > 0 ? (conectadas / total) * 100 : 0;
+    }
+    return {
+      ...cto,
+      vagas_total: total,
+      clientes_conectados: conectadas,
+      portas_disponiveis: disponiveis,
+      pct_ocup: pctOcup
+    };
+  }
+
+  function ctoPortasDisponiveis(cto) {
+    const n = normalizeCtoPortCounts(cto);
+    return Math.max(0, (n?.vagas_total || 0) - (n?.clientes_conectados || 0));
+  }
+
   function getCTOColor(pctOcup) {
     // Converter para número e tratar valores inválidos
     const porcentagem = parseFloat(pctOcup) || 0;
@@ -3690,7 +3719,7 @@
           
           // Adicionar prédios imediatamente ao array (sem calcular rotas)
           if (predios.length > 0) {
-            ctos = [...predios];
+            ctos = [...predios].map(normalizeCtoPortCounts);
             // Desenhar prédios IMEDIATAMENTE (sem esperar CTOs)
             await drawRoutesAndMarkers();
           }
@@ -4175,7 +4204,10 @@
       });
 
       // Atribuir ao array final (prédios + até 5 CTOs de rua)
-      ctos = todasCTOs;
+      ctos = todasCTOs.map(normalizeCtoPortCounts);
+      if (nearestCTOOutsideLimit) {
+        nearestCTOOutsideLimit = normalizeCtoPortCounts(nearestCTOOutsideLimit);
+      }
       
       console.log(`✅ [Frontend] Total de ${ctos.length} CTO(s) encontrada(s) (${predios.length} prédio(s) + ${ctos.length - predios.length} CTO(s) normal(is))`);
       
@@ -5844,7 +5876,7 @@
       map: map,
       title: isPredio 
         ? `🏢 ${cto.nome} (PRÉDIO) - ${cto.distancia_metros}m - Não cria rota`
-        : `${cto.nome} - ${cto.distancia_metros}m (${cto.vagas_total - cto.clientes_conectados} portas disponíveis)`,
+        : `${cto.nome} - ${cto.distancia_metros}m (${Math.max(0, (cto.vagas_total || 0) - (cto.clientes_conectados || 0))} portas disponíveis)`,
       icon: iconConfig,
       label: isPredio ? undefined : (markerNumber ? {
         text: `${markerNumber}`,
@@ -6088,7 +6120,7 @@
           map: map,
           title: isPredio 
             ? `🏢 ${cto.nome} (PRÉDIO) - ${cto.distancia_metros}m - Não cria rota`
-            : `${cto.nome} - ${cto.distancia_metros}m (${cto.vagas_total - cto.clientes_conectados} portas disponíveis)`,
+            : `${cto.nome} - ${cto.distancia_metros}m (${Math.max(0, (cto.vagas_total || 0) - (cto.clientes_conectados || 0))} portas disponíveis)`,
           icon: iconConfig,
           label: isPredio ? undefined : (currentMarkerNumber ? { // Sem label para prédios, label numérico para CTOs normais
             text: `${currentMarkerNumber}`,
@@ -6216,7 +6248,7 @@
                 <strong>Status:</strong> <span style="color: ${isAtiva ? '#28A745' : '#DC3545'}; font-weight: bold;">${String(statusCto || 'N/A')}</span><br>
                 <strong>Total de Portas:</strong> ${Number(cto.vagas_total || 0)}<br>
                 <strong>Portas Conectadas:</strong> ${Number(cto.clientes_conectados || 0)}<br>
-                <strong>Portas Disponíveis:</strong> ${Number((cto.vagas_total || 0) - (cto.clientes_conectados || 0))}<br>
+                <strong>Portas Disponíveis:</strong> ${Number(Math.max(0, (cto.vagas_total || 0) - (cto.clientes_conectados || 0)))}<br>
                 <strong>Distância:</strong> ${Number(cto.distancia_metros || 0)}m (${Number(cto.distancia_km || 0)}km)
               </div>
             `;
@@ -8172,7 +8204,7 @@
                 </div>
                 <div class="summary-stats">
                   ${totalEquipamentosTexto}
-                  <p><strong>Total de Portas Disponíveis:</strong> <span style="font-weight: bold; color: #000000;">${ctosRuaReport.reduce((sum, cto) => sum + (cto.vagas_total - cto.clientes_conectados), 0)}</span> <strong style="font-weight: bold; color: #000000;">portas</strong></p>
+                  <p><strong>Total de Portas Disponíveis:</strong> <span style="font-weight: bold; color: #000000;">${ctosRuaReport.reduce((sum, cto) => sum + ctoPortasDisponiveis(cto), 0)}</span> <strong style="font-weight: bold; color: #000000;">portas</strong></p>
                 </div>
               </div>
               ${mapImageData ? `
@@ -8208,7 +8240,8 @@
 
       // ctosRuaReport já foi definido acima (antes do htmlContent)
       ctosRuaReport.forEach((cto, index) => {
-        const portasDisponiveis = cto.vagas_total - cto.clientes_conectados;
+        const ports = normalizeCtoPortCounts(cto);
+        const portasDisponiveis = ports.vagas_total - ports.clientes_conectados;
         const semPortas = portasDisponiveis === 0;
         const styleColor = semPortas ? ' style="color: #F44336;"' : '';
         htmlContent += `
@@ -8218,9 +8251,9 @@
             <td${styleColor}>${cto.pop}</td>
             <td${styleColor}>${cto.nome}</td>
             <td${styleColor}>${cto.id}</td>
-            <td${styleColor}>${cto.vagas_total}</td>
-            <td${styleColor}>${cto.clientes_conectados}</td>
-            <td${styleColor}>${cto.vagas_total - cto.clientes_conectados}</td>
+            <td${styleColor}>${ports.vagas_total}</td>
+            <td${styleColor}>${ports.clientes_conectados}</td>
+            <td${styleColor}>${portasDisponiveis}</td>
             <td${styleColor}>${cto.distancia_metros}m (${cto.distancia_km}km)</td>
           </tr>
         `;
@@ -8740,7 +8773,7 @@
               {/if}
             </div>
 
-            {@const totalPortasDisponiveis = ctosRua.reduce((sum, cto) => sum + ((cto.vagas_total || 0) - (cto.clientes_conectados || 0)), 0)}
+            {@const totalPortasDisponiveis = ctosRua.reduce((sum, cto) => sum + ctoPortasDisponiveis(cto), 0)}
             <div class="results-info">
               <p>
                 <strong>{totalPortasDisponiveis}</strong> 
@@ -9190,7 +9223,7 @@
                       <td class="numeric" class:cell-selected={selectedCells.includes(cellKey10) || selectedRows.includes(rowIndex) || selectedColumns.includes(10)} on:click={(e) => handleCellClick(e, rowIndex, 10)}>{formatDataCriacao(cto)}</td>
                       <td class="numeric" class:cell-selected={selectedCells.includes(cellKey11) || selectedRows.includes(rowIndex) || selectedColumns.includes(11)} on:click={(e) => handleCellClick(e, rowIndex, 11)}>{cto.vagas_total || 0}</td>
                       <td class="numeric" class:cell-selected={selectedCells.includes(cellKey12) || selectedRows.includes(rowIndex) || selectedColumns.includes(12)} on:click={(e) => handleCellClick(e, rowIndex, 12)}>{cto.clientes_conectados || 0}</td>
-                      <td class="numeric" class:cell-selected={selectedCells.includes(cellKey13) || selectedRows.includes(rowIndex) || selectedColumns.includes(13)} on:click={(e) => handleCellClick(e, rowIndex, 13)}>{(cto.vagas_total || 0) - (cto.clientes_conectados || 0)}</td>
+                      <td class="numeric" class:cell-selected={selectedCells.includes(cellKey13) || selectedRows.includes(rowIndex) || selectedColumns.includes(13)} on:click={(e) => handleCellClick(e, rowIndex, 13)}>{Math.max(0, (cto.vagas_total || 0) - (cto.clientes_conectados || 0))}</td>
                       <td class:cell-selected={selectedCells.includes(cellKey14) || selectedRows.includes(rowIndex) || selectedColumns.includes(14)} on:click={(e) => handleCellClick(e, rowIndex, 14)}>
                         <span class="occupation-badge {occupationClass}">{(pctOcup || 0).toFixed(1)}%</span>
                       </td>
