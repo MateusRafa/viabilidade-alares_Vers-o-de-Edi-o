@@ -4434,7 +4434,8 @@
                 routeIndex: actualRouteIndex,
                 ctoKey, // Chave única da CTO (baseada em ID, não coordenadas)
                 cto: cto,
-                originalPath: [...fallbackPath]
+                originalPath: [...fallbackPath],
+                wasOutOfLimit: !!cto.is_out_of_limit
               });
               console.log(`📝 RouteData criado (fallback): ctoKey=${ctoKey}, ctoNome=${cto.nome}, routeIndex=${actualRouteIndex}`);
 
@@ -4555,7 +4556,8 @@
               routeIndex: actualRouteIndex, // Índice da rota no array routes
               ctoKey, // Chave única da CTO (baseada em ID, não coordenadas)
               cto: cto,
-              originalPath: [...filteredPath] // Cópia do path original
+              originalPath: [...filteredPath], // Cópia do path original
+              wasOutOfLimit: !!cto.is_out_of_limit
             });
             console.log(`📝 RouteData criado: ctoKey=${ctoKey}, ctoNome=${cto.nome}, routeIndex=${actualRouteIndex}`);
 
@@ -4688,7 +4690,8 @@
               routeIndex: actualRouteIndex,
               ctoKey, // Chave única da CTO (baseada em ID, não coordenadas)
               cto: cto,
-              originalPath: [...fallbackPath]
+              originalPath: [...fallbackPath],
+              wasOutOfLimit: !!cto.is_out_of_limit
             });
             console.log(`📝 RouteData criado (fallback 2): ctoKey=${ctoKey}, ctoNome=${cto.nome}, routeIndex=${actualRouteIndex}`);
 
@@ -5324,6 +5327,70 @@
     return totalDistance;
   }
 
+  /** Aplica visual de rota: fora do limite (tracejado laranja) ou ocupação da CTO. */
+  function applyStreetRouteVisual(polyline, cto) {
+    if (!polyline || !cto || typeof polyline.setOptions !== 'function') return;
+
+    if (cto.is_out_of_limit) {
+      polyline.setOptions({
+        strokeColor: COLOR_CTO_OUT_OF_LIMIT,
+        strokeOpacity: 0,
+        strokeWeight: 6,
+        icons: [
+          {
+            icon: {
+              path: 'M 0,-4 0,4',
+              strokeOpacity: ROUTE_ORANGE_OPACITY_OUT_OF_LIMIT,
+              strokeWeight: 6,
+              scale: 1
+            },
+            offset: '0%',
+            repeat: '22px'
+          }
+        ]
+      });
+      return;
+    }
+
+    polyline.setOptions({
+      strokeColor: getCTOColor(cto.pct_ocup || 0),
+      strokeOpacity: 0.7,
+      strokeWeight: 5,
+      icons: []
+    });
+  }
+
+  /** Atualiza a cor do marcador de rua conforme limite/ocupação. */
+  function applyStreetCtoMarkerColor(cto) {
+    if (!cto || cto.is_condominio) return;
+    const ctoKey = getCTOKey(cto);
+    const marker = (markers || []).find((m) => m && m.__ctoKey === ctoKey);
+    if (!marker || typeof marker.setIcon !== 'function') return;
+
+    const color = cto.is_out_of_limit
+      ? COLOR_CTO_OUT_OF_LIMIT
+      : getCTOColor(cto.pct_ocup || 0);
+
+    try {
+      const icon = marker.getIcon();
+      if (icon && typeof icon === 'object' && icon.path != null) {
+        marker.setIcon({ ...icon, fillColor: color });
+      }
+    } catch (err) {
+      console.warn('[Mapa] Falha ao atualizar cor do marcador:', err?.message || err);
+    }
+  }
+
+  function sameCtoIdentity(a, b) {
+    if (!a || !b) return false;
+    const idA = a.id_cto || a.id;
+    const idB = b.id_cto || b.id;
+    if (idA != null && idB != null && String(idA) === String(idB)) return true;
+    const nomeA = String(a.nome || '').trim();
+    const nomeB = String(b.nome || '').trim();
+    return !!(nomeA && nomeB && nomeA === nomeB);
+  }
+
   // Função para salvar alterações quando uma rota for editada
   function saveRouteEdit(ctoIndex) {
     console.log(`🔵 saveRouteEdit chamada para CTO índice: ${ctoIndex}`);
@@ -5360,12 +5427,19 @@
       // Formato: 129.15m (0.129km) - 2 casas decimais para metros, 3 para km
       const distanciaMetros = Math.round(newDistance * 100) / 100;
       const distanciaKm = Math.round((newDistance / 1000) * 1000) / 1000;
+      const wasOutOfLimit = !!ctos[ctoIndex].is_out_of_limit;
+      const withinLimit = distanciaMetros <= FORA_LIMITE_METROS;
+      // Edição que entra nos 250m → passa a ser válida (cor de ocupação)
+      // Se voltar a passar de 250m e era fora do limite, restaura o status
+      const nextOutOfLimit = withinLimit ? false : wasOutOfLimit || !!routeInfo.wasOutOfLimit;
+      if (wasOutOfLimit) routeInfo.wasOutOfLimit = true;
       
       console.log(`📊 Valores calculados: ${distanciaMetros}m (${distanciaKm}km)`);
       console.log(`📋 CTO antes da atualização:`, {
         nome: ctos[ctoIndex].nome,
         distancia_metros: ctos[ctoIndex].distancia_metros,
-        distancia_km: ctos[ctoIndex].distancia_km
+        distancia_km: ctos[ctoIndex].distancia_km,
+        is_out_of_limit: ctos[ctoIndex].is_out_of_limit
       });
       
       // Criar um novo objeto CTO com os valores atualizados para garantir reatividade
@@ -5373,7 +5447,8 @@
         ...ctos[ctoIndex],
         distancia_metros: distanciaMetros,
         distancia_km: distanciaKm,
-        distancia_real: newDistance
+        distancia_real: newDistance,
+        is_out_of_limit: nextOutOfLimit
       };
       
       // Criar um novo array com o objeto atualizado para forçar reatividade do Svelte
@@ -5385,57 +5460,48 @@
         // Forçar reatividade do routeData também
         routeData = [...routeData];
       }
-      
-      // Se a CTO editada está fora do limite, atualizar nearestCTOOutsideLimit também
-      if (updatedCTO.is_out_of_limit) {
-        // Verificar se é a mesma CTO que está em nearestCTOOutsideLimit
-        // Usar ID da CTO para comparação (mais confiável que coordenadas que podem mudar)
-        if (nearestCTOOutsideLimit) {
-          const nearestId = nearestCTOOutsideLimit.id_cto || nearestCTOOutsideLimit.id;
-          const updatedId = updatedCTO.id_cto || updatedCTO.id;
-          const nearestNome = nearestCTOOutsideLimit.nome;
-          const updatedNome = updatedCTO.nome;
-          
-          console.log(`🔍 Comparando CTOs: nearestId=${nearestId}, updatedId=${updatedId}, nearestNome=${nearestNome}, updatedNome=${updatedNome}`);
-          
-          // Comparar por ID ou nome (caso ID não esteja disponível)
-          if ((nearestId && updatedId && nearestId === updatedId) || 
-              (nearestNome && updatedNome && nearestNome === updatedNome)) {
-            // Atualizar nearestCTOOutsideLimit com os novos valores
-            nearestCTOOutsideLimit = {
-              ...nearestCTOOutsideLimit,
-              distancia_metros: distanciaMetros,
-              distancia_km: distanciaKm,
-              distancia_real: newDistance
-            };
-            // Forçar reatividade do Svelte criando um novo objeto
-            nearestCTOOutsideLimit = {...nearestCTOOutsideLimit};
-            console.log(`🔄 nearestCTOOutsideLimit atualizado com nova distância: ${distanciaMetros}m (${distanciaKm}km)`);
-            console.log(`📋 nearestCTOOutsideLimit após atualização:`, {
-              nome: nearestCTOOutsideLimit.nome,
-              distancia_metros: nearestCTOOutsideLimit.distancia_metros,
-              distancia_km: nearestCTOOutsideLimit.distancia_km,
-              distancia_real: nearestCTOOutsideLimit.distancia_real
-            });
-            if (workbenchMode) emitForaLimiteChange();
-          } else {
-            console.log(`⚠️ CTO editada não corresponde à nearestCTOOutsideLimit. IDs: ${nearestId} vs ${updatedId}, Nomes: ${nearestNome} vs ${updatedNome}`);
-          }
-        } else {
-          console.log(`⚠️ CTO editada está fora do limite mas nearestCTOOutsideLimit é null`);
-          // Workbench: ainda assim tenta emitir a partir da CTO marcada is_out_of_limit
-          if (workbenchMode) {
-            nearestCTOOutsideLimit = { ...updatedCTO };
-            emitForaLimiteChange();
-          }
-        }
+
+      // Visual da rota + marcador (laranja tracejado ↔ cor de ocupação)
+      if (wasOutOfLimit !== nextOutOfLimit || wasOutOfLimit || routeInfo.wasOutOfLimit) {
+        applyStreetRouteVisual(route, updatedCTO);
+        applyStreetCtoMarkerColor(updatedCTO);
+        console.log(
+          nextOutOfLimit
+            ? `🟠 Rota ${updatedCTO.nome} permanece/volta fora do limite (${distanciaMetros}m)`
+            : `✅ Rota ${updatedCTO.nome} validada dentro de ${FORA_LIMITE_METROS}m — cor de ocupação aplicada`
+        );
       }
       
-      console.log(`✅ Rota da CTO ${ctoIndex} (${updatedCTO.nome}) editada. Nova distância: ${distanciaMetros}m (${distanciaKm}km)`);
+      // Atualizar / limpar nearestCTOOutsideLimit conforme o novo status
+      if (nextOutOfLimit) {
+        if (nearestCTOOutsideLimit && sameCtoIdentity(nearestCTOOutsideLimit, updatedCTO)) {
+          nearestCTOOutsideLimit = {
+            ...nearestCTOOutsideLimit,
+            ...updatedCTO,
+            distancia_metros: distanciaMetros,
+            distancia_km: distanciaKm,
+            distancia_real: newDistance,
+            is_out_of_limit: true
+          };
+          nearestCTOOutsideLimit = { ...nearestCTOOutsideLimit };
+        } else if (!nearestCTOOutsideLimit && workbenchMode) {
+          nearestCTOOutsideLimit = { ...updatedCTO };
+        }
+        if (workbenchMode) emitForaLimiteChange();
+      } else {
+        if (nearestCTOOutsideLimit && sameCtoIdentity(nearestCTOOutsideLimit, updatedCTO)) {
+          nearestCTOOutsideLimit = null;
+          console.log(`🔄 nearestCTOOutsideLimit limpo — ${updatedCTO.nome} entrou nos ${FORA_LIMITE_METROS}m`);
+        }
+        if (workbenchMode) emitForaLimiteChange();
+      }
+      
+      console.log(`✅ Rota da CTO ${ctoIndex} (${updatedCTO.nome}) editada. Nova distância: ${distanciaMetros}m (${distanciaKm}km), foraLimite=${nextOutOfLimit}`);
       console.log(`📋 CTO após atualização:`, {
         nome: ctos[ctoIndex].nome,
         distancia_metros: ctos[ctoIndex].distancia_metros,
-        distancia_km: ctos[ctoIndex].distancia_km
+        distancia_km: ctos[ctoIndex].distancia_km,
+        is_out_of_limit: ctos[ctoIndex].is_out_of_limit
       });
     } else {
       console.warn(`❌ CTO não encontrada no índice ${ctoIndex}. Array ctos:`, ctos);
@@ -5451,6 +5517,10 @@
       route.setPath(routeInfo.originalPath.map(p => new google.maps.LatLng(p.lat, p.lng)));
       routeInfo.editedPath = null;
       console.log(`Rota ${routeIndex} restaurada para o path original`);
+      // Recalcula metragem + status de limite / cor
+      if (routeInfo.ctoIndex != null) {
+        saveRouteEdit(routeInfo.ctoIndex);
+      }
     }
   }
 
