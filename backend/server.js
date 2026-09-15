@@ -884,6 +884,18 @@ async function readCTOsFromSupabase() {
   }
 }
 
+/** Se total de portas < conectadas (ex.: 0 e 8), total passa a igualar conectadas. */
+function normalizeCtoPortFields(portas, ocupado) {
+  const conectadas = Math.max(0, Number(ocupado) || 0);
+  let total = Math.max(0, Number(portas) || 0);
+  if (total < conectadas) total = conectadas;
+  return {
+    vagas_total: total,
+    clientes_conectados: conectadas,
+    portas_disponiveis: Math.max(0, total - conectadas)
+  };
+}
+
 // Nova rota OTIMIZADA: Buscar CTOs próximas por coordenadas (não carrega todas)
 // Esta é a solução para resolver o problema de memória - busca apenas CTOs próximas
 app.get('/api/ctos/nearby', async (req, res) => {
@@ -1053,9 +1065,7 @@ app.get('/api/ctos/nearby', async (req, res) => {
               ctosInternasPorPrédio.get(ctoIdNum).push({
                 nome: row.cto || row.id_cto || '',
                 id: row.id_cto || row.id?.toString() || '',
-                vagas_total: row.portas || 0,
-                clientes_conectados: row.ocupado || 0,
-                portas_disponiveis: (row.portas || 0) - (row.ocupado || 0),
+                ...normalizeCtoPortFields(row.portas, row.ocupado),
                 status_cto: row.status_cto || '',
                 cidade: row.cid_rede || '',
                 pop: row.pop || ''
@@ -1073,8 +1083,7 @@ app.get('/api/ctos/nearby', async (req, res) => {
             nome: row.cto || row.id_cto || '',
             latitude: rowLat, // Já validado acima
             longitude: rowLng, // Já validado acima
-            vagas_total: row.portas || 0,
-            clientes_conectados: row.ocupado || 0,
+            ...normalizeCtoPortFields(row.portas, row.ocupado),
             pct_ocup: row.pct_ocup || 0,
             cidade: row.cid_rede || '',
             pop: row.pop || '',
@@ -2360,8 +2369,7 @@ app.get('/api/ctos/search', async (req, res) => {
             nome: row.cto || row.id_cto || '',
             latitude: parseFloat(row.latitude),
             longitude: parseFloat(row.longitude),
-            vagas_total: row.portas || 0,
-            clientes_conectados: row.ocupado || 0,
+            ...normalizeCtoPortFields(row.portas, row.ocupado),
             pct_ocup: row.pct_ocup || 0,
             cidade: row.cid_rede || '',
             pop: row.pop || '',
@@ -2817,9 +2825,7 @@ app.get('/api/condominios/nearby', async (req, res) => {
             return {
               nome: ctoDaBase.cto || ctoInterna.nome || '',
               id: ctoInterna.id,
-              vagas_total: ctoDaBase.portas || 0,
-              clientes_conectados: ctoDaBase.ocupado || 0,
-              portas_disponiveis: (ctoDaBase.portas || 0) - (ctoDaBase.ocupado || 0),
+              ...normalizeCtoPortFields(ctoDaBase.portas, ctoDaBase.ocupado),
               status_cto: ctoDaBase.status_cto || ctoInterna.status_cto || '',
               cidade: ctoDaBase.cid_rede || '',
               pop: ctoDaBase.pop || ''
