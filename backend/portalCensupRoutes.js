@@ -23,6 +23,16 @@ import {
   getPortalCensupSupabaseConfig,
   testPortalCensupSupabaseConnection
 } from './lib/portalCensup/supabaseCensup.js';
+import {
+  clearCensupSyncPresence,
+  getCensupSyncPresenceTtlMs,
+  listCensupSyncOnline,
+  touchCensupSyncPresence
+} from './lib/portalCensup/presenceStore.js';
+import {
+  getAtribuicoesPorPedidos,
+  registrarPedidosNaEsteira
+} from './lib/portalCensup/filaEsteira.js';
 
 function getUsuarioFromRequest(req) {
   const headerKeys = Object.keys(req.headers || {});
@@ -135,6 +145,100 @@ export function registerPortalCensupRoutes(app) {
     }
   });
 
+  /**
+   * Presença da extensão: online = Sincronização ligada (heartbeat).
+   * Body: { enabled: true|false }
+   */
+  app.post('/api/portal-censup/presence', async (req, res) => {
+    try {
+      const usuario = getUsuarioFromRequest(req);
+      if (!usuario) {
+        return res.status(401).json({ success: false, error: 'Usuário não autenticado' });
+      }
+
+      const enabled = req.body?.enabled !== false;
+      if (enabled) {
+        touchCensupSyncPresence(usuario, { source: req.body?.source || 'extension-sync' });
+      } else {
+        clearCensupSyncPresence(usuario);
+      }
+
+      const online = listCensupSyncOnline();
+      res.json({
+        success: true,
+        enabled,
+        onlineCount: online.length,
+        online,
+        ttlMs: getCensupSyncPresenceTtlMs()
+      });
+    } catch (err) {
+      console.error('❌ [PortalCENSUP] POST presence:', err);
+      sendError(res, err);
+    }
+  });
+
+  app.get('/api/portal-censup/presence', async (req, res) => {
+    try {
+      const usuario = getUsuarioFromRequest(req);
+      if (!usuario) {
+        return res.status(401).json({ success: false, error: 'Usuário não autenticado' });
+      }
+
+      const online = listCensupSyncOnline();
+      res.json({
+        success: true,
+        onlineCount: online.length,
+        online,
+        ttlMs: getCensupSyncPresenceTtlMs()
+      });
+    } catch (err) {
+      console.error('❌ [PortalCENSUP] GET presence:', err);
+      sendError(res, err);
+    }
+  });
+
+  /**
+   * Esteira: registra pedidos vistos na Agenda e atribui a quem está online (sync).
+   * Body: { pedidos: [{ pedido, situacao, dataSituacao, motivo }] }
+   */
+  app.post('/api/portal-censup/fila/registrar', async (req, res) => {
+    try {
+      const usuario = getUsuarioFromRequest(req);
+      if (!usuario) {
+        return res.status(401).json({ success: false, error: 'Usuário não autenticado' });
+      }
+
+      const raw = Array.isArray(req.body?.pedidos) ? req.body.pedidos : [];
+      const result = registrarPedidosNaEsteira(raw);
+      res.json({ success: true, ...result });
+    } catch (err) {
+      console.error('❌ [PortalCENSUP] POST fila/registrar:', err);
+      sendError(res, err);
+    }
+  });
+
+  /** Consulta atribuições por pedidos (lista da extensão). */
+  app.get('/api/portal-censup/fila/atribuicoes', async (req, res) => {
+    try {
+      const usuario = getUsuarioFromRequest(req);
+      if (!usuario) {
+        return res.status(401).json({ success: false, error: 'Usuário não autenticado' });
+      }
+
+      const raw = String(req.query?.pedidos || '')
+        .split(',')
+        .map((p) => p.trim())
+        .filter(Boolean);
+      const bodyPedidos = Array.isArray(req.body?.pedidos) ? req.body.pedidos : [];
+      const pedidos = raw.length ? raw : bodyPedidos.map((p) => String(p || '').trim()).filter(Boolean);
+      const assignments = getAtribuicoesPorPedidos(pedidos);
+      res.json({ success: true, assignments });
+    } catch (err) {
+      console.error('❌ [PortalCENSUP] GET fila/atribuicoes:', err);
+      sendError(res, err);
+    }
+  });
+
   app.get('/api/portal-censup/chamados/:id', async (req, res) => {
     try {
       const usuario = getUsuarioFromRequest(req);
@@ -220,7 +324,16 @@ export function registerPortalCensupRoutes(app) {
       }
 
       const force = req.body?.force === true || req.query?.force === '1';
-      const result = await analisarChamadoById(req.params.id, { force });
+      const lat = req.body?.lat != null ? Number(req.body.lat) : null;
+      const lng = req.body?.lng != null ? Number(req.body.lng) : null;
+      const endereco =
+        req.body?.endereco && typeof req.body.endereco === 'object' ? req.body.endereco : null;
+      const result = await analisarChamadoById(req.params.id, {
+        force,
+        lat: Number.isFinite(lat) ? lat : null,
+        lng: Number.isFinite(lng) ? lng : null,
+        enderecoPatch: endereco
+      });
       res.json({ success: true, ...result });
     } catch (err) {
       console.error('❌ [PortalCENSUP] POST analisar:', err);
