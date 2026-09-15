@@ -199,13 +199,19 @@ export function registerPortalCensupRoutes(app) {
 
   /**
    * Esteira: registra pedidos vistos na Agenda e atribui a quem está online (sync).
-   * Body: { pedidos: [{ pedido, situacao, dataSituacao, motivo }] }
+   * Body: { pedidos: [...], syncEnabled?: boolean }
    */
   app.post('/api/portal-censup/fila/registrar', async (req, res) => {
     try {
       const usuario = getUsuarioFromRequest(req);
       if (!usuario) {
         return res.status(401).json({ success: false, error: 'Usuário não autenticado' });
+      }
+
+      // Mesma requisição: se a sync estiver ligada, marca o usuário online antes de atribuir
+      // (evita falha por presença só em memória / outra réplica).
+      if (req.body?.syncEnabled === true) {
+        touchCensupSyncPresence(usuario, { source: req.body?.source || 'extension-sync' });
       }
 
       const raw = Array.isArray(req.body?.pedidos) ? req.body.pedidos : [];
