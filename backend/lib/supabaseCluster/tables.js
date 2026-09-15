@@ -3,6 +3,7 @@ export const CLUSTER_TABLES = [
   'coverage_calculation_progress',
   'coverage_polygons',
   'condominios',
+  'condominios_mdu',
   'ctos',
   'projetistas',
   'tabulacoes',
@@ -23,6 +24,7 @@ export function buildDeleteQuery(client, table) {
   const strategies = {
     ctos: () => client.from(table).delete({ count: 'exact' }).gte('id', 0),
     condominios: () => client.from(table).delete({ count: 'exact' }).gte('id', 0),
+    condominios_mdu: () => client.from(table).delete({ count: 'exact' }).gte('id', 0),
     coverage_polygons: () => client.from(table).delete({ count: 'exact' }).gte('id', 0),
     coverage_calculation_progress: () =>
       client.from(table).delete({ count: 'exact' }).neq('calculation_id', ''),
