@@ -38,15 +38,16 @@ function normalizePedido(pedido) {
 
 /**
  * Registra pedidos vistos na Agenda.
- * - Pedido novo + há online → atribui usuário (esteira)
- * - Pedido novo + ninguém online → fica sem usuário (lista mostra data/hora)
- * - Pedido já registrado → não reaplica (não muda atribuição retroativa)
+ * - Pedido sem dono + há online → atribui (esteira)
+ * - Pedido sem dono + ninguém online → data/hora na lista
+ * - Pedido já com usuarioFila → mantém (não troca dono)
  */
 export function registrarPedidosNaEsteira(items = []) {
   const store = readStore();
   const onlineCount = listCensupSyncOnline().length;
   let created = 0;
   let assigned = 0;
+  let changed = false;
   const map = {};
 
   for (const item of items || []) {
@@ -54,9 +55,11 @@ export function registrarPedidosNaEsteira(items = []) {
     if (!pedido) continue;
 
     const existing = store.assignments[pedido];
-    if (existing) {
+
+    // Já tem dono: só devolve
+    if (existing?.usuarioFila) {
       map[pedido] = {
-        usuarioFila: existing.usuarioFila || null,
+        usuarioFila: existing.usuarioFila,
         atribuidoEm: existing.atribuidoEm || null,
         vistoEm: existing.vistoEm || null,
         dataSituacao: existing.dataSituacao || item.dataSituacao || null,
@@ -65,8 +68,32 @@ export function registrarPedidosNaEsteira(items = []) {
       continue;
     }
 
+    // Sem dono (novo ou órfão): atribui se houver alguém online agora
     const assignee = onlineCount > 0 ? pickNextCensupSyncAssignee() : null;
     const now = new Date().toISOString();
+
+    if (existing) {
+      if (assignee) {
+        existing.usuarioFila = assignee;
+        existing.atribuidoEm = now;
+        existing.onlineNoMomento = onlineCount;
+        assigned += 1;
+        changed = true;
+      }
+      if (item.dataSituacao || item.dataSituacaoRaw) {
+        existing.dataSituacao = item.dataSituacao || item.dataSituacaoRaw;
+      }
+      if (item.situacao) existing.situacaoAgenda = item.situacao;
+      map[pedido] = {
+        usuarioFila: existing.usuarioFila || null,
+        atribuidoEm: existing.atribuidoEm || null,
+        vistoEm: existing.vistoEm || null,
+        dataSituacao: existing.dataSituacao || null,
+        situacaoAgenda: existing.situacaoAgenda || null
+      };
+      continue;
+    }
+
     const entry = {
       pedido,
       usuarioFila: assignee,
@@ -79,6 +106,7 @@ export function registrarPedidosNaEsteira(items = []) {
     };
     store.assignments[pedido] = entry;
     created += 1;
+    changed = true;
     if (assignee) assigned += 1;
     map[pedido] = {
       usuarioFila: entry.usuarioFila,
@@ -89,7 +117,7 @@ export function registrarPedidosNaEsteira(items = []) {
     };
   }
 
-  if (created > 0) writeStore(store);
+  if (changed) writeStore(store);
 
   return {
     created,
