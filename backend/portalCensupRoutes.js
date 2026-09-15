@@ -31,7 +31,8 @@ import {
 } from './lib/portalCensup/presenceStore.js';
 import {
   getAtribuicoesPorPedidos,
-  registrarPedidosNaEsteira
+  registrarPedidosNaEsteira,
+  atribuirPedidoNaEsteira
 } from './lib/portalCensup/filaEsteira.js';
 
 function getUsuarioFromRequest(req) {
@@ -219,6 +220,23 @@ export function registerPortalCensupRoutes(app) {
       res.json({ success: true, ...result });
     } catch (err) {
       console.error('❌ [PortalCENSUP] POST fila/registrar:', err);
+      sendError(res, err);
+    }
+  });
+
+  /** Claim manual (duplo clique na lista): atribui o pedido ao usuário da extensão. */
+  app.post('/api/portal-censup/fila/atribuir', async (req, res) => {
+    try {
+      const usuario = getUsuarioFromRequest(req);
+      if (!usuario) {
+        return res.status(401).json({ success: false, error: 'Usuário não autenticado' });
+      }
+
+      const pedido = String(req.body?.pedido || '').trim();
+      const assignment = atribuirPedidoNaEsteira(pedido, usuario);
+      res.json({ success: true, pedido, assignment });
+    } catch (err) {
+      console.error('❌ [PortalCENSUP] POST fila/atribuir:', err);
       sendError(res, err);
     }
   });
