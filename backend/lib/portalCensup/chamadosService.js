@@ -231,8 +231,9 @@ export function buildChamadoPdfHtml(chamado) {
   const totalPortas =
     resumo.portasDisponiveis ??
     ctos.reduce((sum, cto) => {
-      const total = Number(cto.vagas_total ?? cto.totalPortas ?? 0);
-      const conectadas = Number(cto.clientes_conectados ?? cto.portasConectadas ?? 0);
+      const conectadas = Math.max(0, Number(cto.clientes_conectados ?? cto.portasConectadas ?? 0));
+      let total = Math.max(0, Number(cto.vagas_total ?? cto.totalPortas ?? 0));
+      if (total < conectadas) total = conectadas;
       return sum + Math.max(0, total - conectadas);
     }, 0);
 
@@ -265,8 +266,10 @@ export function buildChamadoPdfHtml(chamado) {
     ctos.length > 0
       ? ctos
           .map((cto, index) => {
-            const total = Number(cto.vagas_total ?? cto.totalPortas ?? 0);
-            const conectadas = Number(cto.clientes_conectados ?? cto.portasConectadas ?? 0);
+            const conectadas = Math.max(0, Number(cto.clientes_conectados ?? cto.portasConectadas ?? 0));
+            let total = Math.max(0, Number(cto.vagas_total ?? cto.totalPortas ?? 0));
+            // Base inconsistente (ex.: total 0 e conectadas 8) → total = conectadas
+            if (total < conectadas) total = conectadas;
             const disponiveis = Math.max(0, total - conectadas);
             const distM = Number(cto.distancia_metros ?? cto.distanciaMetros ?? 0);
             const distKm = (distM / 1000).toFixed(3);
