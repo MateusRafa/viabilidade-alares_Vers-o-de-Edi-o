@@ -3696,13 +3696,17 @@
           predios = prediosData.condominios
             .filter(p => p.distancia_metros <= 100)
             .map(p => ({
-              nome: p.nome_predio || 'Prédio',
+              nome: p.nome_predio || p.descricao || 'Condomínio',
               latitude: parseFloat(p.latitude),
               longitude: parseFloat(p.longitude),
               is_condominio: true,
+              fonte_condominio: p.fonte || prediosData.source || 'mdu',
               condominio_data: p,
-              status_cto_condominio: p.status_cto || null,
-              ctos_internas: p.ctos_internas || [], // CTOs internas do prédio
+              status_cto_condominio: p.tipo || p.status_cto || null,
+              ctos_internas: Array.isArray(p.ctos_internas) ? p.ctos_internas : [],
+              endereco_completo: p.endereco_completo || '',
+              id_mdu: p.id_mdu ?? null,
+              tipo_mdu: p.tipo || null,
               distancia_metros: p.distancia_metros,
               distancia_km: Math.round((p.distancia_metros / 1000) * 1000) / 1000,
               distancia_real: p.distancia_metros,
@@ -3710,12 +3714,12 @@
               vagas_total: 0,
               clientes_conectados: 0,
               pct_ocup: 0,
-              cidade: '',
+              cidade: p.nome_cidade || '',
               pop: '',
-              id: ''
+              id: p.id_mdu != null ? String(p.id_mdu) : ''
             }));
           
-          console.log(`✅ [Frontend] ${predios.length} prédios encontrados dentro de 100m`);
+          console.log(`✅ [Frontend] ${predios.length} condomínios MDU encontrados dentro de 100m`);
           
           // Adicionar prédios imediatamente ao array (sem calcular rotas)
           if (predios.length > 0) {
@@ -5805,9 +5809,15 @@
     // Determinar cor e ícone (mesma lógica de drawRoutesAndMarkers)
     let ctoColor;
     if (isPredio) {
-      const statusCto = cto.status_cto_condominio || cto.condominio_data?.status_cto || '';
-      const isAtivado = statusCto && statusCto.toUpperCase().trim() === 'ATIVADO';
-      ctoColor = isAtivado ? '#28A745' : '#95A5A6';
+      // Base MDU: condomínio cadastrado (cor fixa). Legacy: ATIVADO = verde.
+      const isMdu = cto.fonte_condominio === 'mdu' || cto.condominio_data?.fonte === 'mdu';
+      if (isMdu) {
+        ctoColor = '#6C63FF';
+      } else {
+        const statusCto = cto.status_cto_condominio || cto.condominio_data?.status_cto || '';
+        const isAtivado = statusCto && statusCto.toUpperCase().trim() === 'ATIVADO';
+        ctoColor = isAtivado ? '#28A745' : '#95A5A6';
+      }
     } else {
       // Para CTOs normais, usar cor baseada na porcentagem de ocupação
       // Se estiver fora do limite, usar cor laranja
@@ -5821,10 +5831,11 @@
     // Criar ícone
     let iconConfig;
     if (isPredio) {
+      const isMdu = cto.fonte_condominio === 'mdu' || cto.condominio_data?.fonte === 'mdu';
       const statusCto = cto.status_cto_condominio || cto.condominio_data?.status_cto || '';
-      const isAtivado = statusCto && statusCto.toUpperCase().trim() === 'ATIVADO';
-      const windowColor = isAtivado ? '#28A745' : '#95A5A6';
-      const strokeColor = isAtivado ? '#1E7E34' : '#7F8C8D';
+      const isAtivado = !isMdu && statusCto && statusCto.toUpperCase().trim() === 'ATIVADO';
+      const windowColor = isMdu ? '#6C63FF' : (isAtivado ? '#28A745' : '#95A5A6');
+      const strokeColor = isMdu ? '#4F46E5' : (isAtivado ? '#1E7E34' : '#7F8C8D');
       
       const svgContent = `
         <svg width="24" height="32" viewBox="0 0 24 32" xmlns="http://www.w3.org/2000/svg">
@@ -6017,10 +6028,10 @@
         // STATUS_CTO ≠ "ATIVADO" → verde mais apagado (#6C757D ou #95A5A6)
         let ctoColor;
         if (isPredio) {
+          const isMdu = cto.fonte_condominio === 'mdu' || cto.condominio_data?.fonte === 'mdu';
           const statusCto = cto.status_cto_condominio || cto.condominio_data?.status_cto || '';
-          const isAtivado = statusCto && statusCto.toUpperCase().trim() === 'ATIVADO';
-          // Verde mais vivo para ATIVADO, verde mais apagado para outros
-          ctoColor = isAtivado ? '#28A745' : '#95A5A6'; // #28A745 = verde vivo, #95A5A6 = verde apagado/cinza
+          const isAtivado = !isMdu && statusCto && statusCto.toUpperCase().trim() === 'ATIVADO';
+          ctoColor = isMdu ? '#6C63FF' : (isAtivado ? '#28A745' : '#95A5A6');
         } else {
           // Para CTOs normais, usar cor baseada na porcentagem de ocupação
           // Se estiver fora do limite, usar cor laranja
@@ -6040,16 +6051,14 @@
         let iconConfig;
         
         if (isPredio) {
-          // Determinar qual ícone usar baseado no status
+          const isMdu = cto.fonte_condominio === 'mdu' || cto.condominio_data?.fonte === 'mdu';
           const statusCto = cto.status_cto_condominio || cto.condominio_data?.status_cto || '';
-          const isAtivado = statusCto && statusCto.toUpperCase().trim() === 'ATIVADO';
+          const isAtivado = !isMdu && statusCto && statusCto.toUpperCase().trim() === 'ATIVADO';
           
-          console.log(`🏢 Criando marcador de prédio: ${cto.nome}, status: ${statusCto}, ativado: ${isAtivado}`);
+          console.log(`🏢 Criando marcador de condomínio: ${cto.nome}, mdu: ${isMdu}, status: ${statusCto}`);
           
-          // Criar SVG inline como data URI para garantir carregamento
-          // Cores baseadas no status
-          const windowColor = isAtivado ? '#28A745' : '#95A5A6';
-          const strokeColor = isAtivado ? '#1E7E34' : '#7F8C8D';
+          const windowColor = isMdu ? '#6C63FF' : (isAtivado ? '#28A745' : '#95A5A6');
+          const strokeColor = isMdu ? '#4F46E5' : (isAtivado ? '#1E7E34' : '#7F8C8D');
           
           // SVG do prédio com janelas em grade 3x5
           const svgContent = `
@@ -6153,24 +6162,33 @@
           let infoWindowContent = '';
           
           if (isPredio) {
-            // InfoWindow para PRÉDIO com CTOs internas
-            const nomePredio = cto.nome || 'Prédio';
-            const statusCto = cto.status_cto_condominio || 'N/A';
+            const nomePredio = cto.nome || 'Condomínio';
+            const isMdu = cto.fonte_condominio === 'mdu' || cto.condominio_data?.fonte === 'mdu';
+            const tipoMdu = cto.tipo_mdu || cto.status_cto_condominio || cto.condominio_data?.tipo || 'N/A';
+            const enderecoMdu =
+              cto.endereco_completo ||
+              cto.condominio_data?.endereco_completo ||
+              '';
+            const idMdu = cto.id_mdu ?? cto.condominio_data?.id_mdu ?? cto.id ?? 'N/A';
             const ctosInternas = cto.ctos_internas || [];
             
-            let ctosListHTML = '';
-            if (ctosInternas.length > 0) {
-              ctosListHTML = '<div style="margin-top: 12px; padding-top: 12px; border-top: 1px solid #ddd;">';
-              ctosListHTML += `<strong style="color: #6C757D; font-size: 13px;">CTOs Internas (${ctosInternas.length}):</strong><br>`;
-              
+            let detalheHTML = '';
+            if (isMdu || ctosInternas.length === 0) {
+              detalheHTML = `
+                <div style="margin-top: 12px; padding: 8px; background-color: #eef2ff; border-left: 3px solid #6C63FF; border-radius: 4px;">
+                  <strong style="color: #4338ca;">Condomínio cadastrado (base MDU)</strong><br>
+                  <span style="color: #4b5563; font-size: 12px;">CTOs de rua continuam sendo listadas à parte no mapa.</span>
+                </div>
+              `;
+            } else {
+              detalheHTML = '<div style="margin-top: 12px; padding-top: 12px; border-top: 1px solid #ddd;">';
+              detalheHTML += `<strong style="color: #6C757D; font-size: 13px;">CTOs Internas (${ctosInternas.length}):</strong><br>`;
               ctosInternas.forEach((ctoInterna, idx) => {
-                // Verificar se a CTO interna está ativa
                 const statusCtoInterna = ctoInterna.status_cto || '';
                 const isAtiva = statusCtoInterna && statusCtoInterna.toUpperCase().trim() === 'ATIVADO';
                 const borderColor = isAtiva ? '#28A745' : '#DC3545';
                 const bgColor = isAtiva ? '#f8f9fa' : '#fff5f5';
-                
-                ctosListHTML += `
+                detalheHTML += `
                   <div style="margin-top: 8px; padding: 8px; background-color: ${bgColor}; border-left: 3px solid ${borderColor}; border-radius: 4px;">
                     <strong style="color: #333; font-size: 12px;">CTO ${idx + 1}:</strong><br>
                     <strong>Nome:</strong> ${String(ctoInterna.nome || 'N/A')}<br>
@@ -6179,47 +6197,27 @@
                     <strong>Portas Totais:</strong> ${Number(ctoInterna.vagas_total || 0)}<br>
                     <strong>Portas Conectadas:</strong> ${Number(ctoInterna.clientes_conectados || 0)}<br>
                     <strong>Status:</strong> <span style="color: ${isAtiva ? '#28A745' : '#DC3545'}; font-weight: bold;">${String(ctoInterna.status_cto || 'N/A')}</span><br>
-                    ${!isAtiva ? '<div style="color: #DC3545; font-size: 11px; margin-top: 4px; font-weight: bold;">⚠️ CTO NÃO ATIVA</div>' : ''}
                   </div>
                 `;
               });
-              
-              // Resumo total
-              const totalPortasDisponiveis = ctosInternas.reduce((sum, c) => sum + (c.portas_disponiveis || 0), 0);
-              const totalPortasTotais = ctosInternas.reduce((sum, c) => sum + (c.vagas_total || 0), 0);
-              const totalPortasConectadas = ctosInternas.reduce((sum, c) => sum + (c.clientes_conectados || 0), 0);
-              
-              ctosListHTML += `
-                <div style="margin-top: 8px; padding: 8px; background-color: #e8f5e9; border-left: 3px solid #28A745; border-radius: 4px;">
-                  <strong style="color: #1B5E20;">Resumo Total:</strong><br>
-                  <strong>Total de Portas Disponíveis:</strong> ${totalPortasDisponiveis}<br>
-                  <strong>Total de Portas:</strong> ${totalPortasTotais}<br>
-                  <strong>Total de Portas Conectadas:</strong> ${totalPortasConectadas}<br>
-                </div>
-              `;
-              
-              ctosListHTML += '</div>';
-            } else {
-              ctosListHTML = `
-                <div style="margin-top: 12px; padding: 8px; background-color: #fff3cd; border-left: 3px solid #ffc107; border-radius: 4px;">
-                  <strong style="color: #856404;">(Sem CTOs implantadas)</strong>
-                </div>
-              `;
+              detalheHTML += '</div>';
             }
             
-            // Conteúdo inicial do InfoWindow (será atualizado com endereço)
             infoWindowContent = `
               <div style="padding: 12px; font-family: 'Inter', sans-serif; line-height: 1.6; max-width: 350px;">
-                <div style="background-color: #FFE5E5; padding: 8px; margin-bottom: 12px; border-left: 4px solid #DC3545; border-radius: 4px;">
-                  <strong style="color: #DC3545; font-size: 14px;">🏢 PRÉDIO/CONDOMÍNIO</strong>
+                <div style="background-color: #EEF2FF; padding: 8px; margin-bottom: 12px; border-left: 4px solid #6C63FF; border-radius: 4px;">
+                  <strong style="color: #4338ca; font-size: 14px;">🏢 CONDOMÍNIO CADASTRADO</strong>
                 </div>
                 <strong>Nome:</strong> ${String(nomePredio)}<br>
-                <strong>Status:</strong> ${String(statusCto)}<br>
+                <strong>Tipo:</strong> ${String(tipoMdu)}<br>
+                <strong>ID MDU:</strong> ${String(idMdu)}<br>
                 <strong>Distância:</strong> ${Number(cto.distancia_metros || 0)}m (${Number(cto.distancia_km || 0)}km)<br>
                 <div id="predio-endereco-${index}" style="margin-top: 8px;">
-                  <strong>Endereço:</strong> <span style="color: #6C757D;">Carregando...</span>
+                  <strong>Endereço:</strong> ${enderecoMdu
+                    ? `<span style="color: #333;">${String(enderecoMdu)}</span>`
+                    : `<span style="color: #6C757D;">Carregando...</span>`}
                 </div>
-                ${ctosListHTML}
+                ${detalheHTML}
               </div>
             `;
           } else {
