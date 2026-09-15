@@ -4,6 +4,7 @@ import crypto from 'crypto';
 import { analisarLocalizacaoChamado } from './analiseLocalizacao.js';
 import { isPortalCensupSupabaseAvailable } from './supabaseCensup.js';
 import { dbFindChamado, dbListAllChamados, dbListChamadosNaFila, dbReconcileChamadosComAgenda, dbUpsertChamado } from './chamadosDb.js';
+import { peekAtribuicaoPedido } from './filaEsteira.js';
 
 const FAKE_SEED_ID = '5303036a-6e14-4ca1-b5a7-46207c301735';
 const FAKE_SEED_PEDIDO = '1745000';
@@ -851,11 +852,29 @@ export async function upsertChamado(payload) {
     crypto.randomUUID();
   const now = new Date().toISOString();
   const previous = existing || {};
+
+  // Esteira: se o pedido já foi atribuído na Agenda, grava no chamado
+  let esteiraUsuario = previous.usuarioFila || payload.usuarioFila || null;
+  let esteiraEm = previous.filaAtribuidaEm || payload.filaAtribuidaEm || null;
+  if (!esteiraUsuario && payload.pedido) {
+    try {
+      const atr = peekAtribuicaoPedido(payload.pedido);
+      if (atr?.usuarioFila) {
+        esteiraUsuario = atr.usuarioFila;
+        esteiraEm = atr.atribuidoEm || now;
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
   const next = {
     ...previous,
     ...payload,
     id,
     filaStatus: payload.filaStatus || previous.filaStatus || 'na_fila',
+    usuarioFila: esteiraUsuario || previous.usuarioFila || null,
+    filaAtribuidaEm: esteiraEm || previous.filaAtribuidaEm || null,
     endereco: {
       ...(previous.endereco || {}),
       ...(payload.endereco || {})
