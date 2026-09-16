@@ -32,6 +32,7 @@ import {
 import { registerRelatoriosB2bRoutes } from './relatoriosB2bRoutes.js';
 import { registerPortalCensupRoutes } from './portalCensupRoutes.js';
 import { bootstrapAgendaBotIfEnabled } from './lib/portalCensup/agendaBot/index.js';
+import { replaceMduBaseFromExcel } from './lib/condominiosMdu/uploadAndGeocode.js';
 
 /** Cliente cluster-aware: respeita modo admin (primary/replica). */
 function createClusterAwareSupabase() {
@@ -550,6 +551,21 @@ let uploadProgress = {
   calculationId: null,
   totalCTOs: 0,
   processedCTOs: 0
+};
+
+// Progresso do upload da base MDU (condominios_mdu)
+let mduUploadInProgress = false;
+let mduUploadProgress = {
+  stage: 'idle', // idle | parsing | deleting | inserting | geocoding | completed | error
+  percent: 0,
+  message: '',
+  imported: 0,
+  totalRows: 0,
+  processedRows: 0,
+  missingBeforeGeocode: 0,
+  geocodedOk: 0,
+  geocodedFail: 0,
+  error: null
 };
 
 // Sistema de locks para operações críticas (prevenir race conditions)
@@ -2780,6 +2796,169 @@ app.get('/api/condominios/nearby', async (req, res) => {
       error: 'Erro interno', 
       details: err.message 
     });
+  }
+});
+
+// Progresso do upload da base MDU
+app.get('/api/condominios-mdu/upload-progress', (req, res) => {
+  const origin = req.headers.origin;
+  if (origin) res.setHeader('Access-Control-Allow-Origin', origin);
+  else res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  return res.json({
+    success: true,
+    inProgress: mduUploadInProgress,
+    ...mduUploadProgress
+  });
+});
+
+// Upload Excel → substitui condominios_mdu → geocodifica faltantes
+app.post('/api/condominios-mdu/upload', (req, res, next) => {
+  const origin = req.headers.origin;
+  if (origin) res.setHeader('Access-Control-Allow-Origin', origin);
+  else res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+
+  req.setTimeout(2 * 60 * 1000);
+  res.setTimeout(2 * 60 * 1000);
+
+  upload.single('file')(req, res, (err) => {
+    if (err) {
+      console.error('❌ [MDU Upload] Erro no multer:', err);
+      let errorMessage = err.message;
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        errorMessage = 'Arquivo muito grande. O tamanho máximo permitido é 100MB.';
+      }
+      return res.status(400).json({ success: false, error: errorMessage, errorCode: err.code });
+    }
+    next();
+  });
+}, async (req, res) => {
+  const origin = req.headers.origin;
+  if (origin) res.setHeader('Access-Control-Allow-Origin', origin);
+  else res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+
+  try {
+    if (mduUploadInProgress) {
+      return res.status(409).json({
+        success: false,
+        error: 'Já existe um upload da base MDU em andamento. Aguarde a conclusão.'
+      });
+    }
+
+    if (!req.file) {
+      return res.status(400).json({ success: false, error: 'Nenhum arquivo foi enviado' });
+    }
+
+    const allowedMimes = [
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'application/vnd.ms-excel',
+      'application/octet-stream'
+    ];
+    if (!allowedMimes.includes(req.file.mimetype) && !req.file.originalname.match(/\.(xlsx|xls)$/i)) {
+      if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+      return res.status(400).json({
+        success: false,
+        error: 'Formato inválido. Envie um Excel puro (.xlsx ou .xls).'
+      });
+    }
+
+    if (!isDbAvailable() && !isSupabaseAvailable()) {
+      if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+      return res.status(503).json({
+        success: false,
+        error: 'Supabase indisponível. Não é possível atualizar condominios_mdu.'
+      });
+    }
+
+    const tempFilePath = req.file.path;
+    const fileName = req.file.originalname;
+    const fileSize = req.file.size;
+
+    mduUploadInProgress = true;
+    mduUploadProgress = {
+      stage: 'parsing',
+      percent: 1,
+      message: 'Arquivo recebido. Processando em background...',
+      imported: 0,
+      totalRows: 0,
+      processedRows: 0,
+      missingBeforeGeocode: 0,
+      geocodedOk: 0,
+      geocodedFail: 0,
+      error: null
+    };
+
+    // Responder imediatamente (evita timeout do Railway)
+    res.json({
+      success: true,
+      processing: true,
+      message: 'Upload MDU recebido. Substituindo base e geocodificando em background...',
+      fileName,
+      fileSize
+    });
+
+    (async () => {
+      try {
+        console.log(`📤 [MDU Upload] Iniciando: ${fileName} (${fileSize} bytes)`);
+        const fileBuffer = await fsPromises.readFile(tempFilePath);
+        try {
+          await fsPromises.unlink(tempFilePath);
+        } catch (_) {
+          /* ignore */
+        }
+
+        const summary = await replaceMduBaseFromExcel(fileBuffer, {
+          onProgress: (patch) => {
+            mduUploadProgress = {
+              ...mduUploadProgress,
+              ...patch,
+              error: patch.stage === 'error' ? patch.error || patch.message : null
+            };
+          }
+        });
+
+        mduUploadProgress = {
+          ...mduUploadProgress,
+          stage: 'completed',
+          percent: 100,
+          imported: summary.imported,
+          missingBeforeGeocode: summary.missingBeforeGeocode,
+          geocodedOk: summary.geocodedOk,
+          geocodedFail: summary.geocodedFail,
+          error: null
+        };
+        console.log('✅ [MDU Upload] Concluído:', summary);
+      } catch (err) {
+        console.error('❌ [MDU Upload] Falha:', err);
+        mduUploadProgress = {
+          ...mduUploadProgress,
+          stage: 'error',
+          percent: mduUploadProgress.percent || 0,
+          message: err?.message || 'Erro ao atualizar base MDU',
+          error: err?.message || String(err)
+        };
+        try {
+          if (fs.existsSync(tempFilePath)) await fsPromises.unlink(tempFilePath);
+        } catch (_) {
+          /* ignore */
+        }
+      } finally {
+        mduUploadInProgress = false;
+      }
+    })();
+  } catch (err) {
+    mduUploadInProgress = false;
+    console.error('❌ [MDU Upload] Erro na rota:', err);
+    if (!res.headersSent) {
+      return res.status(500).json({
+        success: false,
+        error: err?.message || 'Erro ao processar upload MDU'
+      });
+    }
   }
 });
 
