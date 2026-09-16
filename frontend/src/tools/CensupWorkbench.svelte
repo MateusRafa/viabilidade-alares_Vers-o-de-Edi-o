@@ -392,8 +392,22 @@
 
   async function toggleEquipVisible(item, checked) {
     if (!item?.ctoKey || !viabilidadeRef) return;
+    // Feedback imediato na tabela (mapa atualiza em seguida)
+    const nextVisible = !!checked;
+    let num = 0;
+    equipamentos = equipamentos.map((e) => {
+      if (e.ctoKey === item.ctoKey) {
+        return { ...e, visible: nextVisible, n: nextVisible ? e.n : '-' };
+      }
+      return e;
+    });
+    equipamentos = equipamentos.map((e) => {
+      if (e.visible === false) return { ...e, n: '-' };
+      num += 1;
+      return { ...e, n: num };
+    });
     try {
-      await viabilidadeRef.setWorkbenchCtoVisible?.(item.ctoKey, checked);
+      await viabilidadeRef.setWorkbenchCtoVisible?.(item.ctoKey, nextVisible);
     } catch (err) {
       console.warn('[Workbench] toggle CTO:', err?.message || err);
     }
@@ -401,8 +415,15 @@
 
   async function toggleAllEquipVisible(checked) {
     if (!viabilidadeRef) return;
+    const on = !!checked;
+    let num = 0;
+    equipamentos = equipamentos.map((e) => {
+      if (!on) return { ...e, visible: false, n: '-' };
+      num += 1;
+      return { ...e, visible: true, n: num };
+    });
     try {
-      await viabilidadeRef.setAllWorkbenchCtosVisible?.(checked);
+      await viabilidadeRef.setAllWorkbenchCtosVisible?.(on);
     } catch (err) {
       console.warn('[Workbench] toggle all CTO:', err?.message || err);
     }
