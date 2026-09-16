@@ -2680,20 +2680,36 @@ app.get('/api/condominios/nearby', async (req, res) => {
         });
       }
       
-      // Calcular bounding box
-      const radiusDegrees = radiusMeters / 111000;
-      const latMin = lat - radiusDegrees;
-      const latMax = lat + radiusDegrees;
-      const lngMin = lng - radiusDegrees;
-      const lngMax = lng + radiusDegrees;
+      // Bounding box (lng corrigido por latitude)
+      const latDelta = radiusMeters / 111320;
+      const cosLat = Math.cos((lat * Math.PI) / 180);
+      const lngDelta = radiusMeters / (111320 * Math.max(0.2, Math.abs(cosLat)));
+      const latMin = lat - latDelta;
+      const latMax = lat + latDelta;
+      const lngMin = lng - lngDelta;
+      const lngMax = lng + lngDelta;
+
+      const coerceCoord = (value) => {
+        if (value === null || value === undefined || value === '') return NaN;
+        if (typeof value === 'number') return Number.isFinite(value) ? value : NaN;
+        let s = String(value).trim().replace(/\u00a0/g, '').replace(/\s+/g, '');
+        if (!s) return NaN;
+        if (s.includes(',') && s.includes('.')) s = s.replace(/\./g, '').replace(',', '.');
+        else if (s.includes(',')) s = s.replace(',', '.');
+        const n = Number(s);
+        return Number.isFinite(n) ? n : NaN;
+      };
       
       const { data: rows, error: queryError } = await supabase
         .from('condominios_mdu')
         .select('*')
+        .not('latitude', 'is', null)
+        .not('longitude', 'is', null)
         .gte('latitude', latMin)
         .lte('latitude', latMax)
         .gte('longitude', lngMin)
-        .lte('longitude', lngMax);
+        .lte('longitude', lngMax)
+        .limit(5000);
       
       if (queryError) {
         console.error('❌ [API] Erro ao buscar condominios_mdu:', queryError);
@@ -2702,6 +2718,24 @@ app.get('/api/condominios/nearby', async (req, res) => {
           error: 'Erro ao buscar condomínios',
           details: queryError.message 
         });
+      }
+
+      // Fallback: se o filtro numérico falhar (ex.: coluna TEXT), busca ampla e filtra em JS
+      let candidateRows = rows || [];
+      if (candidateRows.length === 0) {
+        console.warn('⚠️ [API] Bbox MDU vazio — tentando fallback por amostra regional...');
+        const pad = Math.max(latDelta, lngDelta) * 3;
+        const { data: fallbackRows, error: fbErr } = await supabase
+          .from('condominios_mdu')
+          .select('*')
+          .not('latitude', 'is', null)
+          .not('longitude', 'is', null)
+          .gte('latitude', lat - pad)
+          .lte('latitude', lat + pad)
+          .limit(5000);
+        if (!fbErr && fallbackRows?.length) {
+          candidateRows = fallbackRows;
+        }
       }
       
       const calculateDistance = (lat1, lng1, lat2, lng2) => {
@@ -2735,11 +2769,46 @@ app.get('/api/condominios/nearby', async (req, res) => {
         return [linha1, linha2].filter(Boolean).join(' · ');
       };
       
-      const nearbyCondominios = (rows || [])
+      const nearbyCondominios = (candidateRows || [])
         .map((row) => {
-          const cLat = parseFloat(row.latitude);
-          const cLng = parseFloat(row.longitude);
+          const cLat = coerceCoord(row.latitude);
+          const cLng = coerceCoord(row.longitude);
           if (isNaN(cLat) || isNaN(cLng)) return null;
+          // Sanity: Brasil (aprox.) — evita lat/lng trocados
+          if (cLat < -35 || cLat > 6 || cLng < -75 || cLng > -30) {
+            // Tentar invertido se parecer trocado
+            if (cLng >= -35 && cLng <= 6 && cLat >= -75 && cLat <= -30) {
+              const distanciaSwap = calculateDistance(lat, lng, cLng, cLat);
+              if (distanciaSwap <= radiusMeters) {
+                const nome = String(row.descricao || '').trim() || 'Condomínio';
+                return {
+                  nome_predio: nome,
+                  latitude: cLng,
+                  longitude: cLat,
+                  status_cto: String(row.tipo || '').trim() || null,
+                  distancia_metros: Math.round(distanciaSwap * 100) / 100,
+                  ctos_internas: [],
+                  fonte: 'mdu',
+                  id_endereco: row.id_endereco ?? null,
+                  id_mdu: row.id_mdu ?? null,
+                  controle_mdu: row.controle_mdu ?? null,
+                  descricao: nome,
+                  tipo: String(row.tipo || '').trim() || null,
+                  numero: row.numero ?? null,
+                  complemento: row.complemento ?? null,
+                  bairro: row.bairro ?? null,
+                  nome_logradouro: row.nome_logradouro ?? null,
+                  tipo_logradouro: row.tipo_logradouro ?? null,
+                  cep: row.cep ?? null,
+                  nome_cidade: row.nome_cidade ?? null,
+                  estado: row.estado ?? null,
+                  endereco_completo: buildEndereco(row),
+                  coords_swapped: true
+                };
+              }
+            }
+            return null;
+          }
           const distancia = calculateDistance(lat, lng, cLat, cLng);
           if (distancia > radiusMeters) return null;
           const nome = String(row.descricao || '').trim() || 'Condomínio';
