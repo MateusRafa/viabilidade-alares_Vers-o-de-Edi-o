@@ -62,6 +62,9 @@
   let mduUploadSuccess = false;
   let mduUploadPercent = 0;
   let mduUploadPollInterval = null;
+  let showMduUploadModal = false;
+  let mduUploadStep = 'idle'; // idle | running | done | error
+  let mduUploadFileName = '';
   let baseLastModified = null;
   let coverageLastModified = null; // Data da última atualização da mancha de cobertura
   let uploadPollInterval = null; // Intervalo de polling para verificar status
@@ -2039,6 +2042,13 @@
     }
   }
 
+  function closeMduUploadModal() {
+    if (mduUploadStep === 'running') return;
+    showMduUploadModal = false;
+    mduUploadStep = 'idle';
+    mduUploadFileName = '';
+  }
+
   async function pollMduUploadProgress() {
     try {
       const progressRes = await fetch(getApiUrl('/api/condominios-mdu/upload-progress'));
@@ -2052,11 +2062,13 @@
         uploadingMduBase = false;
         mduUploadSuccess = true;
         mduUploadPercent = 100;
+        mduUploadStep = 'done';
         mduUploadMessage = progress.message || 'Base MDU atualizada com sucesso.';
       } else if (progress.stage === 'error') {
         clearMduUploadPoll();
         uploadingMduBase = false;
         mduUploadSuccess = false;
+        mduUploadStep = 'error';
         mduUploadMessage = progress.error || progress.message || 'Erro ao atualizar base MDU.';
       }
     } catch (err) {
@@ -2072,7 +2084,10 @@
     const name = String(file.name || '').toLowerCase();
     if (!name.endsWith('.xlsx') && !name.endsWith('.xls')) {
       mduUploadSuccess = false;
+      mduUploadStep = 'error';
       mduUploadMessage = 'Envie um arquivo Excel puro (.xlsx ou .xls). CSV não é aceito.';
+      mduUploadFileName = file.name || '';
+      showMduUploadModal = true;
       return;
     }
 
@@ -2080,7 +2095,10 @@
     uploadingMduBase = true;
     mduUploadSuccess = false;
     mduUploadPercent = 0;
+    mduUploadStep = 'running';
+    mduUploadFileName = file.name || '';
     mduUploadMessage = 'Enviando planilha MDU...';
+    showMduUploadModal = true;
 
     try {
       const formData = new FormData();
@@ -2099,22 +2117,25 @@
         throw new Error(data.error || `Erro do servidor (${response.status})`);
       }
 
-      mduUploadSuccess = true;
       mduUploadMessage = data.message || 'Processando base MDU...';
 
       if (data.processing) {
         uploadingMduBase = true;
+        mduUploadStep = 'running';
         mduUploadPollInterval = setInterval(pollMduUploadProgress, 1500);
         await pollMduUploadProgress();
       } else {
         uploadingMduBase = false;
         mduUploadPercent = 100;
+        mduUploadStep = 'done';
+        mduUploadSuccess = true;
         mduUploadMessage = data.message || 'Base MDU atualizada.';
       }
     } catch (err) {
       clearMduUploadPoll();
       uploadingMduBase = false;
       mduUploadSuccess = false;
+      mduUploadStep = 'error';
       mduUploadMessage = err?.message || 'Erro ao atualizar base MDU.';
       console.error('❌ [MDU Upload]', err);
     }
@@ -2832,6 +2853,78 @@
           </div>
         {/if}
 
+        {#if showMduUploadModal}
+          <div
+            class="modal-overlay confirm-overlay cluster-switch-overlay"
+            role="presentation"
+          >
+            <div
+              class="modal-content cluster-switch-modal"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="mdu-upload-title"
+              tabindex="-1"
+              on:click|stopPropagation
+              on:keydown={(e) => e.key === 'Escape' && mduUploadStep !== 'running' && closeMduUploadModal()}
+            >
+              <div class="modal-header">
+                <h2 id="mdu-upload-title">Atualizar base MDU</h2>
+                {#if mduUploadStep !== 'running'}
+                  <button
+                    type="button"
+                    class="modal-close"
+                    on:click={closeMduUploadModal}
+                    aria-label="Fechar"
+                  >×</button>
+                {/if}
+              </div>
+
+              <div class="modal-body">
+                {#if mduUploadFileName}
+                  <p class="cluster-switch-hint" style="margin: 0 0 0.75rem 0;">
+                    Arquivo: <strong>{mduUploadFileName}</strong>
+                  </p>
+                {/if}
+
+                {#if mduUploadStep === 'running'}
+                  <p class="cluster-switch-status">{mduUploadMessage || 'Atualizando base MDU…'}</p>
+                  <div
+                    class="cluster-progress-track"
+                    role="progressbar"
+                    aria-valuemin="0"
+                    aria-valuemax="100"
+                    aria-valuenow={Math.round(mduUploadPercent)}
+                  >
+                    <div class="cluster-progress-fill mdu-progress-fill" style={`width: ${Math.max(mduUploadPercent, 3)}%`}></div>
+                  </div>
+                  <p class="cluster-progress-label">{Math.round(mduUploadPercent)}%</p>
+                  <p class="cluster-switch-hint">
+                    Não feche esta janela até concluir. A base atual será substituída e os prédios sem lat/lng serão geocodificados.
+                  </p>
+                {:else if mduUploadStep === 'done'}
+                  <p class="cluster-switch-status success-text">{mduUploadMessage}</p>
+                  <div class="cluster-progress-track" aria-hidden="true">
+                    <div class="cluster-progress-fill mdu-progress-fill" style="width: 100%"></div>
+                  </div>
+                  <p class="cluster-progress-label">100%</p>
+                {:else}
+                  <p class="cluster-switch-status error-text">{mduUploadMessage}</p>
+                {/if}
+
+                <div class="modal-actions">
+                  {#if mduUploadStep === 'running'}
+                    <button type="button" class="btn-cancel" disabled title="Aguarde a conclusão do upload">
+                      Atualizando…
+                    </button>
+                  {:else}
+                    <button type="button" class="btn-add-confirm" on:click={closeMduUploadModal}>Fechar</button>
+                  {/if}
+                </div>
+              </div>
+            </div>
+          </div>
+        {/if}
+
         {#if showClusterInfo}
           <div
             class="info-modal-overlay"
@@ -2914,33 +3007,6 @@
               />
             </label>
           </div>
-
-          {#if uploadingMduBase || mduUploadMessage}
-            <div style="margin-top: 0.75rem;">
-              {#if uploadingMduBase}
-                <div class="progress-container">
-                  <div class="progress-bar-wrapper">
-                    <div class="progress-label">
-                      Atualizando MDU{mduUploadPercent ? ` — ${Math.round(mduUploadPercent)}%` : '...'}
-                    </div>
-                    <div class="progress-bar">
-                      <div class="progress-fill" style="width: {mduUploadPercent || 5}%;"></div>
-                    </div>
-                  </div>
-                </div>
-              {/if}
-              {#if mduUploadMessage}
-                <div
-                  class="upload-message"
-                  class:success={mduUploadSuccess && !uploadingMduBase}
-                  class:error={!mduUploadSuccess && !uploadingMduBase}
-                  style="margin-top: 0.5rem;"
-                >
-                  {mduUploadMessage}
-                </div>
-              {/if}
-            </div>
-          {/if}
           
           {#if userTipo === 'admin'}
             <div class="delete-base-container" style="margin-top: 1rem;">
@@ -3729,6 +3795,10 @@
     border-radius: 999px;
     transition: width 0.25s ease;
     min-width: 0;
+  }
+
+  .mdu-progress-fill {
+    background: linear-gradient(135deg, #0d9488 0%, #0891b2 100%);
   }
 
   .cluster-progress-label {
