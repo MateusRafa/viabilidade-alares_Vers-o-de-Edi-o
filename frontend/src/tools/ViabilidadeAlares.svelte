@@ -496,6 +496,8 @@
   let markers = [];
   let clientMarker = null; // Marcador do cliente
   let clientInfoWindow = null; // InfoWindow do cliente
+  /** InfoWindows de CTOs/prédios abertos no mapa (fechados no print) */
+  let mapInfoWindows = [];
   let clientCoords = null; // Coordenadas do cliente
   let ctos = []; // CTOs encontradas
   
@@ -719,8 +721,74 @@
     applyPrediosVisibilityToMap();
   }
 
+  /** Fecha casinha/CTO InfoWindows. Opcionalmente esconde o DOM só durante o print. */
+  function closeMapInfoWindowsForCapture({ hideDom = false } = {}) {
+    if (clientInfoWindow) {
+      try {
+        clientInfoWindow.close();
+      } catch (_) {
+        /* ignore */
+      }
+    }
+    for (const iw of mapInfoWindows || []) {
+      try {
+        iw?.close?.();
+      } catch (_) {
+        /* ignore */
+      }
+    }
+    if (!hideDom) return [];
+    const mapEl = typeof getMapElement === 'function' ? getMapElement() : null;
+    const root = mapEl || document;
+    const hidden = [];
+    try {
+      root
+        .querySelectorAll?.(
+          '.gm-style-iw, .gm-style-iw-a, .gm-style-iw-t, .gm-style-iw-c, .gm-style-iw-d, .gm-style-iw-chr'
+        )
+        ?.forEach((el) => {
+          hidden.push({
+            el,
+            display: el.style.display,
+            visibility: el.style.visibility,
+            opacity: el.style.opacity
+          });
+          el.style.setProperty('display', 'none', 'important');
+          el.style.setProperty('visibility', 'hidden', 'important');
+          el.style.setProperty('opacity', '0', 'important');
+        });
+    } catch (_) {
+      /* ignore */
+    }
+    return hidden;
+  }
+
+  function restoreHiddenInfoWindowDom(hidden = []) {
+    for (const item of hidden || []) {
+      try {
+        if (!item?.el) continue;
+        if (item.display != null) item.el.style.display = item.display;
+        else item.el.style.removeProperty('display');
+        if (item.visibility != null) item.el.style.visibility = item.visibility;
+        else item.el.style.removeProperty('visibility');
+        if (item.opacity != null) item.el.style.opacity = item.opacity;
+        else item.el.style.removeProperty('opacity');
+      } catch (_) {
+        /* ignore */
+      }
+    }
+  }
+
   /** Remove do mapa todos os marcadores que não são a casinha do cliente. */
   function clearCtoMarkersFromMap() {
+    for (const iw of mapInfoWindows || []) {
+      try {
+        iw?.close?.();
+      } catch (_) {
+        /* ignore */
+      }
+    }
+    mapInfoWindows = [];
     const kept = [];
     for (const marker of markers || []) {
       if (!marker) continue;
@@ -3667,6 +3735,13 @@
       });
 
       marker.addListener('click', () => {
+        for (const iw of mapInfoWindows || []) {
+          try {
+            iw?.close?.();
+          } catch (_) {
+            /* ignore */
+          }
+        }
         clientInfoWindow.open(map, marker);
       });
 
@@ -6326,9 +6401,27 @@
           const ctoInfoWindow = new google.maps.InfoWindow({
             content: infoWindowContent
           });
+          mapInfoWindows.push(ctoInfoWindow);
 
           // Adicionar listener de clique (async para buscar endereço do prédio)
           ctoMarker.addListener('click', async () => {
+            // Um InfoWindow por vez: fecha casinha e outros CTOs
+            if (clientInfoWindow) {
+              try {
+                clientInfoWindow.close();
+              } catch (_) {
+                /* ignore */
+              }
+            }
+            for (const iw of mapInfoWindows || []) {
+              if (iw !== ctoInfoWindow) {
+                try {
+                  iw?.close?.();
+                } catch (_) {
+                  /* ignore */
+                }
+              }
+            }
             ctoInfoWindow.open(map, ctoMarker);
             
             // Se for prédio, buscar endereço completo via reverse geocoding
@@ -6748,7 +6841,11 @@
     };
 
     const prevPrediosVisible = prediosVisibleOnMap;
+    let hiddenIwDom = [];
     try {
+      // Garante que o box do endereço/CTOs não aparece no print
+      hiddenIwDom = closeMapInfoWindowsForCapture({ hideDom: true });
+
       // Print: só casinha + CTOs de rua — prédios MDU não entram no enquadramento
       const capturePoints = [clientCoords];
       const pushCto = (cto) => {
@@ -6797,6 +6894,9 @@
         }
       }
 
+      // Fecha de novo após fitBounds (Google às vezes reinsere o IW) e aguarda 1 frame
+      restoreHiddenInfoWindowDom(hiddenIwDom);
+      hiddenIwDom = closeMapInfoWindowsForCapture({ hideDom: true });
       await new Promise((r) => requestAnimationFrame(r));
 
       const mapElement = getMapElement();
@@ -6830,6 +6930,16 @@
             clonedMap.style.display = 'block';
             clonedMap.style.background = '#ffffff';
           }
+          // Cinto de segurança: InfoWindows nunca entram no print
+          clonedDoc
+            .querySelectorAll?.(
+              '.gm-style-iw, .gm-style-iw-a, .gm-style-iw-t, .gm-style-iw-c, .gm-style-iw-d, .gm-style-iw-chr'
+            )
+            ?.forEach((el) => {
+              el.style.display = 'none';
+              el.style.visibility = 'hidden';
+              el.style.opacity = '0';
+            });
         }
       });
 
@@ -6838,6 +6948,7 @@
       console.error('Erro ao capturar mapa:', err);
       throw err;
     } finally {
+      restoreHiddenInfoWindowDom(hiddenIwDom);
       if (prediosVisibleOnMap !== prevPrediosVisible) {
         prediosVisibleOnMap = prevPrediosVisible;
         applyPrediosVisibilityToMap();
