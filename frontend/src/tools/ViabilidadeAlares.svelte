@@ -722,6 +722,26 @@
   }
 
   /** Fecha casinha/CTO InfoWindows. Opcionalmente esconde o DOM só durante o print. */
+  function isGoogleInfoWindowNode(el) {
+    if (!el || el.nodeType !== 1) return false;
+    try {
+      if (el.closest?.('.gm-style-iw-a, .gm-style-iw-t, .gm-style-iw-tc')) return true;
+      const cls = el.classList;
+      if (!cls) return false;
+      return (
+        cls.contains('gm-style-iw') ||
+        cls.contains('gm-style-iw-a') ||
+        cls.contains('gm-style-iw-t') ||
+        cls.contains('gm-style-iw-tc') ||
+        cls.contains('gm-style-iw-c') ||
+        cls.contains('gm-style-iw-d') ||
+        cls.contains('gm-style-iw-chr')
+      );
+    } catch (_) {
+      return false;
+    }
+  }
+
   function closeMapInfoWindowsForCapture({ hideDom = false } = {}) {
     if (clientInfoWindow) {
       try {
@@ -738,25 +758,43 @@
       }
     }
     if (!hideDom) return [];
+
+    // Busca no documento inteiro: IW do Google às vezes fica fora do #map no clone
+    const roots = [];
     const mapEl = typeof getMapElement === 'function' ? getMapElement() : null;
-    const root = mapEl || document;
+    if (mapEl) roots.push(mapEl);
+    if (typeof document !== 'undefined') {
+      roots.push(document);
+      const host = mapEl?.closest?.('.map-container, .wb-map-host, .viabilidade-content');
+      if (host) roots.push(host);
+    }
+
+    const seen = new Set();
     const hidden = [];
+    const hideEl = (el) => {
+      if (!el || seen.has(el)) return;
+      seen.add(el);
+      hidden.push({
+        el,
+        display: el.style.display,
+        visibility: el.style.visibility,
+        opacity: el.style.opacity,
+        pointerEvents: el.style.pointerEvents
+      });
+      el.style.setProperty('display', 'none', 'important');
+      el.style.setProperty('visibility', 'hidden', 'important');
+      el.style.setProperty('opacity', '0', 'important');
+      el.style.setProperty('pointer-events', 'none', 'important');
+    };
+
     try {
-      root
-        .querySelectorAll?.(
-          '.gm-style-iw, .gm-style-iw-a, .gm-style-iw-t, .gm-style-iw-c, .gm-style-iw-d, .gm-style-iw-chr'
-        )
-        ?.forEach((el) => {
-          hidden.push({
-            el,
-            display: el.style.display,
-            visibility: el.style.visibility,
-            opacity: el.style.opacity
-          });
-          el.style.setProperty('display', 'none', 'important');
-          el.style.setProperty('visibility', 'hidden', 'important');
-          el.style.setProperty('opacity', '0', 'important');
-        });
+      for (const root of roots) {
+        root
+          .querySelectorAll?.(
+            '.gm-style-iw-a, .gm-style-iw-t, .gm-style-iw-tc, .gm-style-iw, .gm-style-iw-c, .gm-style-iw-d, .gm-style-iw-chr'
+          )
+          ?.forEach((el) => hideEl(el));
+      }
     } catch (_) {
       /* ignore */
     }
@@ -773,6 +811,8 @@
         else item.el.style.removeProperty('visibility');
         if (item.opacity != null) item.el.style.opacity = item.opacity;
         else item.el.style.removeProperty('opacity');
+        if (item.pointerEvents != null) item.el.style.pointerEvents = item.pointerEvents;
+        else item.el.style.removeProperty('pointer-events');
       } catch (_) {
         /* ignore */
       }
@@ -6894,16 +6934,20 @@
         }
       }
 
-      // Fecha de novo após fitBounds (Google às vezes reinsere o IW) e aguarda 1 frame
-      restoreHiddenInfoWindowDom(hiddenIwDom);
+      // Fecha InfoWindows e NÃO restaura o DOM até depois do html2canvas
+      // (restaurar no meio reexibia o box da CTO no print)
       hiddenIwDom = closeMapInfoWindowsForCapture({ hideDom: true });
       await new Promise((r) => requestAnimationFrame(r));
+      // Segunda passada: Google pode recriar o nó no idle do fitBounds
+      hiddenIwDom = [...hiddenIwDom, ...closeMapInfoWindowsForCapture({ hideDom: true })];
+      await new Promise((r) => setTimeout(r, 50));
 
       const mapElement = getMapElement();
       if (!mapElement) {
         throw new Error('Elemento do mapa não encontrado');
       }
 
+      mapElement.classList.add('capturing-map-print');
       mapElement.style.visibility = 'visible';
       mapElement.style.opacity = '1';
       mapElement.style.display = 'block';
@@ -6918,6 +6962,7 @@
         imageTimeout: 4000,
         removeContainer: true,
         foreignObjectRendering: false,
+        ignoreElements: (el) => isGoogleInfoWindowNode(el),
         onclone: (clonedDoc) => {
           if (clonedDoc.body) {
             clonedDoc.body.style.background = '#ffffff';
@@ -6930,15 +6975,19 @@
             clonedMap.style.display = 'block';
             clonedMap.style.background = '#ffffff';
           }
-          // Cinto de segurança: InfoWindows nunca entram no print
+          // Remove InfoWindows do clone (casinha + CTO) — não basta display:none
           clonedDoc
             .querySelectorAll?.(
-              '.gm-style-iw, .gm-style-iw-a, .gm-style-iw-t, .gm-style-iw-c, .gm-style-iw-d, .gm-style-iw-chr'
+              '.gm-style-iw-a, .gm-style-iw-t, .gm-style-iw-tc, .gm-style-iw, .gm-style-iw-c, .gm-style-iw-d, .gm-style-iw-chr'
             )
             ?.forEach((el) => {
-              el.style.display = 'none';
-              el.style.visibility = 'hidden';
-              el.style.opacity = '0';
+              try {
+                el.remove();
+              } catch (_) {
+                el.style.display = 'none';
+                el.style.visibility = 'hidden';
+                el.style.opacity = '0';
+              }
             });
         }
       });
@@ -6948,6 +6997,11 @@
       console.error('Erro ao capturar mapa:', err);
       throw err;
     } finally {
+      try {
+        getMapElement()?.classList?.remove('capturing-map-print');
+      } catch (_) {
+        /* ignore */
+      }
       restoreHiddenInfoWindowDom(hiddenIwDom);
       if (prediosVisibleOnMap !== prevPrediosVisible) {
         prediosVisibleOnMap = prevPrediosVisible;
@@ -10410,6 +10464,20 @@
   .viabilidade-content.theme-dark :global(.gm-style-iw-c),
   .viabilidade-content.theme-dark :global(.gm-style-iw-d) {
     color: #1f2937 !important;
+  }
+
+  /* Durante o print: esconde qualquer InfoWindow (casinha ou CTO) */
+  :global(.map.capturing-map-print .gm-style-iw-a),
+  :global(.map.capturing-map-print .gm-style-iw-t),
+  :global(.map.capturing-map-print .gm-style-iw-tc),
+  :global(.map.capturing-map-print .gm-style-iw),
+  :global(.map.capturing-map-print .gm-style-iw-c),
+  :global(.map.capturing-map-print .gm-style-iw-d),
+  :global(.map.capturing-map-print .gm-style-iw-chr) {
+    display: none !important;
+    visibility: hidden !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
   }
 
   .viabilidade-content.theme-dark :global(.gm-style-iw-d),
