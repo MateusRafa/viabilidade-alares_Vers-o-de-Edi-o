@@ -71,14 +71,73 @@ function getMapsApiKey() {
 
 function parseCoord(value) {
   if (value === null || value === undefined || value === '') return null;
+
+  // Número JS direto (célula Excel numérica)
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) return null;
+    // Rejeitar serial de data/hora do Excel disfarçado de coordenada
+    if (Math.abs(value) > 180) return null;
+    return value;
+  }
+
   let s = String(value).trim();
   if (!s) return null;
-  s = s.replace(/\s+/g, '').replace(',', '.');
-  // Dois pontos decimais (ex.: -35.2168636.3) → inválido
-  if ((s.match(/\./g) || []).length > 1) return null;
+
+  // Remover lixo comum (aspas, grau, NBSP)
+  s = s
+    .replace(/\u00a0/g, '')
+    .replace(/["'`°]/g, '')
+    .replace(/\s+/g, '')
+    .replace(/^[^\d+-]+/, '')
+    .replace(/[^\dEe.+-]+$/g, '');
+
+  if (!s) return null;
+
+  // Notação científica
+  if (/^-?\d+(\.\d+)?[eE][+-]?\d+$/.test(s)) {
+    const n = Number(s);
+    if (!Number.isFinite(n) || Math.abs(n) > 180) return null;
+    return n;
+  }
+
+  // Formato BR: milhar com ponto e decimal com vírgula (−35.201.650,35)
+  if (s.includes(',') && s.includes('.')) {
+    s = s.replace(/\./g, '').replace(',', '.');
+  } else if (s.includes(',')) {
+    // Só vírgula → decimal BR (−5,786723923)
+    s = s.replace(',', '.');
+  } else if ((s.match(/\./g) || []).length > 1) {
+    // Vários pontos sem vírgula: se o último grupo tem 1–6 dígitos, tratar como decimal
+    // ex.: -35.201.65035 → inválido; -35.20165035 com 1 ponto → ok já cai no ramo normal
+    // ex. quebrado: -35.2168636.3 → null
+    const parts = s.replace(/^-/, '').split('.');
+    const last = parts[parts.length - 1];
+    if (last.length <= 8 && parts.length === 2) {
+      // na prática não entra aqui com length>1 de match
+    } else if (parts.length > 2) {
+      // Dois+ pontos: juntar milhares e usar último como decimal se fizer sentido
+      if (last.length >= 1 && last.length <= 10) {
+        const sign = s.startsWith('-') ? '-' : '';
+        s = `${sign}${parts.slice(0, -1).join('')}.${last}`;
+      } else {
+        return null;
+      }
+    }
+  }
+
   if (!/^-?\d+(\.\d+)?$/.test(s)) return null;
   const n = Number(s);
-  return Number.isFinite(n) ? n : null;
+  if (!Number.isFinite(n) || Math.abs(n) > 180) return null;
+  return n;
+}
+
+/** Aceita lat/lng de valor cru ou formatado (Excel). */
+function parseCoordLoose(...values) {
+  for (const v of values) {
+    const n = parseCoord(v);
+    if (n != null) return n;
+  }
+  return null;
 }
 
 function parseNullableBigInt(value) {
@@ -154,14 +213,12 @@ export function parseMduExcelBuffer(fileBuffer) {
   }
 
   const headerMap = buildHeaderMap(headers);
-  // latitude/longitude podem estar vazias — exigimos descrição/ID ou endereço para geocode
   const missingCols = [];
   if (!headerMap.descricao && !headerMap.id_mdu) {
     missingCols.push('descricao (ou ID MDU)');
   }
-  if (!headerMap.latitude && !headerMap.nome_logradouro && !headerMap.descricao) {
-    missingCols.push('latitude ou endereço (nomelogradouro/descricao)');
-  }
+  if (!headerMap.latitude) missingCols.push('latitude');
+  if (!headerMap.longitude) missingCols.push('longitude');
   if (missingCols.length) {
     throw new Error(
       `Colunas insuficientes na planilha MDU. Faltando: ${missingCols.join(', ')}. ` +
@@ -169,8 +226,10 @@ export function parseMduExcelBuffer(fileBuffer) {
     );
   }
 
-  const rows = XLSX.utils.sheet_to_json(worksheet, { defval: '', raw: true });
-  if (!rows.length) {
+  // raw = valor numérico da célula; formatted = texto exibido (útil p/ decimal BR)
+  const rowsRaw = XLSX.utils.sheet_to_json(worksheet, { defval: '', raw: true });
+  const rowsFmt = XLSX.utils.sheet_to_json(worksheet, { defval: '', raw: false });
+  if (!rowsRaw.length) {
     throw new Error('O arquivo Excel está vazio ou não contém dados válidos.');
   }
 
@@ -178,21 +237,29 @@ export function parseMduExcelBuffer(fileBuffer) {
   const seenKeys = new Set();
   let skippedDuplicates = 0;
   let skippedEmpty = 0;
+  let withCoordinates = 0;
 
-  for (const row of rows) {
+  for (let idx = 0; idx < rowsRaw.length; idx++) {
+    const row = rowsRaw[idx];
+    const rowFmt = rowsFmt[idx] || {};
     const get = (field) => {
       const col = headerMap[field];
       if (!col) return '';
       return row[col];
     };
+    const getFmt = (field) => {
+      const col = headerMap[field];
+      if (!col) return '';
+      return rowFmt[col];
+    };
 
-    const descricao = cellText(get('descricao'));
+    const descricao = cellText(get('descricao')) || cellText(getFmt('descricao'));
     const idMdu = parseNullableBigInt(get('id_mdu'));
     const idEndereco = parseNullableBigInt(get('id_endereco'));
-    const latitude = parseCoord(get('latitude'));
-    const longitude = parseCoord(get('longitude'));
+    const latitude = parseCoordLoose(get('latitude'), getFmt('latitude'));
+    const longitude = parseCoordLoose(get('longitude'), getFmt('longitude'));
 
-    if (!descricao && idMdu == null && !latitude && !longitude) {
+    if (!descricao && idMdu == null && latitude == null && longitude == null) {
       skippedEmpty += 1;
       continue;
     }
@@ -212,8 +279,10 @@ export function parseMduExcelBuffer(fileBuffer) {
       seenKeys.add(dedupeKey);
     }
 
-    const dataCadastro = parseDate(get('data_cadastro'));
-    const horaCadastro = parseTime(get('hora_cadastro'));
+    if (latitude != null && longitude != null) withCoordinates += 1;
+
+    const dataCadastro = parseDate(get('data_cadastro')) || parseDate(getFmt('data_cadastro'));
+    const horaCadastro = parseTime(get('hora_cadastro')) || parseTime(getFmt('hora_cadastro'));
     let cadastradoEm = null;
     if (dataCadastro) {
       cadastradoEm = `${dataCadastro}T${horaCadastro || '00:00:00'}`;
@@ -224,16 +293,16 @@ export function parseMduExcelBuffer(fileBuffer) {
       id_mdu: idMdu,
       controle_mdu: parseNullableBigInt(get('controle_mdu')),
       descricao,
-      tipo: cellText(get('tipo')),
-      numero: cellText(get('numero')),
-      complemento: cellText(get('complemento')),
-      bairro: cellText(get('bairro')),
-      nome_logradouro: cellText(get('nome_logradouro')),
-      tipo_logradouro: cellText(get('tipo_logradouro')),
+      tipo: cellText(get('tipo')) || cellText(getFmt('tipo')),
+      numero: cellText(get('numero')) || cellText(getFmt('numero')),
+      complemento: cellText(get('complemento')) || cellText(getFmt('complemento')),
+      bairro: cellText(get('bairro')) || cellText(getFmt('bairro')),
+      nome_logradouro: cellText(get('nome_logradouro')) || cellText(getFmt('nome_logradouro')),
+      tipo_logradouro: cellText(get('tipo_logradouro')) || cellText(getFmt('tipo_logradouro')),
       id_cep: parseNullableBigInt(get('id_cep')),
-      cep: cellText(get('cep')),
-      nome_cidade: cellText(get('nome_cidade')),
-      estado: cellText(get('estado')),
+      cep: cellText(get('cep')) || cellText(getFmt('cep')),
+      nome_cidade: cellText(get('nome_cidade')) || cellText(getFmt('nome_cidade')),
+      estado: cellText(get('estado')) || cellText(getFmt('estado')),
       latitude,
       longitude,
       data_cadastro: dataCadastro,
@@ -246,13 +315,28 @@ export function parseMduExcelBuffer(fileBuffer) {
     throw new Error('Nenhum registro MDU válido encontrado na planilha.');
   }
 
+  const coordRatio = withCoordinates / records.length;
+  if (withCoordinates === 0) {
+    throw new Error(
+      'Nenhuma linha com latitude/longitude válida na planilha. ' +
+        'A base atual NÃO foi alterada. Verifique se as colunas latitude/longitude estão numéricas (use ponto decimal).'
+    );
+  }
+  if (coordRatio < 0.5) {
+    throw new Error(
+      `Só ${withCoordinates} de ${records.length} linhas (${Math.round(coordRatio * 100)}%) têm lat/lng válidas. ` +
+        'A base atual NÃO foi alterada. Corrija as coordenadas na planilha e tente de novo.'
+    );
+  }
+
   return {
     headers,
     headerMap,
     records,
     skippedDuplicates,
     skippedEmpty,
-    totalRowsInSheet: rows.length
+    totalRowsInSheet: rowsRaw.length,
+    withCoordinates
   };
 }
 
@@ -289,7 +373,20 @@ async function deleteAllMdu(client) {
 async function insertMduBatches(client, records, onProgress) {
   let inserted = 0;
   for (let i = 0; i < records.length; i += INSERT_BATCH_SIZE) {
-    const batch = records.slice(i, i + INSERT_BATCH_SIZE);
+    // Datas opcionais às vezes quebram o insert (tipos TIME/DATE do Excel) — mapa não depende delas
+    const batch = records.slice(i, i + INSERT_BATCH_SIZE).map((row) => {
+      const {
+        data_cadastro,
+        hora_cadastro,
+        cadastrado_em,
+        ...core
+      } = row;
+      const out = { ...core };
+      if (data_cadastro) out.data_cadastro = data_cadastro;
+      if (hora_cadastro && /^\d{2}:\d{2}:\d{2}$/.test(hora_cadastro)) out.hora_cadastro = hora_cadastro;
+      if (cadastrado_em && /^\d{4}-\d{2}-\d{2}T/.test(cadastrado_em)) out.cadastrado_em = cadastrado_em;
+      return out;
+    });
     const { error } = await client.from('condominios_mdu').insert(batch);
     if (error) throw error;
     inserted += batch.length;
@@ -388,19 +485,36 @@ async function geocodeAddress(query, { uf } = {}) {
 }
 
 export async function fetchMissingMduCoords(client, limit = 0) {
-  let query = client
-    .from('condominios_mdu')
-    .select(
-      'id,id_endereco,id_mdu,descricao,tipo,numero,complemento,bairro,nome_logradouro,tipo_logradouro,cep,nome_cidade,estado,latitude,longitude'
-    )
-    .or('latitude.is.null,longitude.is.null')
-    .order('id', { ascending: true });
+  const pageSize = 1000;
+  const all = [];
+  let from = 0;
 
-  if (limit > 0) query = query.limit(limit);
+  while (true) {
+    const to = from + pageSize - 1;
+    let query = client
+      .from('condominios_mdu')
+      .select(
+        'id,id_endereco,id_mdu,descricao,tipo,numero,complemento,bairro,nome_logradouro,tipo_logradouro,cep,nome_cidade,estado,latitude,longitude'
+      )
+      .or('latitude.is.null,longitude.is.null')
+      .order('id', { ascending: true })
+      .range(from, to);
 
-  const { data, error } = await query;
-  if (error) throw error;
-  return data || [];
+    const { data, error } = await query;
+    if (error) throw error;
+    const chunk = data || [];
+    all.push(...chunk);
+
+    if (limit > 0 && all.length >= limit) {
+      return all.slice(0, limit);
+    }
+    if (chunk.length < pageSize) break;
+    from += pageSize;
+    // Segurança: não carregar mais de 50k em memória num request
+    if (all.length >= 50000) break;
+  }
+
+  return all;
 }
 
 export async function geocodeMissingMduRows(client, { delayMs = GEOCODE_DELAY_MS, onProgress } = {}) {
@@ -464,9 +578,10 @@ export async function replaceMduBaseFromExcel(fileBuffer, { onProgress } = {}) {
   report({
     stage: 'deleting',
     percent: 15,
-    message: `Planilha lida (${parsed.records.length} registros). Limpando base atual...`,
+    message: `Planilha ok: ${parsed.records.length} registros (${parsed.withCoordinates} com coordenadas). Limpando base atual...`,
     imported: 0,
-    totalRows: parsed.records.length
+    totalRows: parsed.records.length,
+    withCoordinates: parsed.withCoordinates
   });
 
   await dualWrite(async (client, label) => {
@@ -520,8 +635,22 @@ export async function replaceMduBaseFromExcel(fileBuffer, { onProgress } = {}) {
   });
 
   let geoResult = { missing: missingCount, ok: 0, fail: 0 };
+  // Geocode só faltantes pontuais (ex.: < 500). Base grande sem coord = problema na planilha.
+  const GEOCODE_MAX = 500;
   if (missingCount > 0) {
-    if (!getMapsApiKey()) {
+    if (missingCount > GEOCODE_MAX) {
+      report({
+        stage: 'geocoding',
+        percent: 90,
+        message:
+          `Importação ok, mas ${missingCount} ficaram sem lat/lng (acima do limite de geocode automático ${GEOCODE_MAX}). ` +
+          'Corrija a planilha ou rode o script geocode:condominios-mdu.',
+        missingBeforeGeocode: missingCount,
+        geocodedOk: 0,
+        geocodedFail: missingCount
+      });
+      geoResult = { missing: missingCount, ok: 0, fail: missingCount, skippedTooMany: true };
+    } else if (!getMapsApiKey()) {
       report({
         stage: 'geocoding',
         percent: 90,
@@ -554,13 +683,15 @@ export async function replaceMduBaseFromExcel(fileBuffer, { onProgress } = {}) {
 
   const summary = {
     imported: parsed.records.length,
+    withCoordinates: parsed.withCoordinates,
     skippedDuplicates: parsed.skippedDuplicates,
     skippedEmpty: parsed.skippedEmpty,
     totalRowsInSheet: parsed.totalRowsInSheet,
     missingBeforeGeocode: geoResult.missing,
     geocodedOk: geoResult.ok,
     geocodedFail: geoResult.fail,
-    skippedGeocodeNoKey: Boolean(geoResult.skippedNoKey)
+    skippedGeocodeNoKey: Boolean(geoResult.skippedNoKey),
+    skippedGeocodeTooMany: Boolean(geoResult.skippedTooMany)
   };
 
   report({
@@ -577,6 +708,9 @@ export function buildSuccessMessage(summary) {
   const parts = [
     `${summary.imported} condomínio(s) MDU importado(s)`
   ];
+  if (summary.withCoordinates != null) {
+    parts.push(`${summary.withCoordinates} com lat/lng na planilha`);
+  }
   if (summary.missingBeforeGeocode > 0) {
     parts.push(
       `${summary.geocodedOk} geocodificado(s)`,
@@ -587,6 +721,9 @@ export function buildSuccessMessage(summary) {
   }
   if (summary.skippedGeocodeNoKey) {
     parts.push('(geocode pulado: API key ausente)');
+  }
+  if (summary.skippedGeocodeTooMany) {
+    parts.push('(geocode automático limitado — use o script se precisar)');
   }
   return parts.join(' · ');
 }
