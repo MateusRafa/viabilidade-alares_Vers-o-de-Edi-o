@@ -81,6 +81,8 @@
   let wbStreetViewCoverage = null;
   let wbPixelOverlay = null;
   let wbPegmanPointerId = null;
+  /** Observer que reesconde o pegman nativo se o Google recriar o DOM */
+  let wbNativeSvObserver = null;
 
   // Estilo escuro nativo via JSON do Maps JavaScript API (sem Map ID)
   const GOOGLE_MAP_DARK_STYLES = [
@@ -385,21 +387,39 @@
         streetViewControl: false,
         mapTypeControl: false,
         fullscreenControl: false,
-        zoomControl: false
+        zoomControl: false,
+        cameraControl: false,
+        rotateControl: false
       });
     } catch {
       // ignore
     }
 
-    // Remove só o pegman nativo do mapa (não esconde o botão custom "Voltar ao mapa")
+    // Esconde o círculo/pegman nativo enquanto estiver no mapa/satélite
     const hideNativeStreetViewControl = () => {
       if (wbStreetViewOpen) return;
       try {
+        map.setOptions?.({ streetViewControl: false, cameraControl: false });
+      } catch {
+        // ignore
+      }
+      try {
         const root = map.getDiv?.() || getMapElement();
-        root?.querySelectorAll?.('.gm-svpc')?.forEach((el) => {
+        if (!root) return;
+        root.querySelectorAll?.('.gm-svpc').forEach((el) => {
           el.style.setProperty('display', 'none', 'important');
           el.style.setProperty('visibility', 'hidden', 'important');
           el.style.setProperty('pointer-events', 'none', 'important');
+          el.style.setProperty('opacity', '0', 'important');
+          el.setAttribute('aria-hidden', 'true');
+          // Pai do controle (círculo branco maior)
+          const wrap = el.closest?.('.gmnoprint, .gm-bundled-control, .gm-bundled-control-on-bottom');
+          if (wrap && wrap !== root) {
+            wrap.style.setProperty('display', 'none', 'important');
+            wrap.style.setProperty('visibility', 'hidden', 'important');
+            wrap.style.setProperty('pointer-events', 'none', 'important');
+            wrap.style.setProperty('opacity', '0', 'important');
+          }
         });
       } catch {
         // ignore
@@ -407,8 +427,37 @@
     };
     hideNativeStreetViewControl();
     try {
-      google.maps.event.addListenerOnce(map, 'idle', hideNativeStreetViewControl);
-      setTimeout(hideNativeStreetViewControl, 800);
+      google.maps.event.addListener(map, 'idle', hideNativeStreetViewControl);
+      google.maps.event.addListener(map, 'tilesloaded', hideNativeStreetViewControl);
+      setTimeout(hideNativeStreetViewControl, 300);
+      setTimeout(hideNativeStreetViewControl, 1000);
+      setTimeout(hideNativeStreetViewControl, 2500);
+    } catch {
+      // ignore
+    }
+
+    // Google às vezes recria o controle ao trocar mapa/satélite — observa o DOM
+    try {
+      const mapRoot = map.getDiv?.() || getMapElement();
+      if (mapRoot && typeof MutationObserver !== 'undefined') {
+        if (wbNativeSvObserver) {
+          try {
+            wbNativeSvObserver.disconnect();
+          } catch {
+            // ignore
+          }
+        }
+        let hideTimer = null;
+        wbNativeSvObserver = new MutationObserver(() => {
+          if (wbStreetViewOpen) return;
+          if (hideTimer) return;
+          hideTimer = setTimeout(() => {
+            hideTimer = null;
+            hideNativeStreetViewControl();
+          }, 80);
+        });
+        wbNativeSvObserver.observe(mapRoot, { childList: true, subtree: true });
+      }
     } catch {
       // ignore
     }
@@ -425,6 +474,7 @@
         const typeId = map.getMapTypeId?.();
         wbMapType = typeId === 'satellite' || typeId === 'hybrid' ? 'satellite' : 'roadmap';
         applyGoogleMapTheme(isDarkTheme);
+        hideNativeStreetViewControl();
       });
     } catch {
       // ignore
@@ -442,7 +492,8 @@
         google.maps.event.addListener(sv, 'visible_changed', () => {
           wbStreetViewOpen = !!sv.getVisible?.();
           if (!wbStreetViewOpen) {
-            setTimeout(hideNativeStreetViewControl, 100);
+            setTimeout(hideNativeStreetViewControl, 50);
+            setTimeout(hideNativeStreetViewControl, 400);
           }
         });
       }
@@ -459,6 +510,14 @@
   function unbindWorkbenchMapControls() {
     cancelPegmanDrag();
     setStreetViewCoverageVisible(false);
+    if (wbNativeSvObserver) {
+      try {
+        wbNativeSvObserver.disconnect();
+      } catch {
+        // ignore
+      }
+      wbNativeSvObserver = null;
+    }
     if (wbPixelOverlay) {
       try {
         wbPixelOverlay.setMap(null);
@@ -3130,7 +3189,9 @@
           streetViewControl: false,
           mapTypeControl: false,
           fullscreenControl: false,
-          zoomControl: false
+          zoomControl: false,
+          cameraControl: false,
+          rotateControl: false
         });
       } catch (_) {
         /* ignore */
@@ -10286,12 +10347,19 @@
     z-index: 5;
   }
 
-  /* Pegman nativo só no mapa 2D — no Street View libera os controles (X / voltar) */
-  .viabilidade-content.workbench-mode:not(.wb-streetview-open) :global(.gm-svpc) {
+  /* Pegman/círculo nativo só some no mapa/satélite — no Street View os controles voltam */
+  .viabilidade-content.workbench-mode:not(.wb-streetview-open) :global(.gm-svpc),
+  .viabilidade-content.workbench-mode:not(.wb-streetview-open) :global(.gm-svpc *),
+  .viabilidade-content.workbench-mode:not(.wb-streetview-open) :global(.gmnoprint:has(.gm-svpc)),
+  .viabilidade-content.workbench-mode:not(.wb-streetview-open) :global(.gm-bundled-control:has(.gm-svpc)),
+  .viabilidade-content.workbench-mode:not(.wb-streetview-open) :global(.gm-bundled-control-on-bottom:has(.gm-svpc)) {
     display: none !important;
     visibility: hidden !important;
     pointer-events: none !important;
     opacity: 0 !important;
+    width: 0 !important;
+    height: 0 !important;
+    overflow: hidden !important;
   }
 
   /* No Street View: botões custom por cima do panorama para voltar ao mapa */
