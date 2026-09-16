@@ -391,19 +391,16 @@
       // ignore
     }
 
-    // Remove resíduos do controle nativo (círculo branco atrás do bonequinho)
+    // Remove só o pegman nativo do mapa (não esconde o botão custom "Voltar ao mapa")
     const hideNativeStreetViewControl = () => {
+      if (wbStreetViewOpen) return;
       try {
         const root = map.getDiv?.() || getMapElement();
-        root
-          ?.querySelectorAll?.(
-            '.gm-svpc, .gm-bundled-control-on-bottom, button[title*="Street View"], button[title*="Pegman"], button[aria-label="Street View"]'
-          )
-          ?.forEach((el) => {
-            el.style.setProperty('display', 'none', 'important');
-            el.style.setProperty('visibility', 'hidden', 'important');
-            el.style.setProperty('pointer-events', 'none', 'important');
-          });
+        root?.querySelectorAll?.('.gm-svpc')?.forEach((el) => {
+          el.style.setProperty('display', 'none', 'important');
+          el.style.setProperty('visibility', 'hidden', 'important');
+          el.style.setProperty('pointer-events', 'none', 'important');
+        });
       } catch {
         // ignore
       }
@@ -436,9 +433,17 @@
     try {
       const sv = map.getStreetView?.();
       if (sv) {
+        try {
+          sv.setOptions?.({ enableCloseButton: true, addressControl: true });
+        } catch {
+          // ignore
+        }
         wbStreetViewOpen = !!sv.getVisible?.();
         google.maps.event.addListener(sv, 'visible_changed', () => {
           wbStreetViewOpen = !!sv.getVisible?.();
+          if (!wbStreetViewOpen) {
+            setTimeout(hideNativeStreetViewControl, 100);
+          }
         });
       }
     } catch {
@@ -8657,7 +8662,7 @@
   </div>
 {:else}
 <!-- Conteúdo da Ferramenta de Viabilidade -->
-<div class="viabilidade-content" class:embedded class:workbench-mode={workbenchMode} class:theme-dark={isDarkTheme}>
+<div class="viabilidade-content" class:embedded class:workbench-mode={workbenchMode} class:theme-dark={isDarkTheme} class:wb-streetview-open={workbenchMode && wbStreetViewOpen}>
   <div class="main-layout">
     <!-- Painel de Busca -->
     <aside class="search-panel" class:minimized={isSearchPanelMinimized} style="width: {isSearchPanelMinimized ? '60px' : sidebarWidthStyle} !important; flex: 0 0 auto;">
@@ -9149,14 +9154,20 @@
                 class:dragging={wbPegmanDragging}
                 on:pointerdown={startPegmanDrag}
                 on:click={handlePegmanClick}
-                title={wbStreetViewOpen ? 'Fechar Street View' : 'Arraste o boneco para uma rua azul'}
-                aria-label={wbStreetViewOpen ? 'Fechar Street View' : 'Arrastar Street View'}
+                title={wbStreetViewOpen ? 'Voltar ao mapa' : 'Arraste o boneco para uma rua azul'}
+                aria-label={wbStreetViewOpen ? 'Voltar ao mapa' : 'Arrastar Street View'}
                 aria-pressed={wbStreetViewOpen}
               >
-                <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">
-                  <circle cx="12" cy="5.5" r="2.4" fill="#fbbc04"/>
-                  <path fill="#4285f4" d="M9.2 9.2c.7-.5 1.6-.8 2.8-.8s2.1.3 2.8.8c.7.5 1.1 1.2 1.1 2v5.2h-1.7v5.6h-4.4V16.4H8.1V11.2c0-.8.4-1.5 1.1-2z"/>
-                </svg>
+                {#if wbStreetViewOpen}
+                  <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">
+                    <path fill="currentColor" d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/>
+                  </svg>
+                {:else}
+                  <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">
+                    <circle cx="12" cy="5.5" r="2.4" fill="#fbbc04"/>
+                    <path fill="#4285f4" d="M9.2 9.2c.7-.5 1.6-.8 2.8-.8s2.1.3 2.8.8c.7.5 1.1 1.2 1.1 2v5.2h-1.7v5.6h-4.4V16.4H8.1V11.2c0-.8.4-1.5 1.1-2z"/>
+                  </svg>
+                {/if}
               </button>
               <button
                 type="button"
@@ -10211,6 +10222,10 @@
     pointer-events: none;
   }
 
+  .viabilidade-content.workbench-mode.wb-streetview-open .wb-map-controls {
+    z-index: 1000005;
+  }
+
   .viabilidade-content.workbench-mode .wb-map-type {
     position: absolute;
     top: 10px;
@@ -10271,17 +10286,24 @@
     z-index: 5;
   }
 
-  /* Pegman / círculo nativo do Google atrás do bonequinho custom */
-  .viabilidade-content.workbench-mode :global(.gm-svpc),
-  .viabilidade-content.workbench-mode :global(.gm-bundled-control-on-bottom),
-  .viabilidade-content.workbench-mode :global(button[title='Arraste o Pegman para a imagem para abrir o Street View']),
-  .viabilidade-content.workbench-mode :global(button[aria-label='Street View']),
-  .viabilidade-content.workbench-mode :global(button[title*='Street View']),
-  .viabilidade-content.workbench-mode :global(button[title*='Pegman']) {
+  /* Pegman nativo só no mapa 2D — no Street View libera os controles (X / voltar) */
+  .viabilidade-content.workbench-mode:not(.wb-streetview-open) :global(.gm-svpc) {
     display: none !important;
     visibility: hidden !important;
     pointer-events: none !important;
     opacity: 0 !important;
+  }
+
+  /* No Street View: botões custom por cima do panorama para voltar ao mapa */
+  .viabilidade-content.workbench-mode.wb-streetview-open .wb-map-tools {
+    z-index: 1000002;
+  }
+
+  .viabilidade-content.workbench-mode.wb-streetview-open .wb-pegman-btn {
+    background: #7b68ee;
+    border-color: #7b68ee;
+    color: #ffffff;
+    box-shadow: 0 4px 14px rgba(123, 104, 238, 0.45);
   }
 
   .viabilidade-content.workbench-mode .wb-map-tool-btn {
