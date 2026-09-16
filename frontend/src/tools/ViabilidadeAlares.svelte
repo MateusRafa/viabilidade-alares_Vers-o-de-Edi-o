@@ -381,6 +381,42 @@
     ensureWbPixelOverlay();
 
     try {
+      map.setOptions({
+        streetViewControl: false,
+        mapTypeControl: false,
+        fullscreenControl: false,
+        zoomControl: false
+      });
+    } catch {
+      // ignore
+    }
+
+    // Remove resíduos do controle nativo (círculo branco atrás do bonequinho)
+    const hideNativeStreetViewControl = () => {
+      try {
+        const root = map.getDiv?.() || getMapElement();
+        root
+          ?.querySelectorAll?.(
+            '.gm-svpc, .gm-bundled-control-on-bottom, button[title*="Street View"], button[title*="Pegman"], button[aria-label="Street View"]'
+          )
+          ?.forEach((el) => {
+            el.style.setProperty('display', 'none', 'important');
+            el.style.setProperty('visibility', 'hidden', 'important');
+            el.style.setProperty('pointer-events', 'none', 'important');
+          });
+      } catch {
+        // ignore
+      }
+    };
+    hideNativeStreetViewControl();
+    try {
+      google.maps.event.addListenerOnce(map, 'idle', hideNativeStreetViewControl);
+      setTimeout(hideNativeStreetViewControl, 800);
+    } catch {
+      // ignore
+    }
+
+    try {
       const typeId = map.getMapTypeId?.();
       wbMapType = typeId === 'satellite' || typeId === 'hybrid' ? 'satellite' : 'roadmap';
     } catch {
@@ -3081,7 +3117,20 @@
       mapTypeId:
         workbenchMode && preferredMapType === 'satellite' ? 'hybrid' : 'roadmap'
     });
-    
+
+    // Workbench: força off o pegman/círculo padrão (fica por trás do botão custom)
+    if (workbenchMode) {
+      try {
+        map.setOptions({
+          streetViewControl: false,
+          mapTypeControl: false,
+          fullscreenControl: false,
+          zoomControl: false
+        });
+      } catch (_) {
+        /* ignore */
+      }
+    }
     // Carregar mancha de cobertura após inicializar o mapa
     if (map) {
       if (workbenchMode) {
@@ -10219,6 +10268,20 @@
     flex-direction: column;
     gap: 0.4rem;
     pointer-events: auto;
+    z-index: 5;
+  }
+
+  /* Pegman / círculo nativo do Google atrás do bonequinho custom */
+  .viabilidade-content.workbench-mode :global(.gm-svpc),
+  .viabilidade-content.workbench-mode :global(.gm-bundled-control-on-bottom),
+  .viabilidade-content.workbench-mode :global(button[title='Arraste o Pegman para a imagem para abrir o Street View']),
+  .viabilidade-content.workbench-mode :global(button[aria-label='Street View']),
+  .viabilidade-content.workbench-mode :global(button[title*='Street View']),
+  .viabilidade-content.workbench-mode :global(button[title*='Pegman']) {
+    display: none !important;
+    visibility: hidden !important;
+    pointer-events: none !important;
+    opacity: 0 !important;
   }
 
   .viabilidade-content.workbench-mode .wb-map-tool-btn {
