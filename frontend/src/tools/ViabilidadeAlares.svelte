@@ -514,6 +514,9 @@
   
   // Filtrar apenas CTOs de rua (não prédios) para exibição nos boxes e lista
   $: ctosRua = ctos.filter(cto => !cto.is_condominio || cto.is_condominio === false);
+  /** Toggle global: mostrar/ocultar marcadores de prédio (MDU) no mapa */
+  let prediosVisibleOnMap = true;
+  $: hasPrediosOnMap = (ctos || []).some((c) => c && c.is_condominio === true);
   let routes = []; // Rotas desenhadas no mapa
   let routeData = []; // Dados das rotas (para edição) - armazena CTO associada e path original
   let editingRoutes = false; // Modo de edição de rotas (DEPRECADO - usar editingRouteIndex)
@@ -650,6 +653,51 @@
       /* ignore */
     }
     return null;
+  }
+
+  /** SVG do ícone de prédio (mesmo usado nos marcadores MDU). */
+  function buildPredioIconSvg({ windowColor = '#6C63FF', strokeColor = '#4F46E5' } = {}) {
+    return `
+      <svg width="24" height="32" viewBox="0 0 24 32" xmlns="http://www.w3.org/2000/svg">
+        <rect x="2" y="4" width="20" height="26" fill="#F5F5F5" stroke="${strokeColor}" stroke-width="1.5"/>
+        <rect x="4" y="6" width="4" height="4" fill="${windowColor}"/>
+        <rect x="10" y="6" width="4" height="4" fill="${windowColor}"/>
+        <rect x="16" y="6" width="4" height="4" fill="${windowColor}"/>
+        <rect x="4" y="11" width="4" height="4" fill="${windowColor}"/>
+        <rect x="10" y="11" width="4" height="4" fill="${windowColor}"/>
+        <rect x="16" y="11" width="4" height="4" fill="${windowColor}"/>
+        <rect x="4" y="16" width="4" height="4" fill="${windowColor}"/>
+        <rect x="10" y="16" width="4" height="4" fill="${windowColor}"/>
+        <rect x="16" y="16" width="4" height="4" fill="${windowColor}"/>
+        <rect x="4" y="21" width="4" height="4" fill="${windowColor}"/>
+        <rect x="10" y="21" width="4" height="4" fill="${windowColor}"/>
+        <rect x="16" y="21" width="4" height="4" fill="${windowColor}"/>
+        <rect x="4" y="26" width="4" height="4" fill="${windowColor}"/>
+        <rect x="10" y="26" width="4" height="4" fill="${windowColor}"/>
+        <rect x="16" y="26" width="4" height="4" fill="${windowColor}"/>
+        <path d="M 8 30 Q 12 26, 16 30" stroke="${strokeColor}" stroke-width="1.5" fill="none"/>
+        <line x1="8" y1="30" x2="16" y2="30" stroke="${strokeColor}" stroke-width="1.5"/>
+      </svg>
+    `.trim();
+  }
+
+  function applyPrediosVisibilityToMap() {
+    if (!map) return;
+    for (const cto of ctos || []) {
+      if (!cto || cto.is_condominio !== true) continue;
+      const marker = findMarkerByCtoKey(getCTOKey(cto));
+      if (!marker) continue;
+      try {
+        marker.setMap(prediosVisibleOnMap ? map : null);
+      } catch (_) {
+        /* ignore */
+      }
+    }
+  }
+
+  function togglePrediosVisibilityOnMap() {
+    prediosVisibleOnMap = !prediosVisibleOnMap;
+    applyPrediosVisibilityToMap();
   }
 
   function findMarkerByCtoKey(ctoKey) {
@@ -5857,31 +5905,9 @@
       const isAtivado = !isMdu && statusCto && statusCto.toUpperCase().trim() === 'ATIVADO';
       const windowColor = isMdu ? '#6C63FF' : (isAtivado ? '#28A745' : '#95A5A6');
       const strokeColor = isMdu ? '#4F46E5' : (isAtivado ? '#1E7E34' : '#7F8C8D');
-      
-      const svgContent = `
-        <svg width="24" height="32" viewBox="0 0 24 32" xmlns="http://www.w3.org/2000/svg">
-          <rect x="2" y="4" width="20" height="26" fill="#F5F5F5" stroke="${strokeColor}" stroke-width="1.5"/>
-          <rect x="4" y="6" width="4" height="4" fill="${windowColor}"/>
-          <rect x="10" y="6" width="4" height="4" fill="${windowColor}"/>
-          <rect x="16" y="6" width="4" height="4" fill="${windowColor}"/>
-          <rect x="4" y="11" width="4" height="4" fill="${windowColor}"/>
-          <rect x="10" y="11" width="4" height="4" fill="${windowColor}"/>
-          <rect x="16" y="11" width="4" height="4" fill="${windowColor}"/>
-          <rect x="4" y="16" width="4" height="4" fill="${windowColor}"/>
-          <rect x="10" y="16" width="4" height="4" fill="${windowColor}"/>
-          <rect x="16" y="16" width="4" height="4" fill="${windowColor}"/>
-          <rect x="4" y="21" width="4" height="4" fill="${windowColor}"/>
-          <rect x="10" y="21" width="4" height="4" fill="${windowColor}"/>
-          <rect x="16" y="21" width="4" height="4" fill="${windowColor}"/>
-          <rect x="4" y="26" width="4" height="4" fill="${windowColor}"/>
-          <rect x="10" y="26" width="4" height="4" fill="${windowColor}"/>
-          <rect x="16" y="26" width="4" height="4" fill="${windowColor}"/>
-          <path d="M 8 30 Q 12 26, 16 30" stroke="${strokeColor}" stroke-width="1.5" fill="none"/>
-          <line x1="8" y1="30" x2="16" y2="30" stroke="${strokeColor}" stroke-width="1.5"/>
-        </svg>
-      `.trim();
-      
-      const svgDataUri = 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(svgContent);
+      const svgDataUri =
+        'data:image/svg+xml;charset=UTF-8,' +
+        encodeURIComponent(buildPredioIconSvg({ windowColor, strokeColor }));
       iconConfig = {
         url: svgDataUri,
         scaledSize: new google.maps.Size(24, 32),
@@ -5905,7 +5931,7 @@
     
     const ctoMarker = new google.maps.Marker({
       position: originalPosition,
-      map: map,
+      map: isPredio && !prediosVisibleOnMap ? null : map,
       title: isPredio 
         ? `🏢 ${cto.nome} (PRÉDIO) - ${cto.distancia_metros}m - Não cria rota`
         : `${cto.nome} - ${cto.distancia_metros}m (${Math.max(0, (cto.vagas_total || 0) - (cto.clientes_conectados || 0))} portas disponíveis)`,
@@ -6080,54 +6106,14 @@
           
           const windowColor = isMdu ? '#6C63FF' : (isAtivado ? '#28A745' : '#95A5A6');
           const strokeColor = isMdu ? '#4F46E5' : (isAtivado ? '#1E7E34' : '#7F8C8D');
-          
-          // SVG do prédio com janelas em grade 3x5
-          const svgContent = `
-            <svg width="24" height="32" viewBox="0 0 24 32" xmlns="http://www.w3.org/2000/svg">
-              <!-- Corpo do prédio -->
-              <rect x="2" y="4" width="20" height="26" fill="#F5F5F5" stroke="${strokeColor}" stroke-width="1.5"/>
-              
-              <!-- Janelas em grade 3x5 (15 janelas) -->
-              <!-- Linha 1 -->
-              <rect x="4" y="6" width="4" height="4" fill="${windowColor}"/>
-              <rect x="10" y="6" width="4" height="4" fill="${windowColor}"/>
-              <rect x="16" y="6" width="4" height="4" fill="${windowColor}"/>
-              
-              <!-- Linha 2 -->
-              <rect x="4" y="11" width="4" height="4" fill="${windowColor}"/>
-              <rect x="10" y="11" width="4" height="4" fill="${windowColor}"/>
-              <rect x="16" y="11" width="4" height="4" fill="${windowColor}"/>
-              
-              <!-- Linha 3 -->
-              <rect x="4" y="16" width="4" height="4" fill="${windowColor}"/>
-              <rect x="10" y="16" width="4" height="4" fill="${windowColor}"/>
-              <rect x="16" y="16" width="4" height="4" fill="${windowColor}"/>
-              
-              <!-- Linha 4 -->
-              <rect x="4" y="21" width="4" height="4" fill="${windowColor}"/>
-              <rect x="10" y="21" width="4" height="4" fill="${windowColor}"/>
-              <rect x="16" y="21" width="4" height="4" fill="${windowColor}"/>
-              
-              <!-- Linha 5 -->
-              <rect x="4" y="26" width="4" height="4" fill="${windowColor}"/>
-              <rect x="10" y="26" width="4" height="4" fill="${windowColor}"/>
-              <rect x="16" y="26" width="4" height="4" fill="${windowColor}"/>
-              
-              <!-- Entrada arqueada na base -->
-              <path d="M 8 30 Q 12 26, 16 30" stroke="${strokeColor}" stroke-width="1.5" fill="none"/>
-              <line x1="8" y1="30" x2="16" y2="30" stroke="${strokeColor}" stroke-width="1.5"/>
-            </svg>
-          `.trim();
-          
-          // Converter SVG para data URI
-          const svgDataUri = 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(svgContent);
-          
-          // Usar imagem SVG inline para prédios
+          const svgDataUri =
+            'data:image/svg+xml;charset=UTF-8,' +
+            encodeURIComponent(buildPredioIconSvg({ windowColor, strokeColor }));
           iconConfig = {
             url: svgDataUri,
-            scaledSize: new google.maps.Size(24, 32), // Tamanho do ícone (24x32 pixels)
-            anchor: new google.maps.Point(12, 32), // Anchor na base do prédio (centro horizontal, base vertical)
-            origin: new google.maps.Point(0, 0) // Origem da imagem
+            scaledSize: new google.maps.Size(24, 32),
+            anchor: new google.maps.Point(12, 32),
+            origin: new google.maps.Point(0, 0)
           };
         } else {
           // Para CTOs de rua: usar círculo com anchor no centro (0,0)
@@ -6147,7 +6133,7 @@
         // IMPORTANTE: As coordenadas devem ser exatamente as mesmas usadas na rota
         ctoMarker = new google.maps.Marker({
           position: originalPosition,
-          map: map,
+          map: isPredio && !prediosVisibleOnMap ? null : map,
           title: isPredio 
             ? `🏢 ${cto.nome} (PRÉDIO) - ${cto.distancia_metros}m - Não cria rota`
             : `${cto.nome} - ${cto.distancia_metros}m (${Math.max(0, (cto.vagas_total || 0) - (cto.clientes_conectados || 0))} portas disponíveis)`,
@@ -6169,8 +6155,8 @@
         // Verificar se o marcador foi criado com sucesso
         // IMPORTANTE: Adicionar ao array sempre que o marcador foi criado, mesmo que getMap() ainda não esteja disponível
         if (ctoMarker) {
-          // Garantir que o marcador está no mapa (pode ter sido criado sem map por engano)
-          if (!ctoMarker.getMap()) {
+          // Garantir que o marcador está no mapa (exceto prédios ocultos pelo toggle)
+          if (!ctoMarker.getMap() && !(isPredio && !prediosVisibleOnMap)) {
             ctoMarker.setMap(map);
           }
           markers.push(ctoMarker);
@@ -6496,6 +6482,7 @@
 
     const ctoMarkersCount = markers.filter(m => m !== clientMarker).length;
     console.log(`✅ drawRoutesAndMarkers concluído: ${ctoMarkersCount} marcadores criados de ${ctos.length} CTOs`);
+    applyPrediosVisibilityToMap();
 
     if (ctoMarkersCount !== ctos.length) {
       console.warn(`⚠️ ATENÇÃO: Esperado ${ctos.length} marcadores, mas apenas ${ctoMarkersCount} foram criados!`);
@@ -8964,6 +8951,28 @@
             <div class="wb-map-tools">
               <button
                 type="button"
+                class="wb-map-tool-btn wb-predios-btn"
+                class:active={prediosVisibleOnMap}
+                class:dimmed={!prediosVisibleOnMap}
+                disabled={!hasPrediosOnMap}
+                on:click={togglePrediosVisibilityOnMap}
+                title={
+                  !hasPrediosOnMap
+                    ? 'Nenhum prédio encontrado nesta busca'
+                    : prediosVisibleOnMap
+                      ? 'Ocultar prédios no mapa'
+                      : 'Mostrar prédios no mapa'
+                }
+                aria-label={prediosVisibleOnMap ? 'Ocultar prédios' : 'Mostrar prédios'}
+                aria-pressed={prediosVisibleOnMap}
+              >
+                {@html buildPredioIconSvg({
+                  windowColor: prediosVisibleOnMap ? '#6C63FF' : '#9CA3AF',
+                  strokeColor: prediosVisibleOnMap ? '#4F46E5' : '#6B7280'
+                })}
+              </button>
+              <button
+                type="button"
                 class="wb-map-tool-btn wb-pegman-btn"
                 class:active={wbStreetViewOpen}
                 class:dragging={wbPegmanDragging}
@@ -10115,6 +10124,32 @@
     background: #7b68ee;
     border-color: #7b68ee;
     color: #ffffff;
+  }
+
+  .viabilidade-content.workbench-mode .wb-predios-btn {
+    padding: 4px;
+  }
+
+  .viabilidade-content.workbench-mode .wb-predios-btn :global(svg) {
+    width: 20px;
+    height: 26px;
+    display: block;
+  }
+
+  .viabilidade-content.workbench-mode .wb-predios-btn.active {
+    background: rgba(255, 255, 255, 0.96);
+    border-color: #a78bfa;
+    color: #7b68ee;
+  }
+
+  .viabilidade-content.workbench-mode .wb-predios-btn.dimmed {
+    opacity: 0.55;
+    background: #f3f4f6;
+  }
+
+  .viabilidade-content.workbench-mode .wb-predios-btn:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
   }
 
   .viabilidade-content.workbench-mode .wb-pegman-btn {
