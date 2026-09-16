@@ -6071,14 +6071,16 @@
         console.log(`🏢 Prédio detectado: ${cto.nome}, coordenadas: ${ctoLat}, ${ctoLng}`);
       }
       
-      // Usar posição original para bounds
-      bounds.extend(originalPosition);
+      // Usar posição original para bounds (só casinha + CTOs de rua visíveis — prédios não abrem o zoom)
+      const ctoKey = getCTOKey(cto);
+      const visibilityValue = ctoVisibility.get(ctoKey);
+      const isVisible = visibilityValue !== false;
+      if (!isPredio && isVisible) {
+        bounds.extend(originalPosition);
+      }
 
       // Verificar visibilidade da CTO
       // IMPORTANTE: Se não existe no Map, considerar como visível (padrão)
-      const ctoKey = getCTOKey(cto);
-      const visibilityValue = ctoVisibility.get(ctoKey);
-      const isVisible = visibilityValue !== false; // true ou undefined = visível, false = não visível
       
       // Se não estiver visível, pular esta CTO
       if (!isVisible) {
@@ -6552,9 +6554,8 @@
       console.log(`📍 Marcadores criados:`, markers.filter(m => m !== clientMarker).map(m => `${getMapItemCtoKey(m) || 'SEM_CHAVE'}`));
     }
 
-    // Ajustar zoom para mostrar todos os pontos com padding mínimo para maximizar visibilidade
+    // Ajustar zoom para casinha + CTOs (prédios MDU não entram no enquadramento)
     if (bounds.getNorthEast() && bounds.getSouthWest()) {
-      // Adicionar padding mínimo para garantir que todos os marcadores fiquem visíveis
       map.fitBounds(bounds, {
         top: 40,
         right: 40,
@@ -6562,7 +6563,6 @@
         left: 40
       });
       
-      // Aguardar ajuste do mapa
       await new Promise((resolve) => {
         const boundsListener = google.maps.event.addListener(map, 'bounds_changed', () => {
           google.maps.event.removeListener(boundsListener);
@@ -6571,22 +6571,22 @@
         setTimeout(() => {
           google.maps.event.removeListener(boundsListener);
           resolve();
-        }, 1000);
+        }, 500);
       });
       
-      // Verificar se todos os marcadores estão visíveis
       const finalBounds = map.getBounds();
       if (finalBounds) {
         let allMarkersVisible = true;
         
-        // Verificar cliente
         if (!finalBounds.contains(clientCoords)) {
           allMarkersVisible = false;
         }
         
-        // Verificar todas as CTOs
         if (allMarkersVisible) {
           for (const cto of ctos) {
+            if (cto.is_condominio === true) continue;
+            const key = getCTOKey(cto);
+            if (ctoVisibility.get(key) === false) continue;
             if (!finalBounds.contains({ lat: cto.latitude, lng: cto.longitude })) {
               allMarkersVisible = false;
               console.warn(`⚠️ CTO ${cto.nome} não está visível nos bounds finais`);
@@ -6595,7 +6595,6 @@
           }
         }
         
-        // Se algum marcador não está visível, ajustar novamente com mais padding
         if (!allMarkersVisible) {
           map.fitBounds(bounds, {
             top: 60,
@@ -6609,10 +6608,10 @@
               google.maps.event.removeListener(boundsListener);
               resolve();
             });
-    setTimeout(() => {
+            setTimeout(() => {
               google.maps.event.removeListener(boundsListener);
               resolve();
-            }, 1000);
+            }, 500);
           });
         }
       }
@@ -6720,232 +6719,129 @@
       throw new Error('Mapa não está pronto para captura');
     }
 
-    try {
-      // Salvar estado atual do mapa
-      const currentCenter = map.getCenter();
-      const currentZoom = map.getZoom();
+    const waitIdle = (timeoutMs = 350) =>
+      new Promise((resolve) => {
+        if (!google?.maps) {
+          setTimeout(resolve, Math.min(120, timeoutMs));
+          return;
+        }
+        const idleListener = google.maps.event.addListener(map, 'idle', () => {
+          google.maps.event.removeListener(idleListener);
+          resolve();
+        });
+        setTimeout(() => {
+          try {
+            google.maps.event.removeListener(idleListener);
+          } catch (_) {
+            /* ignore */
+          }
+          resolve();
+        }, timeoutMs);
+      });
 
-      // Todos os equipamentos a enquadrar (rua + fora de limite)
-      const ctosForCapture = [];
+    const pointsVisible = (viewBounds, points) => {
+      if (!viewBounds) return false;
+      for (const p of points) {
+        if (!viewBounds.contains(p)) return false;
+      }
+      return true;
+    };
+
+    const prevPrediosVisible = prediosVisibleOnMap;
+    try {
+      // Print: só casinha + CTOs de rua — prédios MDU não entram no enquadramento
+      const capturePoints = [clientCoords];
       const pushCto = (cto) => {
-        if (!cto) return;
+        if (!cto || cto.is_condominio === true) return;
+        const key = getCTOKey(cto);
+        if (key && ctoVisibility.get(key) === false) return;
         const lat = Number(cto.latitude);
         const lng = Number(cto.longitude);
         if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
-        ctosForCapture.push({ ...cto, latitude: lat, longitude: lng });
+        capturePoints.push({ lat, lng });
       };
       (ctos || []).forEach(pushCto);
       if (nearestCTOOutsideLimit) pushCto(nearestCTOOutsideLimit);
 
-      // Criar bounds incluindo cliente + equipamentos
-      const bounds = new google.maps.LatLngBounds();
-      bounds.extend(clientCoords);
-      ctosForCapture.forEach((cto) => {
-        bounds.extend({ lat: cto.latitude, lng: cto.longitude });
-      });
+      if (prediosVisibleOnMap) {
+        prediosVisibleOnMap = false;
+        applyPrediosVisibilityToMap();
+      }
 
-      // Padding um pouco maior no workbench para não cortar marcadores
+      const bounds = new google.maps.LatLngBounds();
+      capturePoints.forEach((p) => bounds.extend(p));
+
       const fitPad = workbenchMode
-        ? { top: 36, right: 36, bottom: 36, left: 36 }
-        : { top: 15, right: 15, bottom: 15, left: 15 };
+        ? { top: 40, right: 40, bottom: 40, left: 40 }
+        : { top: 24, right: 24, bottom: 24, left: 24 };
 
       map.fitBounds(bounds, fitPad);
+      await waitIdle(450);
 
-      // Aguardar o mapa ajustar completamente usando evento idle
-      await new Promise((resolve) => {
-        const idleListener = google.maps.event.addListener(map, 'idle', () => {
-          google.maps.event.removeListener(idleListener);
-          resolve();
-        });
-        setTimeout(() => {
-          google.maps.event.removeListener(idleListener);
-          resolve();
-        }, 2000);
-      });
+      let zoom = map.getZoom();
+      if (!Number.isFinite(zoom)) zoom = 17;
+      if (zoom > 19) {
+        map.setZoom(19);
+        await waitIdle(220);
+        zoom = map.getZoom();
+      }
 
-      // Aguardar um pouco mais para garantir estabilidade
-      await new Promise(resolve => setTimeout(resolve, 500));
-
-      // Agora aumentar o zoom gradualmente até encontrar o máximo que ainda mostra tudo
-      let currentZoomLevel = map.getZoom();
-      let bestZoom = currentZoomLevel;
-
-      // Tentar aumentar o zoom gradualmente (máximo até zoom 20 para mais detalhes)
-      for (let testZoom = currentZoomLevel + 1; testZoom <= 20; testZoom++) {
-        map.setZoom(testZoom);
-        
-        // Aguardar evento idle após cada mudança de zoom
-        await new Promise((resolve) => {
-          const idleListener = google.maps.event.addListener(map, 'idle', () => {
-            google.maps.event.removeListener(idleListener);
-            resolve();
-          });
-          setTimeout(() => {
-            google.maps.event.removeListener(idleListener);
-            resolve();
-          }, 800);
-        });
-
-        // Verificar se todas as CTOs e o cliente ainda estão visíveis
-        const testBounds = map.getBounds();
-        if (!testBounds) {
-          break;
-        }
-
-        let allVisible = testBounds.contains(clientCoords);
-        
-        // Verificar todas as CTOs (se houver)
-        if (allVisible && ctosForCapture.length > 0) {
-          for (const cto of ctosForCapture) {
-            if (!testBounds.contains({ lat: cto.latitude, lng: cto.longitude })) {
-              allVisible = false;
-              break;
-            }
-          }
-        }
-
-        if (allVisible) {
-          bestZoom = testZoom;
-        } else {
-          // Se não está mais visível, usar o último zoom válido
-          break;
+      // Tenta aproximar 1 nível se casinha+CTOs ainda couberem (sem loop longo)
+      const tryZoom = (map.getZoom() || zoom) + 1;
+      if (tryZoom <= 19) {
+        map.setZoom(tryZoom);
+        await waitIdle(200);
+        if (!pointsVisible(map.getBounds(), capturePoints)) {
+          map.setZoom(tryZoom - 1);
+          await waitIdle(160);
         }
       }
 
-      // Aplicar o melhor zoom encontrado
-      map.setZoom(bestZoom);
-      
-      // Aguardar estabilização final
-      await new Promise((resolve) => {
-        const idleListener = google.maps.event.addListener(map, 'idle', () => {
-          google.maps.event.removeListener(idleListener);
-          resolve();
-        });
-        setTimeout(() => {
-          google.maps.event.removeListener(idleListener);
-          resolve();
-        }, 1500);
-      });
-
-      // Verificação final: garantir que tudo está visível
-      const finalBounds = map.getBounds();
-      if (finalBounds) {
-        let finalAllVisible = finalBounds.contains(clientCoords);
-        if (finalAllVisible) {
-          for (const cto of ctosForCapture) {
-            if (!finalBounds.contains({ lat: cto.latitude, lng: cto.longitude })) {
-              finalAllVisible = false;
-              break;
-            }
-          }
-        }
-
-        // Se algo não está visível, reduzir zoom um nível (mas manter zoom alto se possível)
-        if (!finalAllVisible && bestZoom > 16) {
-          map.setZoom(bestZoom - 1);
-          await new Promise((resolve) => {
-            const idleListener = google.maps.event.addListener(map, 'idle', () => {
-              google.maps.event.removeListener(idleListener);
-              resolve();
-            });
-            setTimeout(() => {
-              google.maps.event.removeListener(idleListener);
-              resolve();
-            }, 1000);
-          });
-        }
-      }
-
-      // Aguardar estabilidade final antes de capturar (reduzido)
-      await new Promise(resolve => setTimeout(resolve, 500));
-
-      // Aguardar evento idle do mapa para garantir renderização
-      await new Promise((resolve) => {
-        const idleListener = google.maps.event.addListener(map, 'idle', () => {
-          google.maps.event.removeListener(idleListener);
-          resolve();
-        });
-        setTimeout(() => {
-          google.maps.event.removeListener(idleListener);
-          resolve();
-        }, 1000);
-      });
+      await new Promise((r) => requestAnimationFrame(r));
 
       const mapElement = getMapElement();
       if (!mapElement) {
         throw new Error('Elemento do mapa não encontrado');
       }
-      
-      // Garantir que o elemento está visível
+
       mapElement.style.visibility = 'visible';
       mapElement.style.opacity = '1';
       mapElement.style.display = 'block';
-      
-      // Aguardar alguns frames após ajustar estilos
-      for (let i = 0; i < 3; i++) {
-        await new Promise(resolve => requestAnimationFrame(resolve));
-        void mapElement.offsetHeight;
-      }
-      
-      // Capturar usando html2canvas com configurações otimizadas
-      
+
       const canvas = await html2canvas(mapElement, {
         useCORS: true,
         allowTaint: false,
-        backgroundColor: '#ffffff', // Branco para evitar fundo cinza
-        scale: 2,
+        backgroundColor: '#ffffff',
+        scale: workbenchMode ? 1.35 : 1.5,
         logging: false,
-        timeout: 20000,
-        imageTimeout: 10000,
+        timeout: 8000,
+        imageTimeout: 4000,
         removeContainer: true,
         foreignObjectRendering: false,
-        onclone: (clonedDoc, clonedWindow) => {
-          // Garantir que o body e html tenham fundo branco
+        onclone: (clonedDoc) => {
           if (clonedDoc.body) {
             clonedDoc.body.style.background = '#ffffff';
             clonedDoc.body.style.backgroundColor = '#ffffff';
           }
-          if (clonedDoc.documentElement) {
-            clonedDoc.documentElement.style.background = '#ffffff';
-            clonedDoc.documentElement.style.backgroundColor = '#ffffff';
-          }
-          
           const clonedMap = clonedDoc.getElementById(mapDomId);
           if (clonedMap) {
             clonedMap.style.visibility = 'visible';
             clonedMap.style.opacity = '1';
             clonedMap.style.display = 'block';
-            clonedMap.style.transform = 'none';
-            clonedMap.style.position = 'relative';
-            clonedMap.style.overflow = 'visible';
             clonedMap.style.background = '#ffffff';
-            clonedMap.style.backgroundColor = '#ffffff';
-            
-            // Remover qualquer overlay ou elemento que possa causar problemas
-            const allElements = clonedMap.querySelectorAll('*');
-            allElements.forEach((el) => {
-              if (el.style) {
-                // Remover backgrounds cinzas ou semi-transparentes
-                const bg = el.style.background || el.style.backgroundColor;
-                if (bg && (bg.includes('rgba') || bg.includes('rgb') || bg.includes('#f5f5f5') || bg.includes('#f0f0f0') || bg.includes('#e5e5e5'))) {
-                  el.style.background = 'transparent';
-                  el.style.backgroundColor = 'transparent';
-                }
-                // Garantir que elementos estão visíveis
-                el.style.visibility = 'visible';
-                el.style.opacity = '1';
-              }
-            });
           }
         }
       });
 
-      // Converter para base64 com qualidade máxima
-      const imageData = canvas.toDataURL('image/png', 1.0);
-      return imageData;
+      return canvas.toDataURL('image/jpeg', 0.88);
     } catch (err) {
       console.error('Erro ao capturar mapa:', err);
       throw err;
+    } finally {
+      if (prediosVisibleOnMap !== prevPrediosVisible) {
+        prediosVisibleOnMap = prevPrediosVisible;
+        applyPrediosVisibilityToMap();
+      }
     }
   }
 
@@ -7090,13 +6986,12 @@
 
     try {
       google.maps.event.trigger(map, 'resize');
-      await waitMapIdleWorkbench(1200);
-      await new Promise((r) => setTimeout(r, 250));
+      await waitMapIdleWorkbench(280);
+      await new Promise((r) => setTimeout(r, 40));
 
-      // Garante que o Maps renderizou no tamanho landscape (evita canvas CSS esticado)
       if (mapEl.clientWidth > 0 && mapEl.clientHeight > 0) {
         google.maps.event.trigger(map, 'resize');
-        await waitMapIdleWorkbench(800);
+        await waitMapIdleWorkbench(220);
       }
 
       const imageData = await captureMapAutomatically();
@@ -7124,7 +7019,7 @@
       google.maps.event.trigger(map, 'resize');
       if (prevCenter) map.setCenter(prevCenter);
       if (prevZoom != null) map.setZoom(prevZoom);
-      await waitMapIdleWorkbench(600);
+      await waitMapIdleWorkbench(200);
     }
   }
 
