@@ -57,6 +57,11 @@
   let uploadingBase = false;
   let uploadMessage = '';
   let uploadSuccess = false;
+  let uploadingMduBase = false;
+  let mduUploadMessage = '';
+  let mduUploadSuccess = false;
+  let mduUploadPercent = 0;
+  let mduUploadPollInterval = null;
   let baseLastModified = null;
   let coverageLastModified = null; // Data da última atualização da mancha de cobertura
   let uploadPollInterval = null; // Intervalo de polling para verificar status
@@ -529,6 +534,10 @@
       if (coveragePollInterval) {
         clearInterval(coveragePollInterval);
         coveragePollInterval = null;
+      }
+      if (mduUploadPollInterval) {
+        clearInterval(mduUploadPollInterval);
+        mduUploadPollInterval = null;
       }
     };
   });
@@ -2022,6 +2031,94 @@
       }
     }
   }
+
+  function clearMduUploadPoll() {
+    if (mduUploadPollInterval) {
+      clearInterval(mduUploadPollInterval);
+      mduUploadPollInterval = null;
+    }
+  }
+
+  async function pollMduUploadProgress() {
+    try {
+      const progressRes = await fetch(getApiUrl('/api/condominios-mdu/upload-progress'));
+      if (!progressRes.ok) return;
+      const progress = await progressRes.json();
+      mduUploadPercent = Math.max(0, Math.min(100, Number(progress.percent) || 0));
+      if (progress.message) mduUploadMessage = progress.message;
+
+      if (progress.stage === 'completed') {
+        clearMduUploadPoll();
+        uploadingMduBase = false;
+        mduUploadSuccess = true;
+        mduUploadPercent = 100;
+        mduUploadMessage = progress.message || 'Base MDU atualizada com sucesso.';
+      } else if (progress.stage === 'error') {
+        clearMduUploadPoll();
+        uploadingMduBase = false;
+        mduUploadSuccess = false;
+        mduUploadMessage = progress.error || progress.message || 'Erro ao atualizar base MDU.';
+      }
+    } catch (err) {
+      console.warn('⚠️ [MDU Upload] Falha ao consultar progresso:', err);
+    }
+  }
+
+  async function handleMduBaseUpload(event) {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+
+    const name = String(file.name || '').toLowerCase();
+    if (!name.endsWith('.xlsx') && !name.endsWith('.xls')) {
+      mduUploadSuccess = false;
+      mduUploadMessage = 'Envie um arquivo Excel puro (.xlsx ou .xls). CSV não é aceito.';
+      return;
+    }
+
+    clearMduUploadPoll();
+    uploadingMduBase = true;
+    mduUploadSuccess = false;
+    mduUploadPercent = 0;
+    mduUploadMessage = 'Enviando planilha MDU...';
+
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      const apiUrl = getApiUrl('/api/condominios-mdu/upload');
+      const response = await fetch(apiUrl, { method: 'POST', body: formData });
+      const text = await response.text();
+      let data = {};
+      try {
+        data = text ? JSON.parse(text) : {};
+      } catch {
+        throw new Error(text?.substring(0, 200) || `Erro do servidor (${response.status})`);
+      }
+
+      if (!response.ok || !data.success) {
+        throw new Error(data.error || `Erro do servidor (${response.status})`);
+      }
+
+      mduUploadSuccess = true;
+      mduUploadMessage = data.message || 'Processando base MDU...';
+
+      if (data.processing) {
+        uploadingMduBase = true;
+        mduUploadPollInterval = setInterval(pollMduUploadProgress, 1500);
+        await pollMduUploadProgress();
+      } else {
+        uploadingMduBase = false;
+        mduUploadPercent = 100;
+        mduUploadMessage = data.message || 'Base MDU atualizada.';
+      }
+    } catch (err) {
+      clearMduUploadPoll();
+      uploadingMduBase = false;
+      mduUploadSuccess = false;
+      mduUploadMessage = err?.message || 'Erro ao atualizar base MDU.';
+      console.error('❌ [MDU Upload]', err);
+    }
+  }
   
   // Função para fazer upload da nova base de dados
   async function handleBaseUpload(event) {
@@ -2792,18 +2889,65 @@
                 id="baseFileInput"
                 accept=".xlsx,.xls"
                 on:change={(e) => handleBaseUpload(e)}
-                disabled={uploadingBase}
+                disabled={uploadingBase || uploadingMduBase}
                 style="display: none;"
               />
             </label>
           </div>
+
+          <div class="upload-button-container" style="margin-top: 0.75rem;">
+            <label
+              for="mduBaseFileInput"
+              class="upload-label"
+              class:upload-label-disabled={uploadingBase || uploadingMduBase}
+              style="background: linear-gradient(135deg, #0d9488 0%, #0891b2 100%); box-shadow: 0 4px 6px rgba(13, 148, 136, 0.3);"
+              title="Substitui a tabela condominios_mdu e geocodifica prédios sem lat/lng"
+            >
+              <span>{uploadingMduBase ? 'Atualizando base MDU...' : 'Atualizar base de dados MDU'}</span>
+              <input
+                type="file"
+                id="mduBaseFileInput"
+                accept=".xlsx,.xls"
+                on:change={(e) => handleMduBaseUpload(e)}
+                disabled={uploadingBase || uploadingMduBase}
+                style="display: none;"
+              />
+            </label>
+          </div>
+
+          {#if uploadingMduBase || mduUploadMessage}
+            <div style="margin-top: 0.75rem;">
+              {#if uploadingMduBase}
+                <div class="progress-container">
+                  <div class="progress-bar-wrapper">
+                    <div class="progress-label">
+                      Atualizando MDU{mduUploadPercent ? ` — ${Math.round(mduUploadPercent)}%` : '...'}
+                    </div>
+                    <div class="progress-bar">
+                      <div class="progress-fill" style="width: {mduUploadPercent || 5}%;"></div>
+                    </div>
+                  </div>
+                </div>
+              {/if}
+              {#if mduUploadMessage}
+                <div
+                  class="upload-message"
+                  class:success={mduUploadSuccess && !uploadingMduBase}
+                  class:error={!mduUploadSuccess && !uploadingMduBase}
+                  style="margin-top: 0.5rem;"
+                >
+                  {mduUploadMessage}
+                </div>
+              {/if}
+            </div>
+          {/if}
           
           {#if userTipo === 'admin'}
             <div class="delete-base-container" style="margin-top: 1rem;">
               <button 
                 class="btn-delete-base" 
                 on:click={() => showDeleteBaseModal = true}
-                disabled={deletingBase || uploadingBase}
+                disabled={deletingBase || uploadingBase || uploadingMduBase}
                 title="Deletar todos os dados da base de dados CTO"
               >
                 🗑️ Deletar Base Atual
@@ -2815,18 +2959,18 @@
           <div style="margin-top: 1.5rem;">
             <button 
               on:click={handleCreateCoverage}
-              disabled={calculatingCoverage || uploadingBase || !baseDataExists}
+              disabled={calculatingCoverage || uploadingBase || uploadingMduBase || !baseDataExists}
               title={!baseDataExists ? 'É necessário carregar uma base de dados primeiro' : 'Criar nova mancha de cobertura baseada nas CTOs atuais'}
-              style="width: 100%; padding: 0.75rem; background: {calculatingCoverage || uploadingBase || !baseDataExists ? '#ccc' : 'linear-gradient(135deg, #7B68EE 0%, #6495ED 100%)'}; color: white; border: none; border-radius: 8px; font-size: 1rem; font-weight: 600; cursor: {calculatingCoverage || uploadingBase || !baseDataExists ? 'not-allowed' : 'pointer'}; transition: all 0.3s; box-shadow: {calculatingCoverage || uploadingBase || !baseDataExists ? 'none' : '0 4px 6px rgba(123, 104, 238, 0.3)'}; opacity: {calculatingCoverage || uploadingBase || !baseDataExists ? '0.6' : '1'};"
+              style="width: 100%; padding: 0.75rem; background: {calculatingCoverage || uploadingBase || uploadingMduBase || !baseDataExists ? '#ccc' : 'linear-gradient(135deg, #7B68EE 0%, #6495ED 100%)'}; color: white; border: none; border-radius: 8px; font-size: 1rem; font-weight: 600; cursor: {calculatingCoverage || uploadingBase || uploadingMduBase || !baseDataExists ? 'not-allowed' : 'pointer'}; transition: all 0.3s; box-shadow: {calculatingCoverage || uploadingBase || uploadingMduBase || !baseDataExists ? 'none' : '0 4px 6px rgba(123, 104, 238, 0.3)'}; opacity: {calculatingCoverage || uploadingBase || uploadingMduBase || !baseDataExists ? '0.6' : '1'};"
               on:mouseenter={(e) => {
-                if (!calculatingCoverage && !uploadingBase && baseDataExists) {
+                if (!calculatingCoverage && !uploadingBase && !uploadingMduBase && baseDataExists) {
                   e.currentTarget.style.transform = 'translateY(-2px)';
                   e.currentTarget.style.boxShadow = '0 6px 12px rgba(123, 104, 238, 0.4)';
                 }
               }}
               on:mouseleave={(e) => {
                 e.currentTarget.style.transform = 'translateY(0)';
-                e.currentTarget.style.boxShadow = calculatingCoverage || uploadingBase || !baseDataExists ? 'none' : '0 4px 6px rgba(123, 104, 238, 0.3)';
+                e.currentTarget.style.boxShadow = calculatingCoverage || uploadingBase || uploadingMduBase || !baseDataExists ? 'none' : '0 4px 6px rgba(123, 104, 238, 0.3)';
               }}
             >
               {#if calculatingCoverage}
@@ -4445,6 +4589,12 @@
 
   .upload-label:active {
     transform: translateY(0);
+  }
+
+  .upload-label-disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+    pointer-events: none;
   }
 
   .upload-hint {
