@@ -619,6 +619,60 @@
     return `${id}_${cto.nome || 'UNKNOWN'}_${lat}_${lng}`;
   }
 
+  /** Anexa ctoKey no Marker/Polyline de forma estável (MVCObject + propriedade). */
+  function setMapItemCtoKey(item, ctoKey) {
+    if (!item || !ctoKey) return;
+    try {
+      item.__ctoKey = ctoKey;
+    } catch (_) {
+      /* ignore */
+    }
+    try {
+      if (typeof item.set === 'function') item.set('ctoKey', ctoKey);
+    } catch (_) {
+      /* ignore */
+    }
+  }
+
+  function getMapItemCtoKey(item) {
+    if (!item) return null;
+    try {
+      if (typeof item.get === 'function') {
+        const viaGet = item.get('ctoKey');
+        if (viaGet) return String(viaGet);
+      }
+    } catch (_) {
+      /* ignore */
+    }
+    try {
+      if (item.__ctoKey) return String(item.__ctoKey);
+    } catch (_) {
+      /* ignore */
+    }
+    return null;
+  }
+
+  function findMarkerByCtoKey(ctoKey) {
+    if (!ctoKey || !markers?.length) return null;
+    return (
+      markers.find((marker) => {
+        if (!marker || marker === clientMarker) return false;
+        return getMapItemCtoKey(marker) === ctoKey;
+      }) || null
+    );
+  }
+
+  function findRouteInfoByCtoKey(ctoKey) {
+    if (!ctoKey || !routeData?.length) return null;
+    return (
+      routeData.find((rd) => {
+        if (!rd) return false;
+        if (rd.ctoKey === ctoKey) return true;
+        return getMapItemCtoKey(rd.polyline) === ctoKey;
+      }) || null
+    );
+  }
+
   // Sistema de seleção de tabela
   let selectedCells = []; // Array de strings "row-col" (ex: "0-2" = linha 0, coluna 2)
   let selectedRows = []; // Array de índices de linha
@@ -4457,7 +4511,7 @@
               // Anexar chave da CTO na polyline (para controle por chave, sem depender de coordenadas)
               // CRÍTICO: Cada CTO tem sua própria rota única, identificada por ctoKey (não coordenadas)
               try { 
-                routePolyline.__ctoKey = ctoKey;
+                setMapItemCtoKey(routePolyline, ctoKey);
                 console.log(`🔑 ctoKey ${ctoKey} anexado à rota fallback ${actualRouteIndex} para CTO ${cto.nome}`);
               } catch (e) {
                 console.error(`❌ Erro ao anexar ctoKey à rota fallback:`, e);
@@ -4579,7 +4633,7 @@
             // Anexar chave da CTO na polyline (para controle por chave, sem depender de coordenadas)
             // CRÍTICO: Cada CTO tem sua própria rota única, identificada por ctoKey (não coordenadas)
             try { 
-              routePolyline.__ctoKey = ctoKey;
+              setMapItemCtoKey(routePolyline, ctoKey);
               console.log(`🔑 ctoKey ${ctoKey} anexado à rota ${actualRouteIndex} para CTO ${cto.nome}`);
             } catch (e) {
               console.error(`❌ Erro ao anexar ctoKey à rota:`, e);
@@ -4713,7 +4767,7 @@
 
             // CRÍTICO: Cada CTO tem sua própria rota única, identificada por ctoKey (não coordenadas)
             try { 
-              routePolyline.__ctoKey = ctoKey;
+              setMapItemCtoKey(routePolyline, ctoKey);
               console.log(`🔑 ctoKey ${ctoKey} anexado à rota fallback 2 ${actualRouteIndex} para CTO ${cto.nome}`);
             } catch (e) {
               console.error(`❌ Erro ao anexar ctoKey à rota fallback 2:`, e);
@@ -5039,7 +5093,7 @@
     
     // CRÍTICO: Usar o ctoKey da rota clicada para encontrar a CTO correta
     // Isso garante que mesmo com coordenadas iguais, sempre encontramos a CTO certa
-    const clickedCtoKey = route.__ctoKey;
+    const clickedCtoKey = getMapItemCtoKey(route);
     if (!clickedCtoKey) {
       console.error(`❌ handleRouteClick: Rota no índice ${routeIndex} não tem ctoKey anexado!`);
       console.log(`🔍 Tentando encontrar por polyline...`);
@@ -5400,7 +5454,7 @@
   function applyStreetCtoMarkerColor(cto) {
     if (!cto || cto.is_condominio) return;
     const ctoKey = getCTOKey(cto);
-    const marker = (markers || []).find((m) => m && m.__ctoKey === ctoKey);
+    const marker = findMarkerByCtoKey(ctoKey);
     if (!marker || typeof marker.setIcon !== 'function') return;
 
     const color = cto.is_out_of_limit
@@ -5584,164 +5638,134 @@
 
   // Função para atualizar visibilidade de CTOs no mapa baseado em ctoVisibility
   async function updateMapVisibility() {
-    if (!map || !ctosRua || ctosRua.length === 0) return;
-    
-    // Remover marcadores e rotas de CTOs que não estão mais visíveis
+    if (!map) return;
+
+    // Garantir numeração sincronizada com os checkboxes atuais
+    ctoNumbers = calculateCTONumbers();
+
+    const streetCtos = ctosRua || [];
+    const visibleKeys = new Set(
+      streetCtos
+        .filter((cto) => ctoVisibility.get(getCTOKey(cto)) !== false)
+        .map((cto) => getCTOKey(cto))
+    );
+
+    // 1) Remover do mapa tudo que não está visível (marcadores + rotas)
     const markersToRemove = [];
-    const routesToRemove = [];
-    
-    // Verificar cada CTO e remover marcador/rota se não estiver visível
-    for (let i = 0; i < ctosRua.length; i++) {
-      const cto = ctosRua[i];
-      const ctoKey = getCTOKey(cto);
-      const isVisible = ctoVisibility.get(ctoKey) !== false;
-      
-      if (!isVisible) {
-        // CTO não está visível, remover marcador e rota
-        // Encontrar marcador associado a esta CTO
-        const ctoMarker = markers.find((marker) => {
-          if (!marker) return false;
-          if (marker === clientMarker) return false;
-          if (marker.getMap && marker.getMap() !== map) return false;
-          return marker.__ctoKey === ctoKey;
-        });
-        
-        if (ctoMarker) {
-          markersToRemove.push(ctoMarker);
-        }
-        
-        // Encontrar rota associada a esta CTO específica usando ctoKey
-        // CRÍTICO: Usar APENAS ctoKey, nunca coordenadas (múltiplas CTOs podem ter mesma coordenada)
-        const routeInfo = routeData.find(rd => {
-          if (!rd || rd.ctoKey !== ctoKey) return false;
-          // Verificar se a polyline está realmente no mapa
-          const polyline = rd.polyline;
-          if (!polyline || !polyline.getMap) return false;
-          return polyline.getMap() === map;
-        });
-        
-        if (routeInfo && routeInfo.polyline) {
-          console.log(`🗑️ Removendo rota da CTO ${cto.nome} (${ctoKey}) - rota específica desta CTO`);
-          routesToRemove.push(routeInfo.polyline);
-          // Marcar para remoção do routeData também (será removido no loop abaixo)
-        } else {
-          console.log(`⚠️ Rota não encontrada para CTO ${cto.nome} (${ctoKey}) - pode já ter sido removida`);
-        }
+    for (const marker of markers || []) {
+      if (!marker || marker === clientMarker) continue;
+      const key = getMapItemCtoKey(marker);
+      if (!key) continue;
+      // Só gerencia CTOs de rua desta lista
+      if (streetCtos.some((c) => getCTOKey(c) === key) && !visibleKeys.has(key)) {
+        markersToRemove.push(marker);
       }
     }
-    
-    // Remover marcadores do mapa e do array (com dedupe e remoção robusta)
-    const uniqueMarkersToRemove = Array.from(new Set(markersToRemove));
-    uniqueMarkersToRemove.forEach(marker => {
+
+    for (const marker of markersToRemove) {
       try {
         marker.setMap(null);
-      } catch (_) {}
-      // Remover sempre do array, mesmo se findIndex falhar por algum motivo
-      markers = markers.filter(m => m !== marker);
-    });
-    
-    // Remover rotas do mapa e do array
-    // Ordenar por índice decrescente para evitar problemas ao remover múltiplas rotas
-    const routesToRemoveWithIndex = routesToRemove.map(route => {
-      const routeIndex = routes.findIndex(r => r === route);
-      return { route, routeIndex };
-    }).filter(item => item.routeIndex !== -1).sort((a, b) => b.routeIndex - a.routeIndex);
-    
+      } catch (_) {
+        /* ignore */
+      }
+      try {
+        if (typeof marker.setVisible === 'function') marker.setVisible(false);
+      } catch (_) {
+        /* ignore */
+      }
+    }
+    if (markersToRemove.length) {
+      markers = markers.filter((m) => !markersToRemove.includes(m));
+    }
+
+    // Rotas: remover as de CTOs ocultas
+    const routesToRemove = [];
+    for (const rd of [...(routeData || [])]) {
+      if (!rd) continue;
+      const key = rd.ctoKey || getMapItemCtoKey(rd.polyline);
+      if (!key) continue;
+      if (streetCtos.some((c) => getCTOKey(c) === key) && !visibleKeys.has(key)) {
+        if (rd.polyline) routesToRemove.push(rd.polyline);
+      }
+    }
+
+    const routesToRemoveWithIndex = routesToRemove
+      .map((route) => {
+        const routeIndex = routes.findIndex((r) => r === route);
+        return { route, routeIndex };
+      })
+      .filter((item) => item.routeIndex !== -1)
+      .sort((a, b) => b.routeIndex - a.routeIndex);
+
     routesToRemoveWithIndex.forEach(({ route, routeIndex }) => {
-      route.setMap(null);
-      // Se a rota que está sendo removida estava sendo editada, finalizar edição
-      if (editingRouteIndex === routeIndex) {
-        finishEditingRoute(routeIndex);
+      try {
+        route.setMap(null);
+      } catch (_) {
+        /* ignore */
       }
-      // Se a rota que está sendo removida tinha o popup aberto, fechar o popup
-      if (selectedRouteIndex === routeIndex) {
-        selectedRouteIndex = null;
-      }
-      
-      // Remover do routeData também (usar polyline para encontrar - mais confiável)
-      // CRÍTICO: Remover apenas a entrada específica desta rota, não outras rotas com mesma coordenada
-      const routeInfoToRemove = routeData.find(rd => rd && rd.polyline === route);
+      if (editingRouteIndex === routeIndex) finishEditingRoute(routeIndex);
+      if (selectedRouteIndex === routeIndex) selectedRouteIndex = null;
+
+      const routeInfoToRemove = routeData.find((rd) => rd && rd.polyline === route);
       if (routeInfoToRemove) {
-        const routeDataIndex = routeData.findIndex(rd => rd === routeInfoToRemove);
-        if (routeDataIndex !== -1) {
-          console.log(`🗑️ Removendo routeData[${routeDataIndex}] para CTO ${routeInfoToRemove.cto?.nome} (${routeInfoToRemove.ctoKey})`);
-          routeData.splice(routeDataIndex, 1);
+        const routeDataIndex = routeData.findIndex((rd) => rd === routeInfoToRemove);
+        if (routeDataIndex !== -1) routeData.splice(routeDataIndex, 1);
+      }
+
+      routes.splice(routeIndex, 1);
+      if (editingRouteIndex !== null && editingRouteIndex > routeIndex) editingRouteIndex--;
+      if (selectedRouteIndex !== null && selectedRouteIndex > routeIndex) selectedRouteIndex--;
+    });
+
+    // 2) Reaparecer: criar marcador/rota se estiver visível e ainda não estiver no mapa
+    for (const cto of streetCtos) {
+      const ctoKey = getCTOKey(cto);
+      if (ctoVisibility.get(ctoKey) === false) continue;
+
+      const ctoLat = parseFloat(cto.latitude);
+      const ctoLng = parseFloat(cto.longitude);
+      if (isNaN(ctoLat) || isNaN(ctoLng)) continue;
+
+      let ctoMarker = findMarkerByCtoKey(ctoKey);
+      if (ctoMarker) {
+        try {
+          if (ctoMarker.getMap?.() !== map) ctoMarker.setMap(map);
+          if (typeof ctoMarker.setVisible === 'function') ctoMarker.setVisible(true);
+        } catch (_) {
+          /* ignore */
         }
       } else {
-        console.warn(`⚠️ RouteInfo não encontrado em routeData para rota removida no índice ${routeIndex}`);
-      }
-      
-      routes.splice(routeIndex, 1);
-      // Ajustar editingRouteIndex se necessário (se removemos uma rota antes da que está sendo editada)
-      if (editingRouteIndex !== null && editingRouteIndex > routeIndex) {
-        editingRouteIndex--;
-      }
-      // Ajustar selectedRouteIndex se necessário (se removemos uma rota antes da que está selecionada)
-      if (selectedRouteIndex !== null && selectedRouteIndex > routeIndex) {
-        selectedRouteIndex--;
-      }
-    });
-    
-    // Adicionar marcadores e rotas de CTOs que agora estão visíveis mas não estão no mapa
-    for (let i = 0; i < ctosRua.length; i++) {
-      const cto = ctosRua[i];
-      const ctoKey = getCTOKey(cto);
-      const isVisible = ctoVisibility.get(ctoKey) !== false;
-      
-      if (isVisible) {
-        // Verificar se o marcador já existe no mapa
-        const ctoLat = parseFloat(cto.latitude);
-        const ctoLng = parseFloat(cto.longitude);
-        
-        if (isNaN(ctoLat) || isNaN(ctoLng)) continue;
-        
-        const markerExists = markers.some(marker => {
-          if (!marker) return false;
-          if (marker === clientMarker) return false; // Ignorar marcador do cliente
-          if (marker.getMap && marker.getMap() !== map) return false;
-          return marker.__ctoKey === ctoKey;
-        });
-        
-        // Verificar se a rota existe E está no mapa (não apenas em routeData)
-        // CRÍTICO: Usar APENAS ctoKey para identificar rotas, nunca coordenadas
-        // Múltiplas CTOs podem ter a mesma coordenada, mas cada uma DEVE ter sua própria rota única
-        const routeExists = routeData.some(rd => {
-          if (!rd || rd.ctoKey !== ctoKey) return false;
-          // Verificar se a polyline está realmente no mapa
-          const polyline = rd.polyline;
-          if (!polyline || !polyline.getMap) return false;
-          return polyline.getMap() === map;
-        });
-        
-        // Se não existe marcador, criar
-        if (!markerExists) {
-          // Encontrar o índice da CTO no array ctos completo
-          const ctoIndex = ctos.findIndex(c => getCTOKey(c) === ctoKey);
-          if (ctoIndex !== -1) {
-            // Criar marcador usando a mesma lógica de drawRoutesAndMarkers
-            await createCTOMarker(ctos[ctoIndex], ctoIndex);
-          }
+        const ctoIndex = ctos.findIndex((c) => getCTOKey(c) === ctoKey);
+        if (ctoIndex !== -1) {
+          await createCTOMarker(ctos[ctoIndex], ctoIndex);
+          ctoMarker = findMarkerByCtoKey(ctoKey);
         }
-        
-        // Se não existe rota no mapa e a CTO precisa de rota, criar
-        // IMPORTANTE: Cada CTO tem sua própria rota, mesmo que compartilhe coordenadas com outras
-        // Incluir CTOs normais dentro de 250m OU CTOs fora do limite (is_out_of_limit)
-        if (!routeExists && !cto.is_condominio && cto.distancia_metros && cto.distancia_metros > 0 && (cto.distancia_real || cto.is_out_of_limit)) {
-          const ctoIndex = ctos.findIndex(c => getCTOKey(c) === ctoKey);
-          if (ctoIndex !== -1) {
-            console.log(`📍 Criando rota ÚNICA para CTO ${cto.nome} (${ctoKey}) - mesmo que outras CTOs tenham mesma coordenada`);
-            await drawRealRoute(ctos[ctoIndex], ctoIndex);
-          }
-        } else if (routeExists) {
-          console.log(`✓ Rota já existe para CTO ${cto.nome} (${ctoKey}) - rota específica desta CTO`);
+      }
+
+      const routeInfo = findRouteInfoByCtoKey(ctoKey);
+      const routeOnMap = routeInfo?.polyline && routeInfo.polyline.getMap?.() === map;
+      if (
+        !routeOnMap &&
+        !cto.is_condominio &&
+        cto.distancia_metros &&
+        cto.distancia_metros > 0 &&
+        (cto.distancia_real || cto.is_out_of_limit)
+      ) {
+        const ctoIndex = ctos.findIndex((c) => getCTOKey(c) === ctoKey);
+        if (ctoIndex !== -1) {
+          await drawRealRoute(ctos[ctoIndex], ctoIndex);
+        }
+      } else if (routeInfo?.polyline && !routeOnMap) {
+        try {
+          routeInfo.polyline.setMap(map);
+        } catch (_) {
+          /* ignore */
         }
       }
     }
-    
-    // Atualizar numeração dos marcadores existentes no mapa
+
+    // 3) Renumerar marcadores visíveis (1..N) e limpar label dos ocultos
     await updateMarkerNumbers();
-    
-    // Atualizar numeração dos marcadores
     ctoNumbersVersion++;
     await tick();
   }
@@ -5749,46 +5773,43 @@
   // Função para atualizar os números dos marcadores no mapa baseado em ctoNumbers
   async function updateMarkerNumbers() {
     if (!map || !ctosRua || ctosRua.length === 0) return;
-    
-    // Para cada CTO visível, encontrar seu marcador e atualizar o label
+
+    // Recalcular para garantir números corretos neste momento
+    const numbers = calculateCTONumbers();
+    ctoNumbers = numbers;
+
     for (const cto of ctosRua) {
       const ctoKey = getCTOKey(cto);
       const isVisible = ctoVisibility.get(ctoKey) !== false;
-      
-      if (!isVisible) continue; // Pular CTOs não visíveis
-      
-      const ctoLat = parseFloat(cto.latitude);
-      const ctoLng = parseFloat(cto.longitude);
-      
-      if (isNaN(ctoLat) || isNaN(ctoLng)) continue;
-      
-      // Encontrar o marcador correspondente a esta CTO (por chave, sem depender de coordenadas)
-      const ctoMarker = markers.find(marker => {
-        if (!marker) return false;
-        if (marker === clientMarker) return false; // Ignorar marcador do cliente
-        if (marker.getMap && marker.getMap() !== map) return false;
-        return marker.__ctoKey === ctoKey;
-      });
-      
-      if (ctoMarker) {
-        // Obter o número correto da CTO baseado em ctoNumbers
-        const markerNumber = ctoNumbers.get(cto);
-        
-        // Verificar se é prédio (prédios não têm numeração)
-        const isPredio = cto.is_condominio === true;
-        
-        if (!isPredio && markerNumber) {
-          // Atualizar o label do marcador
-          ctoMarker.setLabel({
-            text: `${markerNumber}`,
-            color: '#FFFFFF',
-            fontSize: '14px',
-            fontWeight: 'bold'
-          });
-        } else if (isPredio) {
-          // Remover label se for prédio
-          ctoMarker.setLabel(null);
+      const ctoMarker = findMarkerByCtoKey(ctoKey);
+      if (!ctoMarker) continue;
+
+      const isPredio = cto.is_condominio === true;
+      if (!isVisible) {
+        try {
+          ctoMarker.setMap(null);
+        } catch (_) {
+          /* ignore */
         }
+        continue;
+      }
+
+      try {
+        if (ctoMarker.getMap?.() !== map) ctoMarker.setMap(map);
+      } catch (_) {
+        /* ignore */
+      }
+
+      const markerNumber = numbers.get(cto);
+      if (!isPredio && markerNumber) {
+        ctoMarker.setLabel({
+          text: `${markerNumber}`,
+          color: '#FFFFFF',
+          fontSize: '14px',
+          fontWeight: 'bold'
+        });
+      } else if (isPredio) {
+        ctoMarker.setLabel(null);
       }
     }
   }
@@ -5900,7 +5921,7 @@
     });
 
     // Anexar chave estável da CTO no marcador (evita depender de comparação por coordenadas)
-    try { ctoMarker.__ctoKey = ctoKey; } catch (_) {}
+    setMapItemCtoKey(ctoMarker, ctoKey);
     
     markers.push(ctoMarker);
   }
@@ -6143,7 +6164,7 @@
 
         // Anexar chave estável da CTO no marcador (evita depender de comparação por coordenadas)
         const ctoKey = getCTOKey(cto);
-        try { ctoMarker.__ctoKey = ctoKey; } catch (_) {}
+        setMapItemCtoKey(ctoMarker, ctoKey);
 
         // Verificar se o marcador foi criado com sucesso
         // IMPORTANTE: Adicionar ao array sempre que o marcador foi criado, mesmo que getMap() ainda não esteja disponível
@@ -6479,7 +6500,7 @@
     if (ctoMarkersCount !== ctos.length) {
       console.warn(`⚠️ ATENÇÃO: Esperado ${ctos.length} marcadores, mas apenas ${ctoMarkersCount} foram criados!`);
       console.log(`📋 CTOs esperadas:`, ctos.map(c => `${c.nome} (${getCTOKey(c)})`));
-      console.log(`📍 Marcadores criados:`, markers.filter(m => m !== clientMarker).map(m => `${m.__ctoKey || 'SEM_CHAVE'}`));
+      console.log(`📍 Marcadores criados:`, markers.filter(m => m !== clientMarker).map(m => `${getMapItemCtoKey(m) || 'SEM_CHAVE'}`));
     }
 
     // Ajustar zoom para mostrar todos os pontos com padding mínimo para maximizar visibilidade
