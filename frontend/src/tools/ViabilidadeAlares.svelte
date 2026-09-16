@@ -616,7 +616,11 @@
   
   // Função para gerar uma chave única para uma CTO
   function getCTOKey(cto) {
-    const id = cto.id_cto || cto.id || 'NO_ID';
+    const id =
+      cto.id_cto ||
+      cto.id ||
+      (cto.id_mdu != null && cto.id_mdu !== '' ? `mdu-${cto.id_mdu}` : null) ||
+      'NO_ID';
     const lat = isNaN(parseFloat(cto.latitude)) ? '0.000000' : parseFloat(cto.latitude || 0).toFixed(6);
     const lng = isNaN(parseFloat(cto.longitude)) ? '0.000000' : parseFloat(cto.longitude || 0).toFixed(6);
     return `${id}_${cto.nome || 'UNKNOWN'}_${lat}_${lng}`;
@@ -683,21 +687,54 @@
 
   function applyPrediosVisibilityToMap() {
     if (!map) return;
-    for (const cto of ctos || []) {
-      if (!cto || cto.is_condominio !== true) continue;
-      const marker = findMarkerByCtoKey(getCTOKey(cto));
-      if (!marker) continue;
+    let hidden = 0;
+    let shown = 0;
+    for (const marker of markers || []) {
+      if (!marker || marker === clientMarker) continue;
+      const isPredio =
+        marker.__isPredio === true ||
+        (typeof marker.get === 'function' && marker.get('isPredio') === true);
+      if (!isPredio) continue;
       try {
-        marker.setMap(prediosVisibleOnMap ? map : null);
+        if (prediosVisibleOnMap) {
+          marker.setMap(map);
+          if (typeof marker.setVisible === 'function') marker.setVisible(true);
+          shown += 1;
+        } else {
+          marker.setMap(null);
+          if (typeof marker.setVisible === 'function') marker.setVisible(false);
+          hidden += 1;
+        }
       } catch (_) {
         /* ignore */
       }
     }
+    console.log(
+      `🏢 [Mapa] Prédios ${prediosVisibleOnMap ? 'visíveis' : 'ocultos'}: shown=${shown}, hidden=${hidden}`
+    );
   }
 
   function togglePrediosVisibilityOnMap() {
     prediosVisibleOnMap = !prediosVisibleOnMap;
     applyPrediosVisibilityToMap();
+  }
+
+  /** Remove do mapa todos os marcadores que não são a casinha do cliente. */
+  function clearCtoMarkersFromMap() {
+    const kept = [];
+    for (const marker of markers || []) {
+      if (!marker) continue;
+      if (marker === clientMarker) {
+        kept.push(marker);
+        continue;
+      }
+      try {
+        marker.setMap(null);
+      } catch (_) {
+        /* ignore */
+      }
+    }
+    markers = kept;
   }
 
   function findMarkerByCtoKey(ctoKey) {
@@ -3818,7 +3855,7 @@
               pct_ocup: 0,
               cidade: p.nome_cidade || '',
               pop: '',
-              id: p.id_mdu != null ? String(p.id_mdu) : ''
+              id: p.id_mdu != null ? `mdu-${p.id_mdu}` : `mdu-${p.latitude},${p.longitude}`
             }));
           
           console.log(`✅ [Frontend] ${predios.length} condomínios MDU encontrados dentro de 250m`);
@@ -5948,6 +5985,12 @@
 
     // Anexar chave estável da CTO no marcador (evita depender de comparação por coordenadas)
     setMapItemCtoKey(ctoMarker, ctoKey);
+    try {
+      ctoMarker.__isPredio = !!isPredio;
+      if (typeof ctoMarker.set === 'function') ctoMarker.set('isPredio', !!isPredio);
+    } catch (_) {
+      /* ignore */
+    }
     
     markers.push(ctoMarker);
   }
@@ -5960,6 +6003,19 @@
 
     console.log(`🗺️ drawRoutesAndMarkers: Iniciando desenho de ${ctos.length} CTOs`);
     console.log(`📊 ctoVisibility Map size: ${ctoVisibility.size}`);
+
+    // Evitar marcadores duplicados (ex.: prédios desenhados na etapa 1 e de novo na etapa 6)
+    clearCtoMarkersFromMap();
+    // Limpar rotas antigas também
+    routes.forEach((route) => {
+      try {
+        if (route?.setMap) route.setMap(null);
+      } catch (_) {
+        /* ignore */
+      }
+    });
+    routes = [];
+    routeData = [];
 
     const bounds = new google.maps.LatLngBounds();
     bounds.extend(clientCoords);
@@ -6151,6 +6207,12 @@
         // Anexar chave estável da CTO no marcador (evita depender de comparação por coordenadas)
         const ctoKey = getCTOKey(cto);
         setMapItemCtoKey(ctoMarker, ctoKey);
+        try {
+          ctoMarker.__isPredio = !!isPredio;
+          if (typeof ctoMarker.set === 'function') ctoMarker.set('isPredio', !!isPredio);
+        } catch (_) {
+          /* ignore */
+        }
 
         // Verificar se o marcador foi criado com sucesso
         // IMPORTANTE: Adicionar ao array sempre que o marcador foi criado, mesmo que getMap() ainda não esteja disponível
