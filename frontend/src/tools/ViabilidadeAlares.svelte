@@ -194,6 +194,18 @@
     const service = new google.maps.StreetViewService();
     service.getPanorama({ location: latLng, radius: 80 }, (data, status) => {
       if (status === 'OK' && data?.location?.latLng) {
+        try {
+          sv.setOptions?.({
+            enableCloseButton: true,
+            addressControl: true,
+            panControl: true,
+            zoomControl: true,
+            fullscreenControl: true,
+            linksControl: true
+          });
+        } catch {
+          // ignore
+        }
         sv.setPosition(data.location.latLng);
         sv.setPov({ heading: map.getHeading?.() || 0, pitch: 0 });
         sv.setVisible(true);
@@ -484,14 +496,37 @@
       const sv = map.getStreetView?.();
       if (sv) {
         try {
-          sv.setOptions?.({ enableCloseButton: true, addressControl: true });
+          sv.setOptions?.({
+            enableCloseButton: true,
+            addressControl: true,
+            panControl: true,
+            zoomControl: true,
+            fullscreenControl: true,
+            linksControl: true,
+            motionTrackingControl: true
+          });
         } catch {
           // ignore
         }
         wbStreetViewOpen = !!sv.getVisible?.();
         google.maps.event.addListener(sv, 'visible_changed', () => {
-          wbStreetViewOpen = !!sv.getVisible?.();
-          if (!wbStreetViewOpen) {
+          const open = !!sv.getVisible?.();
+          wbStreetViewOpen = open;
+          if (open) {
+            // Street View: só controles nativos (X, bússola, fullscreen do Google)
+            try {
+              sv.setOptions?.({
+                enableCloseButton: true,
+                addressControl: true,
+                panControl: true,
+                zoomControl: true,
+                fullscreenControl: true,
+                linksControl: true
+              });
+            } catch {
+              // ignore
+            }
+          } else {
             setTimeout(hideNativeStreetViewControl, 50);
             setTimeout(hideNativeStreetViewControl, 400);
           }
@@ -9185,7 +9220,12 @@
               >Satélite</button>
             </div>
 
-            <div class="wb-map-tools">
+            <div
+              class="wb-map-tools"
+              class:wb-map-tools-hidden={wbStreetViewOpen}
+              aria-hidden={wbStreetViewOpen}
+            >
+              {#if !wbStreetViewOpen}
               <button
                 type="button"
                 class="wb-map-tool-btn wb-predios-btn"
@@ -9211,24 +9251,16 @@
               <button
                 type="button"
                 class="wb-map-tool-btn wb-pegman-btn"
-                class:active={wbStreetViewOpen}
                 class:dragging={wbPegmanDragging}
                 on:pointerdown={startPegmanDrag}
                 on:click={handlePegmanClick}
-                title={wbStreetViewOpen ? 'Voltar ao mapa' : 'Arraste o boneco para uma rua azul'}
-                aria-label={wbStreetViewOpen ? 'Voltar ao mapa' : 'Arrastar Street View'}
-                aria-pressed={wbStreetViewOpen}
+                title="Arraste o boneco para uma rua azul"
+                aria-label="Arrastar Street View"
               >
-                {#if wbStreetViewOpen}
-                  <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">
-                    <path fill="currentColor" d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/>
-                  </svg>
-                {:else}
-                  <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">
-                    <circle cx="12" cy="5.5" r="2.4" fill="#fbbc04"/>
-                    <path fill="#4285f4" d="M9.2 9.2c.7-.5 1.6-.8 2.8-.8s2.1.3 2.8.8c.7.5 1.1 1.2 1.1 2v5.2h-1.7v5.6h-4.4V16.4H8.1V11.2c0-.8.4-1.5 1.1-2z"/>
-                  </svg>
-                {/if}
+                <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">
+                  <circle cx="12" cy="5.5" r="2.4" fill="#fbbc04"/>
+                  <path fill="#4285f4" d="M9.2 9.2c.7-.5 1.6-.8 2.8-.8s2.1.3 2.8.8c.7.5 1.1 1.2 1.1 2v5.2h-1.7v5.6h-4.4V16.4H8.1V11.2c0-.8.4-1.5 1.1-2z"/>
+                </svg>
               </button>
               <button
                 type="button"
@@ -9243,10 +9275,11 @@
                   {#if wbFullscreen}
                     <path fill="currentColor" d="M9 3H7v4H3v2h6V3zm8 0h-2v6h6V7h-4V3zM3 15v2h4v4h2v-6H3zm12 0v6h2v-4h4v-2h-6z"/>
                   {:else}
-                    <path fill="currentColor" d="M3 3h6v2H5v4H3V3zm12 0h6v6h-2V5h-4V3zM3 15h2v4h4v2H3v-6zm16 0h2v6h-6v-2h4v-4z"/>
+                    <path fill="currentColor" d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/>
                   {/if}
                 </svg>
               </button>
+              {/if}
             </div>
 
             {#if wbPegmanDragging}
@@ -10284,7 +10317,8 @@
   }
 
   .viabilidade-content.workbench-mode.wb-streetview-open .wb-map-controls {
-    z-index: 1000005;
+    z-index: 1;
+    pointer-events: none;
   }
 
   .viabilidade-content.workbench-mode .wb-map-type {
@@ -10347,6 +10381,11 @@
     z-index: 5;
   }
 
+  /* No Street View: esconde nossos 3 botões — ficam só os controles nativos do Maps */
+  .viabilidade-content.workbench-mode .wb-map-tools.wb-map-tools-hidden {
+    display: none !important;
+  }
+
   /* Pegman/círculo nativo só some no mapa/satélite — no Street View os controles voltam */
   .viabilidade-content.workbench-mode:not(.wb-streetview-open) :global(.gm-svpc),
   .viabilidade-content.workbench-mode:not(.wb-streetview-open) :global(.gm-svpc *),
@@ -10360,18 +10399,6 @@
     width: 0 !important;
     height: 0 !important;
     overflow: hidden !important;
-  }
-
-  /* No Street View: botões custom por cima do panorama para voltar ao mapa */
-  .viabilidade-content.workbench-mode.wb-streetview-open .wb-map-tools {
-    z-index: 1000002;
-  }
-
-  .viabilidade-content.workbench-mode.wb-streetview-open .wb-pegman-btn {
-    background: #7b68ee;
-    border-color: #7b68ee;
-    color: #ffffff;
-    box-shadow: 0 4px 14px rgba(123, 104, 238, 0.45);
   }
 
   .viabilidade-content.workbench-mode .wb-map-tool-btn {
