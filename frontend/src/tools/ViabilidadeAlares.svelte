@@ -3681,11 +3681,11 @@
 
     try {
       // ============================================
-      // ETAPA 1: Buscar PRÉDIOS dentro de 100m (OTIMIZAÇÃO: reduzido de 250m para melhor performance)
+      // ETAPA 1: Buscar PRÉDIOS MDU próximos (250m)
       // ============================================
-      console.log(`🏢 [Frontend] ETAPA 1: Buscando PRÉDIOS próximos de (${clientCoords.lat}, ${clientCoords.lng}) dentro de 100m...`);
+      console.log(`🏢 [Frontend] ETAPA 1: Buscando PRÉDIOS próximos de (${clientCoords.lat}, ${clientCoords.lng}) dentro de 250m...`);
       
-      const prediosResponse = await fetch(getApiUrl(`/api/condominios/nearby?lat=${clientCoords.lat}&lng=${clientCoords.lng}&radius=100`), {
+      const prediosResponse = await fetch(getApiUrl(`/api/condominios/nearby?lat=${clientCoords.lat}&lng=${clientCoords.lng}&radius=250`), {
         headers: clusterFetchHeaders()
       });
       
@@ -3694,7 +3694,7 @@
         const prediosData = await prediosResponse.json();
         if (prediosData.success && prediosData.condominios) {
           predios = prediosData.condominios
-            .filter(p => p.distancia_metros <= 100)
+            .filter(p => p.distancia_metros <= 250)
             .map(p => ({
               nome: p.nome_predio || p.descricao || 'Condomínio',
               latitude: parseFloat(p.latitude),
@@ -3719,7 +3719,7 @@
               id: p.id_mdu != null ? String(p.id_mdu) : ''
             }));
           
-          console.log(`✅ [Frontend] ${predios.length} condomínios MDU encontrados dentro de 100m`);
+          console.log(`✅ [Frontend] ${predios.length} condomínios MDU encontrados dentro de 250m`);
           
           // Adicionar prédios imediatamente ao array (sem calcular rotas)
           if (predios.length > 0) {
