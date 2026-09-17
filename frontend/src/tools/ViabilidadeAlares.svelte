@@ -73,6 +73,12 @@
   let workbenchSearchTimer = null;
   let workbenchPreviewTimer = null;
   let workbenchPreviewToken = 0;
+  /** Cancela abertura de InfoWindow/passos finais se outra busca começar. */
+  let clientSearchGen = 0;
+
+  function workbenchCoordKey(lat, lng) {
+    return `c:${Number(lat).toFixed(6)},${Number(lng).toFixed(6)}`;
+  }
 
   $: isDarkTheme = (embedded || workbenchMode) && $theme === 'dark';
 
@@ -1971,7 +1977,7 @@
     if (!clientCoords || clientCoords.lat == null || clientCoords.lng == null) return;
 
     // Evita o sync reativo do Workbench re-buscar a mesma posição
-    lastWorkbenchLocKey = `c:${Number(clientCoords.lat)},${Number(clientCoords.lng)}`;
+    lastWorkbenchLocKey = workbenchCoordKey(clientCoords.lat, clientCoords.lng);
 
     try {
       onClientLocationChange({
@@ -2739,7 +2745,7 @@
     if (!hasCoords && !hasAddress) return;
 
     lastWorkbenchLocKey = hasCoords
-      ? `c:${Number(initialLat)},${Number(initialLng)}`
+      ? workbenchCoordKey(initialLat, initialLng)
       : `a:${(initialAddress || '').trim().toLowerCase()}`;
 
     if (hasCoords) {
@@ -2762,9 +2768,10 @@
   function scheduleWorkbenchLocationSync() {
     if (!workbenchMode) return;
     if (workbenchSearchTimer) clearTimeout(workbenchSearchTimer);
+    // Debounce curto: ao sync do chamado o pin/CTOs aparecem quase na hora
     workbenchSearchTimer = setTimeout(() => {
       void syncWorkbenchLocationFromProps();
-    }, 650);
+    }, 60);
   }
 
   async function syncWorkbenchLocationFromProps() {
@@ -2781,7 +2788,7 @@
     // (searchWorkbenchAddress) ou a pré-busca inicial com coords do chamado.
     if (!hasCoords) return;
 
-    const key = `c:${Number(initialLat)},${Number(initialLng)}`;
+    const key = workbenchCoordKey(initialLat, initialLng);
     if (key === lastWorkbenchLocKey) return;
     lastWorkbenchLocKey = key;
 
@@ -2792,9 +2799,6 @@
     try {
       await searchClientLocation();
       emitForaLimiteChange();
-      if (map && google?.maps) {
-        google.maps.event.trigger(map, 'resize');
-      }
     } catch (err) {
       console.warn('[Workbench] Atualização de localização falhou:', err);
     }
@@ -3928,8 +3932,13 @@
       map.setCenter(clientCoords);
       map.setZoom(18); // Zoom maior para mostrar localização exata
 
-      // Verificar cobertura ANTES de criar o marcador
-      await checkClientCoverage(clientCoords.lat, clientCoords.lng);
+      // Workbench: não bloqueia o pin — cobertura atualiza a cor em background
+      // Standalone: aguarda para já criar a casinha na cor certa
+      if (workbenchMode) {
+        void checkClientCoverage(clientCoords.lat, clientCoords.lng);
+      } else {
+        await checkClientCoverage(clientCoords.lat, clientCoords.lng);
+      }
 
       // Criar ícone de casinha usando path SVG
       // Path de uma casa: triângulo (telhado) + retângulo (base)
@@ -3964,14 +3973,14 @@
         markerTitle += ` - FORA da área de cobertura (${distanceKm} km)`;
       }
 
-      // Adicionar marcador (ícone de casinha) - ARRASTÁVEL
-      // DROP ok: o InfoWindow só abre DEPOIS da animação terminar (não salta com a casinha)
+      // Workbench: sem DROP — pin instantâneo (DROP + fitBounds fazia a casinha saltar)
+      // Standalone: DROP ok, mas só depois o fitBounds / InfoWindow
       const marker = new google.maps.Marker({
         position: clientCoords,
         map: map,
         title: markerTitle,
         icon: houseIcon,
-        animation: google.maps.Animation.DROP,
+        ...(workbenchMode ? {} : { animation: google.maps.Animation.DROP }),
         zIndex: 1000,
         optimized: false,
         draggable: true,
@@ -3980,11 +3989,15 @@
 
       clientMarker = marker;
       markers.push(marker);
+      const searchGen = ++clientSearchGen;
+      if (workbenchMode && clientCoords) {
+        lastWorkbenchLocKey = workbenchCoordKey(clientCoords.lat, clientCoords.lng);
+      }
 
-      /** Aguarda o fim do DROP (ou timeout) antes de abrir o box. */
-      function waitForMarkerDrop(m, timeoutMs = 900) {
+      /** Aguarda o fim do DROP (ou timeout) antes de mexer no mapa/box. */
+      function waitForMarkerDrop(m, timeoutMs = 700) {
         return new Promise((resolve) => {
-          if (!m || !google?.maps) {
+          if (!m || !google?.maps || workbenchMode) {
             resolve();
             return;
           }
@@ -4001,7 +4014,6 @@
           };
           let listener = null;
           try {
-            // DROP termina quando getAnimation() volta a null
             if (!m.getAnimation || m.getAnimation() == null) {
               finish();
               return;
@@ -4168,12 +4180,19 @@
         }
       });
 
-      // Buscar CTOs (fitBounds) em paralelo com o DROP; box só abre no fim dos dois
-      await Promise.all([searchCTOs(), waitForMarkerDrop(marker)]);
+      // 1) DROP (só standalone) → 2) CTOs/fitBounds → 3) idle → 4) InfoWindow
+      // Nunca abrir o box durante DROP ou zoom (é o que fazia saltar)
+      if (!workbenchMode) {
+        await waitForMarkerDrop(marker);
+      }
+      await searchCTOs();
+      if (searchGen !== clientSearchGen || clientMarker !== marker) return;
 
-      // Workbench: endereço/CEP do relatório = o encontrado no pin (não o texto da busca/Agenda)
-      if (workbenchMode && clientCoords) {
-        await resolveClientAddressFromPin(clientCoords.lat, clientCoords.lng);
+      if (workbenchMode) {
+        await waitMapIdleWorkbench(500);
+        if (searchGen !== clientSearchGen || clientMarker !== marker) return;
+        // Reverse geocode em background — não atrasa pin/CTOs
+        void resolveClientAddressFromPin(clientCoords.lat, clientCoords.lng);
       }
 
       try {
@@ -4187,8 +4206,8 @@
           false,
           initialAddress
         );
+        if (searchGen !== clientSearchGen || clientMarker !== marker) return;
         if (clientInfoWindow && clientMarker === marker) {
-          // Garante que a animação não está mais ativa ao ancorar o box
           try {
             marker.setAnimation(null);
           } catch (_) {
@@ -4197,6 +4216,7 @@
           applyClientIwHeader(clientInfoWindow);
           clientInfoWindow.setContent(content);
           await new Promise((r) => requestAnimationFrame(r));
+          if (searchGen !== clientSearchGen || clientMarker !== marker) return;
           clientInfoWindow.open({ map, anchor: marker, shouldFocus: false });
         }
       } catch (iwErr) {
@@ -7099,6 +7119,7 @@
 
     // Ajustar zoom para casinha + CTOs (prédios MDU não entram no enquadramento)
     if (bounds.getNorthEast() && bounds.getSouthWest()) {
+      const fitWaitMs = workbenchMode ? 220 : 500;
       map.fitBounds(bounds, {
         top: 40,
         right: 40,
@@ -7114,7 +7135,7 @@
         setTimeout(() => {
           google.maps.event.removeListener(boundsListener);
           resolve();
-        }, 500);
+        }, fitWaitMs);
       });
       
       const finalBounds = map.getBounds();
@@ -7154,7 +7175,7 @@
             setTimeout(() => {
               google.maps.event.removeListener(boundsListener);
               resolve();
-            }, 500);
+            }, fitWaitMs);
           });
         }
       }
