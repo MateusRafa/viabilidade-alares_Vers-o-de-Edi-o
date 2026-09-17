@@ -714,7 +714,13 @@
       next.coordenadas = form.coordenadas || next.coordenadas;
     }
     form = next;
-    if (coords) pinCoords = coords;
+    if (coords) {
+      const same =
+        pinCoords &&
+        Math.abs(Number(pinCoords.lat) - Number(coords.lat)) < 1e-6 &&
+        Math.abs(Number(pinCoords.lng) - Number(coords.lng)) < 1e-6;
+      if (!same) pinCoords = coords;
+    }
     sugeridaOriginal = item?.tabulacaoFinal || item?.analiseIa?.tabulacaoSugerida || '';
     ensureProjetistaFromLogin();
   }
@@ -878,8 +884,14 @@
     const lng = Number(coords.lng);
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
 
-    pinCoords = { lat, lng };
-    form.coordenadas = formatCoords(lat, lng);
+    const same =
+      pinCoords &&
+      Math.abs(Number(pinCoords.lat) - lat) < 1e-6 &&
+      Math.abs(Number(pinCoords.lng) - lng) < 1e-6;
+    if (!same) {
+      pinCoords = { lat, lng };
+      form.coordenadas = formatCoords(lat, lng);
+    }
     applyMapAddressToForm(address);
     scheduleReanaliseTabulacao();
   }
