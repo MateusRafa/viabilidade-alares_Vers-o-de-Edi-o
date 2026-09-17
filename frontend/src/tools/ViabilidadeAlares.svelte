@@ -2176,13 +2176,18 @@
     }
   }
 
-  /** Classifica cor de ocupação da CTO: green | orange | red */
+  /** Classifica cor de ocupação igual ao marcador do mapa: green | orange | red */
   function getCTOOccupancyBand(cto) {
-    const pct = parseFloat(cto?.pct_ocup);
-    if (!Number.isFinite(pct) || pct < 0 || pct > 100) return 'red';
-    if (pct < 50) return 'green';
-    if (pct < 80) return 'orange';
-    return 'red';
+    const n = normalizeCtoPortCounts(cto);
+    const livres = Math.max(0, (n.vagas_total || 0) - (n.clientes_conectados || 0));
+    // Sem portas livres (e com capacidade/ocupação) → trata como vermelho (saturado)
+    if (livres === 0 && ((n.vagas_total || 0) > 0 || (n.clientes_conectados || 0) > 0)) {
+      return 'red';
+    }
+    const color = String(getCTOColor(n.pct_ocup) || '').toUpperCase();
+    if (color === '#F44336' || color === COLOR_CTO_RED.toUpperCase()) return 'red';
+    if (color === '#FF9800' || color === COLOR_CTO_ORANGE.toUpperCase()) return 'orange';
+    return 'green';
   }
 
   function normalizeMotivoTabulacao(value) {
@@ -2202,7 +2207,7 @@
   /**
    * Tabulação automática pelo estado atual do mapa (sempre relativa ao endereço).
    * 2.2 fora cobertura / além 250m → Fora da Área de Cobertura
-   * 2.3 1 CTO ou todas vermelhas → Alívio; 1+ verde/laranja → Com Portas
+   * 2.3 1 CTO ou todas vermelhas → Alívio; 2+ com ao menos 1 verde/laranja → Com Portas
    * 2.4 Análise de complemento + equipamentos válidos → Atendimento Externo
    */
   function computeTabulacaoSugeridaFromMap(motivoRaw = workbenchMotivo) {
@@ -2229,7 +2234,6 @@
       };
     }
     if (foraLimiteCto || withinLimit.length === 0) {
-      // Sem coordenadas ainda / busca não rodou: não força tabulação
       if (!clientCoords) return null;
       const nome = foraLimiteCto?.nome || 'N/A';
       const dist = foraLimiteCto ? ctoRouteDistanceMeters(foraLimiteCto) : null;
@@ -2242,24 +2246,27 @@
       };
     }
 
-    // 2.3 — cores de ocupação (só CTOs dentro do limite)
+    // 2.3 — mesma cor do marcador no mapa (normalize + getCTOColor)
+    const bands = withinLimit.map((c) => getCTOOccupancyBand(c));
     const onlyOne = withinLimit.length === 1;
-    const allRed = withinLimit.every((c) => getCTOOccupancyBand(c) === 'red');
-    const hasGreenOrOrange = withinLimit.some((c) => {
-      const band = getCTOOccupancyBand(c);
-      return band === 'green' || band === 'orange';
-    });
+    const allRed = bands.length > 0 && bands.every((b) => b === 'red');
+    const hasGreenOrOrange = bands.some((b) => b === 'green' || b === 'orange');
 
-    let tab = TAB_PORTAS;
-    let motivoSugestao = 'Equipamento(s) verde(s)/laranja(s) dentro de 250m.';
-    if (onlyOne || allRed) {
+    // Portas só se houver 2+ CTOs e pelo menos uma verde/laranja
+    let tab = TAB_ALIVIO;
+    let motivoSugestao =
+      'Equipamentos dentro de 250m sem margem verde/laranja — Alívio de Rede/Cleanup.';
+    if (onlyOne) {
       tab = TAB_ALIVIO;
-      motivoSugestao = onlyOne
-        ? 'Apenas um equipamento dentro de 250m — Alívio de Rede/Cleanup.'
-        : 'Todos os equipamentos dentro de 250m estão vermelhos (ocupação alta) — Alívio de Rede/Cleanup.';
+      motivoSugestao = 'Apenas um equipamento dentro de 250m — Alívio de Rede/Cleanup.';
+    } else if (allRed) {
+      tab = TAB_ALIVIO;
+      motivoSugestao =
+        'Todos os equipamentos dentro de 250m estão vermelhos (ocupação alta) — Alívio de Rede/Cleanup.';
     } else if (hasGreenOrOrange) {
       tab = TAB_PORTAS;
-      motivoSugestao = 'Há equipamento(s) verde(s) ou laranja(s) dentro de 250m — Aprovado Com Portas.';
+      motivoSugestao =
+        'Há equipamento(s) verde(s) ou laranja(s) dentro de 250m — Aprovado Com Portas.';
     }
 
     // 2.4 — Análise de complemento
@@ -2271,7 +2278,7 @@
       };
     }
 
-    return { tabulacaoFinal: tab, motivoSugestao };
+    return { tabulacaoFinal: tab, motivoSugestao, debugBands: bands };
   }
 
   let tabulacaoSugeridaEmitTimer = null;
@@ -2303,6 +2310,8 @@
   /** WORKBENCH — lê sugestão atual (ex.: ao abrir Gerar Relatório). */
   export function getWorkbenchTabulacaoSugerida(motivoOverride = null) {
     if (!workbenchMode) return null;
+    // Força novo emit na próxima mudança (evita ficar preso em sugestão antiga)
+    lastTabulacaoSugeridaEmit = '';
     return computeTabulacaoSugeridaFromMap(
       motivoOverride != null ? motivoOverride : workbenchMotivo
     );
@@ -2317,6 +2326,13 @@
     void workbenchMotivo;
     void ctoNumbersVersion;
     void loading;
+    // Recalcula quando ocupação/cor das CTOs mudar (mesmo array)
+    void (ctosRua || [])
+      .map((c) => {
+        const n = normalizeCtoPortCounts(c);
+        return `${c?.nome}:${n.pct_ocup}:${n.vagas_total}:${n.clientes_conectados}:${c?.is_out_of_limit}`;
+      })
+      .join('|');
     emitTabulacaoSugeridaChange();
   }
 
