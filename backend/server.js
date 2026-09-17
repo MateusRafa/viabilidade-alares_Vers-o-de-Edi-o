@@ -4081,6 +4081,7 @@ async function readTabulacoesFromExcel() {
       const defaultTabulacoes = [
         'Aprovado Com Portas',
         'Aprovado Com Alívio de Rede/Cleanup',
+        'Aprovado / Sem Estrutura Atendimento Externo',
         'Aprovado Prédio Não Cabeado',
         'Aprovado - Endereço não Localizado',
         'Fora da Área de Cobertura'
@@ -4117,6 +4118,7 @@ async function readTabulacoesFromExcel() {
     return [
       'Aprovado Com Portas',
       'Aprovado Com Alívio de Rede/Cleanup',
+      'Aprovado / Sem Estrutura Atendimento Externo',
       'Aprovado Prédio Não Cabeado',
       'Aprovado - Endereço não Localizado',
       'Fora da Área de Cobertura'
