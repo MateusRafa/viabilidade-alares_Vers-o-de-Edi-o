@@ -120,6 +120,7 @@ export async function fetchTabulacoesList() {
     return [
       'Aprovado Com Portas',
       'Aprovado Com Alívio de Rede/Cleanup',
+      'Aprovado / Sem Estrutura Atendimento Externo',
       'Aprovado Prédio Não Cabeado',
       'Aprovado - Endereço não Localizado',
       'Fora da Área de Cobertura',
