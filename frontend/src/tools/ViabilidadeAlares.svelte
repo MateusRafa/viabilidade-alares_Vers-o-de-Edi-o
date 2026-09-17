@@ -7450,13 +7450,14 @@
       return true;
     };
 
-    const prevPrediosVisible = prediosVisibleOnMap;
     let hiddenIwDom = [];
     try {
       // Garante que o box do endereço/CTOs não aparece no print
       hiddenIwDom = closeMapInfoWindowsForCapture({ hideDom: true });
 
-      // Print: só casinha + CTOs de rua — prédios MDU não entram no enquadramento
+      // Zoom do print: só casinha + CTOs de rua (prédios NÃO entram no enquadramento).
+      // Se "visualizar condomínios" estiver ativo, os prédios continuam no mapa e saem no print
+      // (podem ficar cortados — isso é intencional).
       const capturePoints = [clientCoords];
       const pushCto = (cto) => {
         if (!cto || cto.is_condominio === true) return;
@@ -7470,10 +7471,8 @@
       (ctos || []).forEach(pushCto);
       if (nearestCTOOutsideLimit) pushCto(nearestCTOOutsideLimit);
 
-      if (prediosVisibleOnMap) {
-        prediosVisibleOnMap = false;
-        applyPrediosVisibilityToMap();
-      }
+      // Garante estado atual dos prédios no mapa (visível ou oculto conforme o toggle)
+      applyPrediosVisibilityToMap();
 
       const bounds = new google.maps.LatLngBounds();
       capturePoints.forEach((p) => bounds.extend(p));
@@ -7573,10 +7572,8 @@
         /* ignore */
       }
       restoreHiddenInfoWindowDom(hiddenIwDom);
-      if (prediosVisibleOnMap !== prevPrediosVisible) {
-        prediosVisibleOnMap = prevPrediosVisible;
-        applyPrediosVisibilityToMap();
-      }
+      // prediosVisibleOnMap não é alterado na captura — só reaplica por segurança
+      applyPrediosVisibilityToMap();
     }
   }
 
@@ -10262,7 +10259,7 @@
                   <img src={mapPreviewImage} alt="Prévia do Mapa" class="preview-image" />
                 </div>
                 <p style="font-size: 0.85rem; color: #666; margin-top: 0.5rem; font-style: italic; text-align: center;">
-                  O mapa foi capturado automaticamente com todas as CTOs encontradas e suas rotas visíveis.
+                  O mapa foi capturado automaticamente com as CTOs, rotas e condomínios visíveis (quando a opção estiver ativa).
                 </p>
               {:else}
                 <div class="preview-error">
