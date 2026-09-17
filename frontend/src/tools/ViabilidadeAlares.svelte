@@ -3973,14 +3973,13 @@
         markerTitle += ` - FORA da área de cobertura (${distanceKm} km)`;
       }
 
-      // Workbench: sem DROP — pin instantâneo (DROP + fitBounds fazia a casinha saltar)
-      // Standalone: DROP ok, mas só depois o fitBounds / InfoWindow
+      // DROP em todos os modos; fitBounds/InfoWindow só DEPOIS da animação (evita salto)
       const marker = new google.maps.Marker({
         position: clientCoords,
         map: map,
         title: markerTitle,
         icon: houseIcon,
-        ...(workbenchMode ? {} : { animation: google.maps.Animation.DROP }),
+        animation: google.maps.Animation.DROP,
         zIndex: 1000,
         optimized: false,
         draggable: true,
@@ -3997,7 +3996,7 @@
       /** Aguarda o fim do DROP (ou timeout) antes de mexer no mapa/box. */
       function waitForMarkerDrop(m, timeoutMs = 700) {
         return new Promise((resolve) => {
-          if (!m || !google?.maps || workbenchMode) {
+          if (!m || !google?.maps) {
             resolve();
             return;
           }
@@ -4180,11 +4179,10 @@
         }
       });
 
-      // 1) DROP (só standalone) → 2) CTOs/fitBounds → 3) idle → 4) InfoWindow
-      // Nunca abrir o box durante DROP ou zoom (é o que fazia saltar)
-      if (!workbenchMode) {
-        await waitForMarkerDrop(marker);
-      }
+      // 1) DROP → 2) CTOs/fitBounds → 3) idle → 4) InfoWindow
+      // Nunca enquadrar/abrir o box durante o DROP (é o que fazia saltar)
+      await waitForMarkerDrop(marker);
+      if (searchGen !== clientSearchGen || clientMarker !== marker) return;
       await searchCTOs();
       if (searchGen !== clientSearchGen || clientMarker !== marker) return;
 
