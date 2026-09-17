@@ -50,6 +50,15 @@
    */
   export let onForaLimiteChange = null;
   /**
+   * Workbench only: sugestão de tabulação recalculada pelo mapa (endereço atual).
+   * Payload: { tabulacaoFinal, motivoSugestao }
+   */
+  export let onTabulacaoSugeridaChange = null;
+  /**
+   * Workbench only: motivo do chamado (Agenda) para regras de tabulação automática.
+   */
+  export let workbenchMotivo = '';
+  /**
    * Workbench only: mapa Google já inicializado (idle).
    */
   export let onMapReady = null;
@@ -703,6 +712,7 @@
   let tabulacoesList = [
     'Aprovado Com Portas',
     'Aprovado Com Alívio de Rede/Cleanup',
+    'Aprovado / Sem Estrutura Atendimento Externo',
     'Aprovado Prédio Não Cabeado',
     'Aprovado - Endereço não Localizado',
     'Fora da Área de Cobertura'
@@ -2164,6 +2174,150 @@
     else {
       return '#F44336'; // Vermelho
     }
+  }
+
+  /** Classifica cor de ocupação da CTO: green | orange | red */
+  function getCTOOccupancyBand(cto) {
+    const pct = parseFloat(cto?.pct_ocup);
+    if (!Number.isFinite(pct) || pct < 0 || pct > 100) return 'red';
+    if (pct < 50) return 'green';
+    if (pct < 80) return 'orange';
+    return 'red';
+  }
+
+  function normalizeMotivoTabulacao(value) {
+    return String(value || '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .toLowerCase();
+  }
+
+  function isMotivoAnaliseComplemento(motivo) {
+    const m = normalizeMotivoTabulacao(motivo);
+    return m.includes('analise de complemento');
+  }
+
+  /**
+   * Tabulação automática pelo estado atual do mapa (sempre relativa ao endereço).
+   * 2.2 fora cobertura / além 250m → Fora da Área de Cobertura
+   * 2.3 1 CTO ou todas vermelhas → Alívio; 1+ verde/laranja → Com Portas
+   * 2.4 Análise de complemento + equipamentos válidos → Atendimento Externo
+   */
+  function computeTabulacaoSugeridaFromMap(motivoRaw = workbenchMotivo) {
+    const TAB_FORA = 'Fora da Área de Cobertura';
+    const TAB_PORTAS = 'Aprovado Com Portas';
+    const TAB_ALIVIO = 'Aprovado Com Alívio de Rede/Cleanup';
+    const TAB_EXTERNO = 'Aprovado / Sem Estrutura Atendimento Externo';
+
+    // Ainda buscando CTOs — não sugere "Fora" prematuro
+    if (loading) return null;
+
+    const foraLimiteCto = resolveForaLimiteCto();
+    const street = (ctosRua || []).filter((c) => c && !c.is_condominio);
+    const withinLimit = street.filter((c) => {
+      if (c.is_out_of_limit) return false;
+      return ctoRouteDistanceMeters(c) <= FORA_LIMITE_METROS;
+    });
+
+    // 2.2 — fora da mancha ou sem equipamento dentro de 250m
+    if (isClientCovered === false) {
+      return {
+        tabulacaoFinal: TAB_FORA,
+        motivoSugestao: 'Endereço fora da área de cobertura da rede.'
+      };
+    }
+    if (foraLimiteCto || withinLimit.length === 0) {
+      // Sem coordenadas ainda / busca não rodou: não força tabulação
+      if (!clientCoords) return null;
+      const nome = foraLimiteCto?.nome || 'N/A';
+      const dist = foraLimiteCto ? ctoRouteDistanceMeters(foraLimiteCto) : null;
+      return {
+        tabulacaoFinal: TAB_FORA,
+        motivoSugestao:
+          dist != null
+            ? `Equipamento mais próximo (${nome}) além de 250m (${Math.round(dist)} m).`
+            : 'Nenhum equipamento encontrado dentro do limite de 250m.'
+      };
+    }
+
+    // 2.3 — cores de ocupação (só CTOs dentro do limite)
+    const onlyOne = withinLimit.length === 1;
+    const allRed = withinLimit.every((c) => getCTOOccupancyBand(c) === 'red');
+    const hasGreenOrOrange = withinLimit.some((c) => {
+      const band = getCTOOccupancyBand(c);
+      return band === 'green' || band === 'orange';
+    });
+
+    let tab = TAB_PORTAS;
+    let motivoSugestao = 'Equipamento(s) verde(s)/laranja(s) dentro de 250m.';
+    if (onlyOne || allRed) {
+      tab = TAB_ALIVIO;
+      motivoSugestao = onlyOne
+        ? 'Apenas um equipamento dentro de 250m — Alívio de Rede/Cleanup.'
+        : 'Todos os equipamentos dentro de 250m estão vermelhos (ocupação alta) — Alívio de Rede/Cleanup.';
+    } else if (hasGreenOrOrange) {
+      tab = TAB_PORTAS;
+      motivoSugestao = 'Há equipamento(s) verde(s) ou laranja(s) dentro de 250m — Aprovado Com Portas.';
+    }
+
+    // 2.4 — Análise de complemento
+    if (isMotivoAnaliseComplemento(motivoRaw)) {
+      return {
+        tabulacaoFinal: TAB_EXTERNO,
+        motivoSugestao:
+          'Motivo Análise de complemento com equipamento(s) válido(s) no endereço — Atendimento Externo.'
+      };
+    }
+
+    return { tabulacaoFinal: tab, motivoSugestao };
+  }
+
+  let tabulacaoSugeridaEmitTimer = null;
+  let lastTabulacaoSugeridaEmit = '';
+
+  function emitTabulacaoSugeridaChange() {
+    if (!workbenchMode || typeof onTabulacaoSugeridaChange !== 'function') return;
+    if (!clientCoords) return;
+    if (tabulacaoSugeridaEmitTimer) clearTimeout(tabulacaoSugeridaEmitTimer);
+    tabulacaoSugeridaEmitTimer = setTimeout(() => {
+      try {
+        const suggestion = computeTabulacaoSugeridaFromMap(workbenchMotivo);
+        if (!suggestion?.tabulacaoFinal) return;
+        const key = `${suggestion.tabulacaoFinal}|${clientCoords.lat},${clientCoords.lng}|${workbenchMotivo}`;
+        if (key === lastTabulacaoSugeridaEmit) return;
+        lastTabulacaoSugeridaEmit = key;
+        onTabulacaoSugeridaChange({
+          ...suggestion,
+          coords: { ...clientCoords },
+          isClientCovered,
+          motivo: workbenchMotivo || null
+        });
+      } catch (err) {
+        console.warn('[Workbench] onTabulacaoSugeridaChange:', err);
+      }
+    }, 250);
+  }
+
+  /** WORKBENCH — lê sugestão atual (ex.: ao abrir Gerar Relatório). */
+  export function getWorkbenchTabulacaoSugerida(motivoOverride = null) {
+    if (!workbenchMode) return null;
+    return computeTabulacaoSugeridaFromMap(
+      motivoOverride != null ? motivoOverride : workbenchMotivo
+    );
+  }
+
+  $: if (workbenchMode) {
+    void ctosRua;
+    void ctosRua?.length;
+    void nearestCTOOutsideLimit;
+    void isClientCovered;
+    void clientCoords;
+    void workbenchMotivo;
+    void ctoNumbersVersion;
+    void loading;
+    emitTabulacaoSugeridaChange();
   }
 
   // Função para iniciar heartbeat (manter usuário online)
