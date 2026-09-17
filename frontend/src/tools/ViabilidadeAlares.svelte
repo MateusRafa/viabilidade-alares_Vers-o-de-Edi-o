@@ -3795,12 +3795,13 @@
       }
 
       // Adicionar marcador (ícone de casinha) - ARRASTÁVEL
-      // Sem Animation.DROP: o InfoWindow saltava enquanto a casinha caía
+      // DROP ok: o InfoWindow só abre DEPOIS da animação terminar (não salta com a casinha)
       const marker = new google.maps.Marker({
         position: clientCoords,
         map: map,
         title: markerTitle,
         icon: houseIcon,
+        animation: google.maps.Animation.DROP,
         zIndex: 1000,
         optimized: false,
         draggable: true,
@@ -3809,6 +3810,46 @@
 
       clientMarker = marker;
       markers.push(marker);
+
+      /** Aguarda o fim do DROP (ou timeout) antes de abrir o box. */
+      function waitForMarkerDrop(m, timeoutMs = 900) {
+        return new Promise((resolve) => {
+          if (!m || !google?.maps) {
+            resolve();
+            return;
+          }
+          let done = false;
+          const finish = () => {
+            if (done) return;
+            done = true;
+            try {
+              if (listener) google.maps.event.removeListener(listener);
+            } catch (_) {
+              /* ignore */
+            }
+            resolve();
+          };
+          let listener = null;
+          try {
+            // DROP termina quando getAnimation() volta a null
+            if (!m.getAnimation || m.getAnimation() == null) {
+              finish();
+              return;
+            }
+            listener = google.maps.event.addListener(m, 'animation_changed', () => {
+              try {
+                if (!m.getAnimation || m.getAnimation() == null) finish();
+              } catch (_) {
+                finish();
+              }
+            });
+          } catch (_) {
+            finish();
+            return;
+          }
+          setTimeout(finish, timeoutMs);
+        });
+      }
 
       async function getAddressFromCoords(lat, lng) {
         try {
@@ -3957,8 +3998,8 @@
         }
       });
 
-      // Buscar CTOs primeiro (fitBounds) e só então abrir o box — evita salto no mesmo ponto
-      await searchCTOs();
+      // Buscar CTOs (fitBounds) em paralelo com o DROP; box só abre no fim dos dois
+      await Promise.all([searchCTOs(), waitForMarkerDrop(marker)]);
 
       // Workbench: endereço/CEP do relatório = o encontrado no pin (não o texto da busca/Agenda)
       if (workbenchMode && clientCoords) {
@@ -3977,6 +4018,12 @@
           initialAddress
         );
         if (clientInfoWindow && clientMarker === marker) {
+          // Garante que a animação não está mais ativa ao ancorar o box
+          try {
+            marker.setAnimation(null);
+          } catch (_) {
+            /* ignore */
+          }
           applyClientIwHeader(clientInfoWindow);
           clientInfoWindow.setContent(content);
           await new Promise((r) => requestAnimationFrame(r));
