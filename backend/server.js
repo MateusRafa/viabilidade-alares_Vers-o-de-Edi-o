@@ -900,15 +900,29 @@ async function readCTOsFromSupabase() {
   }
 }
 
-/** Se total de portas < conectadas (ex.: 0 e 8), total passa a igualar conectadas. */
-function normalizeCtoPortFields(portas, ocupado) {
-  const conectadas = Math.max(0, Number(ocupado) || 0);
+/** Se total de portas < conectadas (ex.: 0 e 8), total passa a igualar conectadas.
+ *  Também reconstrói total a partir de `livre` + `ocupado` quando `portas` vem 0/vazio.
+ */
+function normalizeCtoPortFields(portas, ocupado, livre = null) {
+  let conectadas = Math.max(0, Number(ocupado) || 0);
   let total = Math.max(0, Number(portas) || 0);
+  const livresRaw =
+    livre !== null && livre !== undefined && livre !== ''
+      ? Math.max(0, Number(livre) || 0)
+      : null;
+
+  if (total === 0 && livresRaw != null) {
+    total = livresRaw + conectadas;
+  } else if (total > 0 && (ocupado === null || ocupado === undefined || ocupado === '') && livresRaw != null) {
+    conectadas = Math.max(0, total - livresRaw);
+  }
   if (total < conectadas) total = conectadas;
+
   return {
     vagas_total: total,
     clientes_conectados: conectadas,
-    portas_disponiveis: Math.max(0, total - conectadas)
+    portas_disponiveis: Math.max(0, total - conectadas),
+    ...(livresRaw != null ? { livre: livresRaw } : {})
   };
 }
 
@@ -1081,7 +1095,7 @@ app.get('/api/ctos/nearby', async (req, res) => {
               ctosInternasPorPrédio.get(ctoIdNum).push({
                 nome: row.cto || row.id_cto || '',
                 id: row.id_cto || row.id?.toString() || '',
-                ...normalizeCtoPortFields(row.portas, row.ocupado),
+                ...normalizeCtoPortFields(row.portas, row.ocupado, row.livre),
                 status_cto: row.status_cto || '',
                 cidade: row.cid_rede || '',
                 pop: row.pop || ''
@@ -1095,12 +1109,19 @@ app.get('/api/ctos/nearby', async (req, res) => {
           
           // Se chegou aqui, é CTO de rua (não está na base de prédios)
           const dataCadastro = row.data_cadastro || row.data_criacao || row.created_at || '';
+          const portFields = normalizeCtoPortFields(row.portas, row.ocupado, row.livre);
+          const pctFromPorts =
+            portFields.vagas_total > 0
+              ? (portFields.clientes_conectados / portFields.vagas_total) * 100
+              : 100; // sem capacidade → trata como saturado (vermelho no mapa)
+          const pctRaw = parseFloat(row.pct_ocup);
           nearbyCTOs.push({
             nome: row.cto || row.id_cto || '',
             latitude: rowLat, // Já validado acima
             longitude: rowLng, // Já validado acima
-            ...normalizeCtoPortFields(row.portas, row.ocupado),
-            pct_ocup: row.pct_ocup || 0,
+            ...portFields,
+            pct_ocup:
+              portFields.vagas_total > 0 && Number.isFinite(pctRaw) ? pctRaw : pctFromPorts,
             cidade: row.cid_rede || '',
             pop: row.pop || '',
             id: row.id_cto || row.id?.toString() || '',
@@ -2385,8 +2406,17 @@ app.get('/api/ctos/search', async (req, res) => {
             nome: row.cto || row.id_cto || '',
             latitude: parseFloat(row.latitude),
             longitude: parseFloat(row.longitude),
-            ...normalizeCtoPortFields(row.portas, row.ocupado),
-            pct_ocup: row.pct_ocup || 0,
+            ...(() => {
+              const ports = normalizeCtoPortFields(row.portas, row.ocupado, row.livre);
+              const pctRaw = parseFloat(row.pct_ocup);
+              const pct_ocup =
+                ports.vagas_total <= 0
+                  ? 100
+                  : Number.isFinite(pctRaw)
+                    ? pctRaw
+                    : (ports.clientes_conectados / ports.vagas_total) * 100;
+              return { ...ports, pct_ocup };
+            })(),
             cidade: row.cid_rede || '',
             pop: row.pop || '',
             id: row.id_cto || row.id?.toString() || '',
