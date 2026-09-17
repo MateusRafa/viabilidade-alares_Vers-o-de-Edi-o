@@ -4473,7 +4473,7 @@
               is_condominio: true,
               fonte_condominio: p.fonte || prediosData.source || 'mdu',
               condominio_data: p,
-              status_cto_condominio: p.tipo || p.status_cto || null,
+              status_cto_condominio: p.situacao_cto || p.tipo || p.status_cto || null,
               ctos_internas: Array.isArray(p.ctos_internas) ? p.ctos_internas : [],
               endereco_completo: p.endereco_completo || '',
               id_mdu: p.id_mdu ?? null,
@@ -6860,11 +6860,11 @@
             const ctosInternas = cto.ctos_internas || [];
             
             let detalheHTML = '';
-            if (isMdu || ctosInternas.length === 0) {
+            if (ctosInternas.length === 0) {
               detalheHTML = `
                 <div style="margin-top: 12px; padding: 8px; background-color: #eef2ff; border-left: 3px solid #6C63FF; border-radius: 4px;">
                   <strong style="color: #4338ca;">Condomínio cadastrado (base MDU)</strong><br>
-                  <span style="color: #4b5563; font-size: 12px;">CTOs de rua continuam sendo listadas à parte no mapa.</span>
+                  <span style="color: #4b5563; font-size: 12px;">Nenhuma CTO interna listada neste registro.</span>
                 </div>
               `;
             } else {
@@ -6872,14 +6872,17 @@
               detalheHTML += `<strong style="color: #6C757D; font-size: 13px;">CTOs Internas (${ctosInternas.length}):</strong><br>`;
               ctosInternas.forEach((ctoInterna, idx) => {
                 const statusCtoInterna = ctoInterna.status_cto || '';
-                const isAtiva = statusCtoInterna && statusCtoInterna.toUpperCase().trim() === 'ATIVADO';
+                const isAtiva =
+                  statusCtoInterna &&
+                  (statusCtoInterna.toUpperCase().trim() === 'ATIVADO' ||
+                    statusCtoInterna.toUpperCase().trim() === 'ATIVO');
                 const borderColor = isAtiva ? '#28A745' : '#DC3545';
                 const bgColor = isAtiva ? '#f8f9fa' : '#fff5f5';
                 detalheHTML += `
                   <div style="margin-top: 8px; padding: 8px; background-color: ${bgColor}; border-left: 3px solid ${borderColor}; border-radius: 4px;">
                     <strong style="color: #333; font-size: 12px;">CTO ${idx + 1}:</strong><br>
                     <strong>Nome:</strong> ${String(ctoInterna.nome || 'N/A')}<br>
-                    <strong>ID:</strong> ${String(ctoInterna.id || 'N/A')}<br>
+                    ${ctoInterna.id ? `<strong>ID:</strong> ${String(ctoInterna.id)}<br>` : ''}
                     <strong>Portas Disponíveis:</strong> ${Number(ctoInterna.portas_disponiveis || 0)}<br>
                     <strong>Portas Totais:</strong> ${Number(ctoInterna.vagas_total || 0)}<br>
                     <strong>Portas Conectadas:</strong> ${Number(ctoInterna.clientes_conectados || 0)}<br>
@@ -6887,7 +6890,17 @@
                   </div>
                 `;
               });
-              detalheHTML += '</div>';
+              const totalPortasDisponiveis = ctosInternas.reduce((sum, c) => sum + (c.portas_disponiveis || 0), 0);
+              const totalPortasTotais = ctosInternas.reduce((sum, c) => sum + (c.vagas_total || 0), 0);
+              const totalPortasConectadas = ctosInternas.reduce((sum, c) => sum + (c.clientes_conectados || 0), 0);
+              detalheHTML += `
+                <div style="margin-top: 8px; padding: 8px; background-color: #e8f5e9; border-left: 3px solid #28A745; border-radius: 4px;">
+                  <strong style="color: #1B5E20; font-size: 12px;">Totais do condomínio</strong><br>
+                  <strong>Disponíveis:</strong> ${totalPortasDisponiveis} ·
+                  <strong>Totais:</strong> ${totalPortasTotais} ·
+                  <strong>Conectadas:</strong> ${totalPortasConectadas}
+                </div>
+              </div>`;
             }
             
             infoWindowContent = `
@@ -7088,7 +7101,10 @@
                         
                         ctosInternas.forEach((ctoInterna, idx) => {
                           const statusCtoInterna = ctoInterna.status_cto || '';
-                          const isAtiva = statusCtoInterna && statusCtoInterna.toUpperCase().trim() === 'ATIVADO';
+                          const isAtiva =
+                            statusCtoInterna &&
+                            (statusCtoInterna.toUpperCase().trim() === 'ATIVADO' ||
+                              statusCtoInterna.toUpperCase().trim() === 'ATIVO');
                           const borderColor = isAtiva ? '#28A745' : '#DC3545';
                           const bgColor = isAtiva ? '#f8f9fa' : '#fff5f5';
                           
@@ -7096,7 +7112,7 @@
                             <div style="margin-top: 8px; padding: 8px; background-color: ${bgColor}; border-left: 3px solid ${borderColor}; border-radius: 4px;">
                               <strong style="color: #333; font-size: 12px;">CTO ${idx + 1}:</strong><br>
                               <strong>Nome:</strong> ${String(ctoInterna.nome || 'N/A')}<br>
-                              <strong>ID:</strong> ${String(ctoInterna.id || 'N/A')}<br>
+                              ${ctoInterna.id ? `<strong>ID:</strong> ${String(ctoInterna.id)}<br>` : ''}
                               <strong>Portas Disponíveis:</strong> ${Number(ctoInterna.portas_disponiveis || 0)}<br>
                               <strong>Portas Totais:</strong> ${Number(ctoInterna.vagas_total || 0)}<br>
                               <strong>Portas Conectadas:</strong> ${Number(ctoInterna.clientes_conectados || 0)}<br>
