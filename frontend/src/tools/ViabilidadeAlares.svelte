@@ -3795,16 +3795,16 @@
       }
 
       // Adicionar marcador (ícone de casinha) - ARRASTÁVEL
+      // Sem Animation.DROP: o InfoWindow saltava enquanto a casinha caía
       const marker = new google.maps.Marker({
         position: clientCoords,
         map: map,
         title: markerTitle,
         icon: houseIcon,
-        animation: google.maps.Animation.DROP,
         zIndex: 1000,
         optimized: false,
-        draggable: true, // Permite arrastar o marcador
-        cursor: 'move' // Cursor muda para "move" ao passar sobre o marcador
+        draggable: true,
+        cursor: 'move'
       });
 
       clientMarker = marker;
@@ -3825,19 +3825,18 @@
         }
       }
 
-      // Função para criar conteúdo do InfoWindow
-      async function createInfoWindowContent(lat, lng, isManual = false) {
-        const address = await getAddressFromCoords(lat, lng);
-        // Cores explícitas: o InfoWindow do Google é fundo claro e herda
-        // a cor clara do tema escuro do portal (texto ficava ilegível).
+      /** Conteúdo do body do InfoWindow (título vai no headerContent, alinhado ao X). */
+      async function createInfoWindowContent(lat, lng, isManual = false, knownAddress = null) {
+        const address =
+          knownAddress ||
+          clientAddressData?.enderecoCompleto ||
+          (await getAddressFromCoords(lat, lng));
         const wrap =
-          'padding:8px;max-width:280px;color:#1f2937;font-family:Inter,system-ui,sans-serif;font-size:13px;line-height:1.45;';
-        const title = 'color:#111827;font-size:14px;';
+          'padding:2px 4px 6px 0;max-width:280px;color:#1f2937;font-family:Inter,system-ui,sans-serif;font-size:13px;line-height:1.45;';
         const label = 'color:#374151;';
         const muted = 'color:#6b7280;font-size:12px;';
 
         let content = `<div class="wb-client-iw" style="${wrap}">`;
-        content += `<strong style="${title}">Localização do Cliente</strong><br><br>`;
 
         if (address) {
           content += `<strong style="${label}">Endereço:</strong><br><span style="${label}">${address}</span><br><br>`;
@@ -3855,16 +3854,43 @@
         return content;
       }
 
-      // Criar InfoWindow inicial e salvar referência global
-      clientInfoWindow = new google.maps.InfoWindow();
+      function buildClientIwHeader() {
+        const el = document.createElement('div');
+        el.className = 'wb-client-iw-header';
+        el.textContent = 'Localização do Cliente';
+        return el;
+      }
 
-      // Carregar conteúdo inicial do InfoWindow
-      createInfoWindowContent(clientCoords.lat, clientCoords.lng, false).then(content => {
-        if (clientInfoWindow) {
-          clientInfoWindow.setContent(content);
-          clientInfoWindow.open(map, marker);
+      function applyClientIwHeader(iw) {
+        if (!iw) return;
+        try {
+          if (typeof iw.setHeaderContent === 'function') {
+            iw.setHeaderContent(buildClientIwHeader());
+            return;
+          }
+        } catch (_) {
+          /* ignore */
         }
-      });
+      }
+
+      // InfoWindow: header alinhado ao botão fechar; sem autoPan (evita salto)
+      if (clientInfoWindow) {
+        try {
+          clientInfoWindow.close();
+        } catch (_) {
+          /* ignore */
+        }
+      }
+      const iwOpts = {
+        disableAutoPan: true,
+        maxWidth: 320
+      };
+      try {
+        iwOpts.headerContent = buildClientIwHeader();
+      } catch (_) {
+        /* ignore */
+      }
+      clientInfoWindow = new google.maps.InfoWindow(iwOpts);
 
       // Atualizar InfoWindow quando o marcador for arrastado
       marker.addListener('dragend', async (event) => {
@@ -3873,18 +3899,13 @@
           lng: event.latLng.lng()
         };
 
-        // Atualizar coordenadas globais do cliente
         clientCoords = newPosition;
-
-        // Verificar cobertura na nova posição
         await checkClientCoverage(newPosition.lat, newPosition.lng);
 
-        // Atualizar coordenadas no input se estiver no modo coordenadas
         if (searchMode === 'coordinates' && newPosition && newPosition.lat !== undefined && newPosition.lng !== undefined) {
           coordinatesInput = `${(newPosition.lat || 0).toFixed(10)}, ${(newPosition.lng || 0).toFixed(10)}`;
         }
 
-        // Atualizar endereço usando reverse geocoding
         try {
           const result = await reverseGeocode(newPosition.lat, newPosition.lng);
 
@@ -3892,7 +3913,6 @@
             const bestResult = result.results[0];
             extractAddressComponents(bestResult);
 
-            // Atualizar o campo de endereço se estiver no modo endereço
             if (searchMode === 'address') {
               addressInput = bestResult.formatted_address || '';
             }
@@ -3904,10 +3924,8 @@
           if (workbenchMode) emitClientLocationChange('drag');
         }
 
-        // Limpar CTOs e rotas anteriores quando o cliente move o marcador
         clearCTOs();
 
-        // Workbench: rebusca CTOs na nova posição (standalone mantém só limpeza)
         if (workbenchMode) {
           try {
             await searchCTOs();
@@ -3916,11 +3934,13 @@
           }
         }
 
-        // Atualizar conteúdo do InfoWindow com endereço e coordenadas
         if (clientInfoWindow) {
           const content = await createInfoWindowContent(newPosition.lat, newPosition.lng, true);
+          applyClientIwHeader(clientInfoWindow);
           clientInfoWindow.setContent(content);
-          clientInfoWindow.open(map, marker);
+          if (!clientInfoWindow.getMap()) {
+            clientInfoWindow.open({ map, anchor: marker, shouldFocus: false });
+          }
         }
       });
 
@@ -3932,15 +3952,38 @@
             /* ignore */
           }
         }
-        clientInfoWindow.open(map, marker);
+        if (clientInfoWindow) {
+          clientInfoWindow.open({ map, anchor: marker, shouldFocus: false });
+        }
       });
 
-      // Buscar CTOs automaticamente após localizar o cliente
+      // Buscar CTOs primeiro (fitBounds) e só então abrir o box — evita salto no mesmo ponto
       await searchCTOs();
 
       // Workbench: endereço/CEP do relatório = o encontrado no pin (não o texto da busca/Agenda)
       if (workbenchMode && clientCoords) {
         await resolveClientAddressFromPin(clientCoords.lat, clientCoords.lng);
+      }
+
+      try {
+        const initialAddress =
+          clientAddressData?.enderecoCompleto ||
+          (searchMode === 'address' ? String(addressInput || '').trim() : '') ||
+          null;
+        const content = await createInfoWindowContent(
+          clientCoords.lat,
+          clientCoords.lng,
+          false,
+          initialAddress
+        );
+        if (clientInfoWindow && clientMarker === marker) {
+          applyClientIwHeader(clientInfoWindow);
+          clientInfoWindow.setContent(content);
+          await new Promise((r) => requestAnimationFrame(r));
+          clientInfoWindow.open({ map, anchor: marker, shouldFocus: false });
+        }
+      } catch (iwErr) {
+        console.warn('InfoWindow do cliente:', iwErr);
       }
 
       // Workbench: prévia/print só no clique em Gerar Relatório (igual standalone)
@@ -10644,6 +10687,39 @@
   .viabilidade-content.theme-dark :global(.gm-style-iw-c),
   .viabilidade-content.theme-dark :global(.gm-style-iw-d) {
     color: #1f2937 !important;
+  }
+
+  /* Título "Localização do Cliente" alinhado verticalmente com o botão X */
+  :global(.gm-style-iw-ch),
+  .viabilidade-content :global(.gm-style-iw-ch) {
+    display: flex !important;
+    align-items: center !important;
+    min-height: 36px !important;
+    padding: 8px 12px 0 12px !important;
+    box-sizing: border-box !important;
+  }
+
+  :global(.gm-style-iw-chr),
+  .viabilidade-content :global(.gm-style-iw-chr) {
+    display: flex !important;
+    align-items: center !important;
+    justify-content: flex-end !important;
+    min-height: 36px !important;
+    padding-top: 6px !important;
+  }
+
+  :global(.wb-client-iw-header),
+  .viabilidade-content :global(.wb-client-iw-header) {
+    color: #111827 !important;
+    font-size: 14px !important;
+    font-weight: 700 !important;
+    font-family: Inter, system-ui, sans-serif !important;
+    line-height: 1.3 !important;
+    margin: 0 !important;
+  }
+
+  .viabilidade-content.theme-dark :global(.wb-client-iw-header) {
+    color: #111827 !important;
   }
 
   /* Durante o print: esconde qualquer InfoWindow (casinha ou CTO) */
