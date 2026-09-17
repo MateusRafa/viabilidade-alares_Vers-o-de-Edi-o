@@ -75,9 +75,78 @@
   let workbenchPreviewToken = 0;
   /** Cancela abertura de InfoWindow/passos finais se outra busca começar. */
   let clientSearchGen = 0;
+  /** Evita setIcon no meio do DROP (faz a casinha “saltar”). */
+  let clientDropInProgress = false;
 
   function workbenchCoordKey(lat, lng) {
     return `c:${Number(lat).toFixed(6)},${Number(lng).toFixed(6)}`;
+  }
+
+  /** Aguarda o fim real do DROP — não resolve no 1º tick (a animação ainda pode não ter iniciado). */
+  function waitForMarkerDrop(m, timeoutMs = 800) {
+    return new Promise((resolve) => {
+      if (!m || !google?.maps) {
+        resolve();
+        return;
+      }
+      let done = false;
+      let listener = null;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        try {
+          if (listener) google.maps.event.removeListener(listener);
+        } catch (_) {
+          /* ignore */
+        }
+        resolve();
+      };
+
+      // Dá tempo do Maps iniciar o DROP antes de checar getAnimation()
+      setTimeout(() => {
+        try {
+          if (!m.getAnimation || m.getAnimation() == null) {
+            finish();
+            return;
+          }
+          listener = google.maps.event.addListener(m, 'animation_changed', () => {
+            try {
+              if (!m.getAnimation || m.getAnimation() == null) finish();
+            } catch (_) {
+              finish();
+            }
+          });
+        } catch (_) {
+          finish();
+        }
+      }, 80);
+
+      setTimeout(finish, timeoutMs);
+    });
+  }
+
+  /** Abre o box fixo na coordenada (sem anchor no marcador = não salta com o DROP). */
+  function openClientInfoWindowStable(position) {
+    if (!clientInfoWindow || !map || !position) return;
+    try {
+      clientInfoWindow.setOptions({ disableAutoPan: true });
+    } catch (_) {
+      /* ignore */
+    }
+    try {
+      clientInfoWindow.setPosition(position);
+    } catch (_) {
+      /* ignore */
+    }
+    try {
+      clientInfoWindow.open({ map, shouldFocus: false });
+    } catch (_) {
+      try {
+        clientInfoWindow.open(map);
+      } catch (_) {
+        /* ignore */
+      }
+    }
   }
 
   $: isDarkTheme = (embedded || workbenchMode) && $theme === 'dark';
@@ -3524,6 +3593,8 @@
   // Função para atualizar a cor do marcador do cliente baseado no status de cobertura
   function updateClientMarkerColor() {
     if (!clientMarker) return;
+    // Não trocar o ícone durante o DROP — reinicia/glitcha a animação
+    if (clientDropInProgress) return;
     
     // Path de uma casa: triângulo (telhado) + retângulo (base)
     const housePath = 'M12 2L2 7v13h6v-6h8v6h6V7L12 2z';
@@ -3973,7 +4044,8 @@
         markerTitle += ` - FORA da área de cobertura (${distanceKm} km)`;
       }
 
-      // DROP em todos os modos; fitBounds/InfoWindow só DEPOIS da animação (evita salto)
+      // DROP; fitBounds/InfoWindow só DEPOIS da animação (evita salto)
+      clientDropInProgress = true;
       const marker = new google.maps.Marker({
         position: clientCoords,
         map: map,
@@ -3991,45 +4063,6 @@
       const searchGen = ++clientSearchGen;
       if (workbenchMode && clientCoords) {
         lastWorkbenchLocKey = workbenchCoordKey(clientCoords.lat, clientCoords.lng);
-      }
-
-      /** Aguarda o fim do DROP (ou timeout) antes de mexer no mapa/box. */
-      function waitForMarkerDrop(m, timeoutMs = 700) {
-        return new Promise((resolve) => {
-          if (!m || !google?.maps) {
-            resolve();
-            return;
-          }
-          let done = false;
-          const finish = () => {
-            if (done) return;
-            done = true;
-            try {
-              if (listener) google.maps.event.removeListener(listener);
-            } catch (_) {
-              /* ignore */
-            }
-            resolve();
-          };
-          let listener = null;
-          try {
-            if (!m.getAnimation || m.getAnimation() == null) {
-              finish();
-              return;
-            }
-            listener = google.maps.event.addListener(m, 'animation_changed', () => {
-              try {
-                if (!m.getAnimation || m.getAnimation() == null) finish();
-              } catch (_) {
-                finish();
-              }
-            });
-          } catch (_) {
-            finish();
-            return;
-          }
-          setTimeout(finish, timeoutMs);
-        });
       }
 
       async function getAddressFromCoords(lat, lng) {
@@ -4161,7 +4194,13 @@
           applyClientIwHeader(clientInfoWindow);
           clientInfoWindow.setContent(content);
           if (!clientInfoWindow.getMap()) {
-            clientInfoWindow.open({ map, anchor: marker, shouldFocus: false });
+            openClientInfoWindowStable(newPosition);
+          } else {
+            try {
+              clientInfoWindow.setPosition(newPosition);
+            } catch (_) {
+              /* ignore */
+            }
           }
         }
       });
@@ -4175,13 +4214,19 @@
           }
         }
         if (clientInfoWindow) {
-          clientInfoWindow.open({ map, anchor: marker, shouldFocus: false });
+          openClientInfoWindowStable(marker.getPosition?.() || clientCoords);
         }
       });
 
-      // 1) DROP → 2) CTOs/fitBounds → 3) idle → 4) InfoWindow
-      // Nunca enquadrar/abrir o box durante o DROP (é o que fazia saltar)
+      // 1) DROP completo → 2) CTOs/fitBounds → 3) idle → 4) InfoWindow por posição (sem anchor)
       await waitForMarkerDrop(marker);
+      clientDropInProgress = false;
+      try {
+        marker.setAnimation(null);
+      } catch (_) {
+        /* ignore */
+      }
+      updateClientMarkerColor();
       if (searchGen !== clientSearchGen || clientMarker !== marker) return;
       await searchCTOs();
       if (searchGen !== clientSearchGen || clientMarker !== marker) return;
@@ -4206,19 +4251,16 @@
         );
         if (searchGen !== clientSearchGen || clientMarker !== marker) return;
         if (clientInfoWindow && clientMarker === marker) {
-          try {
-            marker.setAnimation(null);
-          } catch (_) {
-            /* ignore */
-          }
           applyClientIwHeader(clientInfoWindow);
           clientInfoWindow.setContent(content);
           await new Promise((r) => requestAnimationFrame(r));
           if (searchGen !== clientSearchGen || clientMarker !== marker) return;
-          clientInfoWindow.open({ map, anchor: marker, shouldFocus: false });
+          openClientInfoWindowStable(clientCoords);
         }
       } catch (iwErr) {
         console.warn('InfoWindow do cliente:', iwErr);
+      } finally {
+        clientDropInProgress = false;
       }
 
       // Workbench: prévia/print só no clique em Gerar Relatório (igual standalone)
@@ -4250,11 +4292,10 @@
         error = `Erro ao localizar endereço: ${err.message || 'Erro desconhecido'}. Tente novamente.`;
       }
     } finally {
+      clientDropInProgress = false;
       loading = false;
     }
   }
-
-  // Animação dos pontos em "Localizando..."
   $: if (loading) {
     // Iniciar animação dos pontos
     if (loadingDotsInterval) {
@@ -4279,6 +4320,7 @@
   }
 
   function clearMap() {
+    clientDropInProgress = false;
     // Fechar InfoWindow do cliente se estiver aberto
     if (clientInfoWindow) {
       clientInfoWindow.close();
