@@ -175,7 +175,7 @@ async function checkCoverage(lat, lng) {
   };
 }
 
-function suggestTabulacao(coverage, learned = null) {
+function suggestTabulacao(coverage, learned = null, chamado = null) {
   if (learned?.tabulacaoFinal) {
     return {
       tabulacaoFinal: learned.tabulacaoFinal,
@@ -214,6 +214,23 @@ function suggestTabulacao(coverage, learned = null) {
       motivo: distTxt
         ? `Local fora da área de cobertura (cerca de ${distTxt} até a mancha mais próxima), no mesmo critério da Viabilidade Alares.`
         : 'Local fora da área de cobertura da rede.'
+    };
+  }
+
+  // Motivo Análise de complemento (CTOs finas no Workbench/mapa)
+  const motivoNorm = String(chamado?.motivo || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+  if (motivoNorm.includes('analise de complemento')) {
+    return {
+      tabulacaoFinal: 'Aprovado / Sem Estrutura Atendimento Externo',
+      tabulacaoConfianca: 0.72,
+      tabulacaoStatus: 'pendente_revisao',
+      motivo:
+        'Motivo Análise de complemento — Atendimento Externo (confirme equipamentos no mapa).'
     };
   }
 
@@ -362,7 +379,7 @@ export async function analisarLocalizacaoChamado(chamado, { learned = null } = {
     message: coverage.message || null
   });
 
-  const suggestion = suggestTabulacao(coverage, learned);
+  const suggestion = suggestTabulacao(coverage, learned, chamado);
   const metodoLabel =
     resolved.metodo === 'referencia_mapa'
       ? `referência do mapa (“${resolved.referencia}”)`
