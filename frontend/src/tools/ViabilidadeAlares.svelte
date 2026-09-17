@@ -3963,8 +3963,11 @@
           lng: location.lng()
         };
 
-        // Extrair componentes do endereço
-        extractAddressComponents(bestResult);
+        // Workbench: não grava o texto da busca/Agenda no formulário —
+        // o endereço definitivo vem do reverse geocode do pin (mais abaixo).
+        if (!workbenchMode) {
+          extractAddressComponents(bestResult);
+        }
       } else {
         // Parse coordenadas do formato "lat, lng"
         if (!coordinatesInput.trim()) {
@@ -4082,10 +4085,14 @@
 
       /** Conteúdo do body do InfoWindow (título vai no headerContent, alinhado ao X). */
       async function createInfoWindowContent(lat, lng, isManual = false, knownAddress = null) {
-        const address =
-          knownAddress ||
-          clientAddressData?.enderecoCompleto ||
-          (await getAddressFromCoords(lat, lng));
+        let address = knownAddress || null;
+        if (!address) {
+          if (!workbenchMode && clientAddressData?.enderecoCompleto) {
+            address = clientAddressData.enderecoCompleto;
+          } else {
+            address = await getAddressFromCoords(lat, lng);
+          }
+        }
         const wrap =
           'padding:2px 4px 6px 0;max-width:280px;color:#1f2937;font-family:Inter,system-ui,sans-serif;font-size:13px;line-height:1.45;';
         const label = 'color:#374151;';
@@ -4234,15 +4241,17 @@
       if (workbenchMode) {
         await waitMapIdleWorkbench(500);
         if (searchGen !== clientSearchGen || clientMarker !== marker) return;
-        // Reverse geocode em background — não atrasa pin/CTOs
-        void resolveClientAddressFromPin(clientCoords.lat, clientCoords.lng);
+        // Sempre endereço do PIN (reverse geocode), nunca o texto da Agenda/busca
+        await resolveClientAddressFromPin(clientCoords.lat, clientCoords.lng);
       }
 
       try {
-        const initialAddress =
-          clientAddressData?.enderecoCompleto ||
-          (searchMode === 'address' ? String(addressInput || '').trim() : '') ||
-          null;
+        // Workbench: só o endereço do pin (já resolvido acima). Nunca o texto da Agenda.
+        const initialAddress = workbenchMode
+          ? clientAddressData?.enderecoCompleto || null
+          : clientAddressData?.enderecoCompleto ||
+            (searchMode === 'address' ? String(addressInput || '').trim() : '') ||
+            null;
         const content = await createInfoWindowContent(
           clientCoords.lat,
           clientCoords.lng,
@@ -7823,10 +7832,25 @@
 
     const alaDigits = String(formData.numeroALA || '').replace(/\D/g, '');
     reportForm.numeroALA = alaDigits ? `ALA-${alaDigits}` : '';
-    reportForm.cidade = String(formData.cidade || '').trim();
-    reportForm.enderecoCompleto = String(formData.enderecoCompleto || '').trim();
-    reportForm.numeroEndereco = String(formData.numeroEndereco || '').trim();
-    reportForm.cep = String(formData.cep || '').trim();
+
+    // Relatório = endereço do PIN (mapa), não o texto antigo da Agenda
+    let pinAddress = null;
+    try {
+      pinAddress = await resolveClientAddressFromPin(
+        clientCoords?.lat,
+        clientCoords?.lng
+      );
+    } catch (_) {
+      pinAddress = clientAddressData?.enderecoCompleto ? { ...clientAddressData } : null;
+    }
+    reportForm.cidade = String(pinAddress?.cidade || formData.cidade || '').trim();
+    reportForm.enderecoCompleto = String(
+      pinAddress?.enderecoCompleto || formData.enderecoCompleto || ''
+    ).trim();
+    reportForm.numeroEndereco = String(
+      pinAddress?.numero || formData.numeroEndereco || ''
+    ).trim();
+    reportForm.cep = String(pinAddress?.cep || formData.cep || '').trim();
     reportForm.tabulacaoFinal = String(formData.tabulacaoFinal || '').trim();
     reportForm.projetista = String(formData.projetista || currentUser || '').trim();
     reportFormErrors = {};
