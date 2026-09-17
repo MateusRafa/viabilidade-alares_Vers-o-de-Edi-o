@@ -2202,18 +2202,47 @@
   /**
    * Corrige inconsistência da base: total de portas < conectadas (ex.: 0 e 8)
    * → total passa a ser igual às conectadas; disponíveis nunca ficam negativos.
+   * Também usa `livre` quando portas vem 0/vazio.
+   * Sem capacidade (0/0) → pct 100% para o marcador ficar vermelho (não verde).
    */
   function normalizeCtoPortCounts(cto) {
     if (!cto || typeof cto !== 'object') return cto;
-    const conectadas = Math.max(0, Number(cto.clientes_conectados) || 0);
-    let total = Math.max(0, Number(cto.vagas_total) || 0);
+    let conectadas = Math.max(
+      0,
+      Number(cto.clientes_conectados ?? cto.ocupado ?? cto.portasConectadas) || 0
+    );
+    let total = Math.max(
+      0,
+      Number(cto.vagas_total ?? cto.portas ?? cto.totalPortas) || 0
+    );
+    const livreRaw = cto.livre ?? cto.portas_livres;
+    const livresFromField =
+      livreRaw !== null && livreRaw !== undefined && livreRaw !== ''
+        ? Math.max(0, Number(livreRaw) || 0)
+        : null;
+
+    if (total === 0 && livresFromField != null) {
+      total = livresFromField + conectadas;
+    } else if (
+      total > 0 &&
+      (cto.clientes_conectados == null || cto.clientes_conectados === '') &&
+      livresFromField != null
+    ) {
+      conectadas = Math.max(0, total - livresFromField);
+    }
     if (total < conectadas) total = conectadas;
+
     const disponiveis = Math.max(0, total - conectadas);
     const prevTotal = Math.max(0, Number(cto.vagas_total) || 0);
     let pctOcup = parseFloat(cto.pct_ocup);
-    if (!Number.isFinite(pctOcup) || total !== prevTotal) {
-      pctOcup = total > 0 ? (conectadas / total) * 100 : 0;
+
+    // Sem portas cadastradas ou sem livres: não usar 0% (virava verde).
+    if (total === 0 || disponiveis === 0) {
+      pctOcup = 100;
+    } else if (!Number.isFinite(pctOcup) || total !== prevTotal) {
+      pctOcup = (conectadas / total) * 100;
     }
+
     return {
       ...cto,
       vagas_total: total,
@@ -2251,14 +2280,23 @@
     }
   }
 
+  /** Cor do marcador a partir da CTO (sempre normaliza portas antes). */
+  function getCTOMarkerColor(cto) {
+    if (!cto) return '#F44336';
+    if (cto.is_out_of_limit) return '#FF9800';
+    const n = normalizeCtoPortCounts(cto);
+    // Sem capacidade ou sem portas livres → vermelho (nunca verde “falso”)
+    if ((n.vagas_total || 0) <= 0 || (n.portas_disponiveis || 0) <= 0) {
+      return '#F44336';
+    }
+    return getCTOColor(n.pct_ocup);
+  }
+
   /** Classifica cor de ocupação igual ao marcador do mapa: green | orange | red */
   function getCTOOccupancyBand(cto) {
     const n = normalizeCtoPortCounts(cto);
-    const livres = Math.max(0, (n.vagas_total || 0) - (n.clientes_conectados || 0));
-    // Sem portas livres (e com capacidade/ocupação) → trata como vermelho (saturado)
-    if (livres === 0 && ((n.vagas_total || 0) > 0 || (n.clientes_conectados || 0) > 0)) {
-      return 'red';
-    }
+    if ((n.vagas_total || 0) <= 0) return 'red';
+    if ((n.portas_disponiveis || 0) <= 0) return 'red';
     const color = String(getCTOColor(n.pct_ocup) || '').toUpperCase();
     if (color === '#F44336' || color === COLOR_CTO_RED.toUpperCase()) return 'red';
     if (color === '#FF9800' || color === COLOR_CTO_ORANGE.toUpperCase()) return 'orange';
@@ -5144,9 +5182,7 @@
               console.warn(`⚠️ Rota para ${cto.nome} não retornou pontos válidos. Usando fallback.`);
               // Calcular cor da rota baseada na cor da CTO
               // Se estiver fora do limite, usar cor laranja/amarela
-              const routeColor = cto.is_out_of_limit 
-                ? '#FF9800' // Laranja para CTO fora do limite
-                : getCTOColor(cto.pct_ocup || 0);
+              const routeColor = getCTOMarkerColor(cto);
               
               // Fallback: desenhar linha reta conectando os marcadores
               // Usar coordenadas parseadas para garantir alinhamento
@@ -5251,9 +5287,7 @@
 
             // Calcular cor da rota baseada na cor da CTO
             // Se estiver fora do limite, usar cor laranja/amarela
-            const routeColor = cto.is_out_of_limit 
-              ? '#FF9800' // Laranja para CTO fora do limite
-              : getCTOColor(cto.pct_ocup || 0);
+            const routeColor = getCTOMarkerColor(cto);
             
             let routePolyline;
             
@@ -5385,9 +5419,7 @@
             
             // Calcular cor da rota baseada na cor da CTO
             // Se estiver fora do limite, usar cor laranja/amarela
-            const routeColor = cto.is_out_of_limit 
-              ? '#FF9800' // Laranja para CTO fora do limite
-              : getCTOColor(cto.pct_ocup || 0);
+            const routeColor = getCTOMarkerColor(cto);
             
             // Fallback: desenhar linha reta conectando exatamente os marcadores
             const fallbackPath = [
@@ -6122,7 +6154,7 @@
     }
 
     polyline.setOptions({
-      strokeColor: getCTOColor(cto.pct_ocup || 0),
+      strokeColor: getCTOMarkerColor(cto),
       strokeOpacity: 0.7,
       strokeWeight: 5,
       icons: []
@@ -6136,9 +6168,7 @@
     const marker = findMarkerByCtoKey(ctoKey);
     if (!marker || typeof marker.setIcon !== 'function') return;
 
-    const color = cto.is_out_of_limit
-      ? COLOR_CTO_OUT_OF_LIMIT
-      : getCTOColor(cto.pct_ocup || 0);
+    const color = getCTOMarkerColor(cto);
 
     try {
       const icon = marker.getIcon();
@@ -6521,11 +6551,7 @@
     } else {
       // Para CTOs normais, usar cor baseada na porcentagem de ocupação
       // Se estiver fora do limite, usar cor laranja
-      if (cto.is_out_of_limit) {
-        ctoColor = '#FF9800'; // Laranja para CTO fora do limite
-      } else {
-        ctoColor = getCTOColor(cto.pct_ocup || 0);
-      }
+      ctoColor = getCTOMarkerColor(cto);
     }
     
     // Criar ícone
@@ -6734,11 +6760,7 @@
         } else {
           // Para CTOs normais, usar cor baseada na porcentagem de ocupação
           // Se estiver fora do limite, usar cor laranja
-          if (cto.is_out_of_limit) {
-            ctoColor = '#FF9800'; // Laranja para CTO fora do limite
-          } else {
-            ctoColor = getCTOColor(cto.pct_ocup || 0);
-          }
+          ctoColor = getCTOMarkerColor(cto);
         }
 
         // Usar ctoNumbers para numeração que corresponde à coluna N° da tabela
@@ -9813,8 +9835,9 @@
                   {#each ctosRua as cto, rowIndex}
                     {@const ctoKey = getCTOKey(cto)}
                     {@const isVisible = ctoVisibility.get(ctoKey) !== false}
-                    {@const pctOcup = isNaN(parseFloat(cto.pct_ocup)) ? 0 : parseFloat(cto.pct_ocup || 0)}
-                    {@const occupationClass = pctOcup < 50 ? 'low' : pctOcup >= 50 && pctOcup < 80 ? 'medium' : 'high'}
+                    {@const ports = normalizeCtoPortCounts(cto)}
+                    {@const pctOcup = isNaN(parseFloat(ports.pct_ocup)) ? 0 : parseFloat(ports.pct_ocup || 0)}
+                    {@const occupationClass = (ports.vagas_total || 0) <= 0 || (ports.portas_disponiveis || 0) <= 0 ? 'high' : pctOcup < 50 ? 'low' : pctOcup >= 50 && pctOcup < 80 ? 'medium' : 'high'}
                     {@const statusCto = getStatusCTO(cto)}
                     {@const statusCtoUpper = statusCto.toUpperCase().trim()}
                     {@const statusClass = statusCtoUpper === 'ATIVADO' ? 'low' : statusCtoUpper === 'NAO ATIVADO' || statusCtoUpper === 'NÃO ATIVADO' ? 'high' : ''}
@@ -9870,9 +9893,9 @@
                       <td class:cell-selected={selectedCells.includes(cellKey8) || selectedRows.includes(rowIndex) || selectedColumns.includes(8)} on:click={(e) => handleCellClick(e, rowIndex, 8)}>{cto.pon || 'N/A'}</td>
                       <td class="numeric" class:cell-selected={selectedCells.includes(cellKey9) || selectedRows.includes(rowIndex) || selectedColumns.includes(9)} on:click={(e) => handleCellClick(e, rowIndex, 9)}>{cto.id_cto || cto.id || 'N/A'}</td>
                       <td class="numeric" class:cell-selected={selectedCells.includes(cellKey10) || selectedRows.includes(rowIndex) || selectedColumns.includes(10)} on:click={(e) => handleCellClick(e, rowIndex, 10)}>{formatDataCriacao(cto)}</td>
-                      <td class="numeric" class:cell-selected={selectedCells.includes(cellKey11) || selectedRows.includes(rowIndex) || selectedColumns.includes(11)} on:click={(e) => handleCellClick(e, rowIndex, 11)}>{cto.vagas_total || 0}</td>
-                      <td class="numeric" class:cell-selected={selectedCells.includes(cellKey12) || selectedRows.includes(rowIndex) || selectedColumns.includes(12)} on:click={(e) => handleCellClick(e, rowIndex, 12)}>{cto.clientes_conectados || 0}</td>
-                      <td class="numeric" class:cell-selected={selectedCells.includes(cellKey13) || selectedRows.includes(rowIndex) || selectedColumns.includes(13)} on:click={(e) => handleCellClick(e, rowIndex, 13)}>{Math.max(0, (cto.vagas_total || 0) - (cto.clientes_conectados || 0))}</td>
+                      <td class="numeric" class:cell-selected={selectedCells.includes(cellKey11) || selectedRows.includes(rowIndex) || selectedColumns.includes(11)} on:click={(e) => handleCellClick(e, rowIndex, 11)}>{ports.vagas_total || 0}</td>
+                      <td class="numeric" class:cell-selected={selectedCells.includes(cellKey12) || selectedRows.includes(rowIndex) || selectedColumns.includes(12)} on:click={(e) => handleCellClick(e, rowIndex, 12)}>{ports.clientes_conectados || 0}</td>
+                      <td class="numeric" class:cell-selected={selectedCells.includes(cellKey13) || selectedRows.includes(rowIndex) || selectedColumns.includes(13)} on:click={(e) => handleCellClick(e, rowIndex, 13)}>{ports.portas_disponiveis || 0}</td>
                       <td class:cell-selected={selectedCells.includes(cellKey14) || selectedRows.includes(rowIndex) || selectedColumns.includes(14)} on:click={(e) => handleCellClick(e, rowIndex, 14)}>
                         <span class="occupation-badge {occupationClass}">{(pctOcup || 0).toFixed(1)}%</span>
                       </td>
