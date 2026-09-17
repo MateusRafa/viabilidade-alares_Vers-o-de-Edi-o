@@ -10,24 +10,95 @@ const INSERT_BATCH_SIZE = 200;
 const GEOCODE_DELAY_MS = 220;
 
 const HEADER_ALIASES = {
-  id_endereco: ['idendereco', 'id_endereco', 'id endereco', 'idendereço', 'id endereço'],
+  id_endereco: [
+    'idendereco',
+    'id_endereco',
+    'id endereco',
+    'idendereço',
+    'id endereço',
+    'idlogradouro',
+    'id_logradouro',
+    'id logradouro',
+    'id do logradouro'
+  ],
+  id_logradouro: ['idlogradouro', 'id_logradouro', 'id logradouro', 'id do logradouro'],
   data_cadastro: ['datacadastro', 'data_cadastro', 'data cadastro'],
   hora_cadastro: ['horacadastro', 'hora_cadastro', 'hora cadastro'],
   estado: ['estado', 'uf'],
   nome_cidade: ['nomedacidade', 'nome_cidade', 'nome cidade', 'cidade'],
-  id_mdu: ['idmdu', 'id_mdu', 'id mdu'],
+  id_mdu: [
+    'idmdu',
+    'id_mdu',
+    'id mdu',
+    'idcondominio',
+    'id_condominio',
+    'id do condominio',
+    'id do condomínio'
+  ],
   controle_mdu: ['controlemdu', 'controle_mdu', 'controle mdu'],
-  descricao: ['descricao', 'descrição', 'nome', 'nome_predio', 'nomepredio'],
+  descricao: [
+    'descricao',
+    'descrição',
+    'nome',
+    'nome_predio',
+    'nomepredio',
+    'nomedocondominio',
+    'nome do condominio',
+    'nome do condomínio',
+    'nome condominio',
+    'nome condomínio'
+  ],
   tipo: ['tipo'],
   numero: ['numero', 'número', 'num'],
   complemento: ['complemento'],
   bairro: ['bairro'],
-  nome_logradouro: ['nomelogradouro', 'nome_logradouro', 'nome logradouro', 'logradouro'],
-  tipo_logradouro: ['tipodologradouro', 'tipo_logradouro', 'tipo logradouro', 'tipologradouro'],
+  nome_logradouro: [
+    'nomelogradouro',
+    'nome_logradouro',
+    'nome logradouro',
+    'logradouro',
+    'endereco',
+    'endereço'
+  ],
+  tipo_logradouro: [
+    'tipodologradouro',
+    'tipo_logradouro',
+    'tipo logradouro',
+    'tipologradouro',
+    'tipo de logradouro'
+  ],
   id_cep: ['idcep', 'id_cep', 'id cep'],
   cep: ['cep'],
   latitude: ['latitude', 'lat'],
-  longitude: ['longitude', 'lng', 'lon', 'long']
+  longitude: ['longitude', 'lng', 'lon', 'long'],
+  localizacao: ['localizacao', 'localização', 'coords', 'coordenadas', 'latlng', 'lat long'],
+  nomes_cto: [
+    'nomecto',
+    'nome_cto',
+    'nome cto',
+    'nomescto',
+    'nomes_cto',
+    'nomes cto',
+    'cto',
+    'ctos',
+    'equipamentos'
+  ],
+  data_ativacao_cto: [
+    'dataativacaocto',
+    'data_ativacao_cto',
+    'data ativacao cto',
+    'data ativação cto',
+    'dataativacao'
+  ],
+  situacao_cto: [
+    'situacaocto',
+    'situacao_cto',
+    'situacao cto',
+    'situação cto',
+    'statuscto',
+    'status_cto',
+    'status cto'
+  ]
 };
 
 function sleep(ms) {
@@ -225,6 +296,47 @@ function cellText(value) {
   return s || null;
 }
 
+/** "Nome CTO" pode vir como "CTO A, CTO B" — lista para filtro no mapa. */
+export function parseNomesCto(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const raw = String(value)
+    .split(/[,;|/]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (!raw.length) return null;
+  // Dedup case-insensitive preservando o primeiro nome
+  const seen = new Set();
+  const out = [];
+  for (const nome of raw) {
+    const key = nome
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .toUpperCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(nome);
+  }
+  return out.length ? out.join(', ') : null;
+}
+
+/** Coluna "Localização" no formato "-23.67, -46.79". */
+export function parseLocalizacao(value) {
+  if (value === null || value === undefined || value === '') return { latitude: null, longitude: null };
+  if (typeof value === 'object' && value.v !== undefined) return parseLocalizacao(value.v);
+  const s = String(value)
+    .trim()
+    .replace(/[\u2212\u2013\u2014]/g, '-')
+    .replace(/\u00a0/g, ' ');
+  const m = s.match(/([+-]?\d+[.,]\d+)\s*[,;/\s]\s*([+-]?\d+[.,]\d+)/);
+  if (!m) return { latitude: null, longitude: null };
+  const latitude = parseCoord(m[1]);
+  const longitude = parseCoord(m[2]);
+  const pair = normalizeLatLngPair(latitude, longitude);
+  return { latitude: pair.latitude, longitude: pair.longitude, swapped: pair.swapped };
+}
+
 export function parseMduExcelBuffer(fileBuffer) {
   const workbook = XLSX.read(fileBuffer, { type: 'buffer', cellDates: false });
   const sheetName = workbook.SheetNames[0];
@@ -251,14 +363,25 @@ export function parseMduExcelBuffer(fileBuffer) {
     if (colIdx >= 0) fieldToCol[field] = colIdx;
   }
 
-  // Fallback: achar colunas lat/lng por nome parcial se alias não bateu
+  // Fallback: achar colunas lat/lng / localização / nome CTO por nome parcial
   if (fieldToCol.latitude == null) {
-    const col = headerByCol.findIndex((h) => /lat/i.test(normalizeHeaderKey(h)) && !/placa|relat/i.test(h));
+    const col = headerByCol.findIndex((h) => /lat/i.test(normalizeHeaderKey(h)) && !/placa|relat|local/i.test(h));
     if (col >= 0) fieldToCol.latitude = col;
   }
   if (fieldToCol.longitude == null) {
     const col = headerByCol.findIndex((h) => /long|lng|lon/i.test(normalizeHeaderKey(h)));
     if (col >= 0) fieldToCol.longitude = col;
+  }
+  if (fieldToCol.localizacao == null) {
+    const col = headerByCol.findIndex((h) => /localiza/i.test(normalizeHeaderKey(h)));
+    if (col >= 0) fieldToCol.localizacao = col;
+  }
+  if (fieldToCol.nomes_cto == null) {
+    const col = headerByCol.findIndex((h) => {
+      const k = normalizeHeaderKey(h);
+      return /nomecto|nomescto|equipamento/.test(k) || (k.includes('cto') && k.includes('nome'));
+    });
+    if (col >= 0) fieldToCol.nomes_cto = col;
   }
 
   const missingCols = [];
@@ -295,6 +418,15 @@ export function parseMduExcelBuffer(fileBuffer) {
     let latitude = parseCoordLoose(latCell.v, latCell.w);
     let longitude = parseCoordLoose(lngCell.v, lngCell.w);
 
+    // Fallback: coluna Localização ("lat, lng")
+    if (latitude == null || longitude == null) {
+      const locCell = readCell(rowIdx, 'localizacao');
+      const fromLoc = parseLocalizacao(locCell.v !== '' ? locCell.v : locCell.w);
+      if (latitude == null && fromLoc.latitude != null) latitude = fromLoc.latitude;
+      if (longitude == null && fromLoc.longitude != null) longitude = fromLoc.longitude;
+      if (fromLoc.swapped) coordsSwapped += 1;
+    }
+
     if (sampleRawCoords.length < 5 && (latCell.v !== '' || lngCell.v !== '' || latCell.w || lngCell.w)) {
       sampleRawCoords.push({
         row: rowIdx + 1,
@@ -327,13 +459,24 @@ export function parseMduExcelBuffer(fileBuffer) {
     const descricao =
       cellText(readCell(rowIdx, 'descricao').v) || cellText(readCell(rowIdx, 'descricao').w);
     const idMdu = parseNullableBigInt(readCell(rowIdx, 'id_mdu').v);
-    const idEndereco = parseNullableBigInt(readCell(rowIdx, 'id_endereco').v);
+    const idLogradouro =
+      parseNullableBigInt(readCell(rowIdx, 'id_logradouro').v) ||
+      parseNullableBigInt(readCell(rowIdx, 'id_endereco').v);
+    const idEndereco = parseNullableBigInt(readCell(rowIdx, 'id_endereco').v) || idLogradouro;
+    const nomesCto =
+      parseNomesCto(readCell(rowIdx, 'nomes_cto').v) ||
+      parseNomesCto(readCell(rowIdx, 'nomes_cto').w);
+    const situacaoCto =
+      cellText(readCell(rowIdx, 'situacao_cto').v) || cellText(readCell(rowIdx, 'situacao_cto').w);
+    const dataAtivacaoCto =
+      parseDate(readCell(rowIdx, 'data_ativacao_cto').v) ||
+      parseDate(readCell(rowIdx, 'data_ativacao_cto').w);
 
     if (!descricao && idMdu == null && latitude == null && longitude == null) {
       // linha totalmente vazia?
       const tipo = cellText(readCell(rowIdx, 'tipo').v);
       const logradouro = cellText(readCell(rowIdx, 'nome_logradouro').v);
-      if (!tipo && !logradouro) {
+      if (!tipo && !logradouro && !nomesCto) {
         skippedEmpty += 1;
         continue;
       }
@@ -369,6 +512,7 @@ export function parseMduExcelBuffer(fileBuffer) {
 
     records.push({
       id_endereco: idEndereco,
+      id_logradouro: idLogradouro,
       id_mdu: idMdu,
       controle_mdu: parseNullableBigInt(readCell(rowIdx, 'controle_mdu').v),
       descricao,
@@ -390,6 +534,9 @@ export function parseMduExcelBuffer(fileBuffer) {
       estado: cellText(readCell(rowIdx, 'estado').v) || cellText(readCell(rowIdx, 'estado').w),
       latitude,
       longitude,
+      nomes_cto: nomesCto,
+      situacao_cto: situacaoCto,
+      data_ativacao_cto: dataAtivacaoCto,
       data_cadastro: dataCadastro,
       hora_cadastro: horaCadastro,
       cadastrado_em: cadastradoEm
@@ -468,12 +615,16 @@ async function insertMduBatches(client, records, onProgress) {
         data_cadastro,
         hora_cadastro,
         cadastrado_em,
+        data_ativacao_cto,
         ...core
       } = row;
       const out = { ...core };
       if (data_cadastro) out.data_cadastro = data_cadastro;
       if (hora_cadastro && /^\d{2}:\d{2}:\d{2}$/.test(hora_cadastro)) out.hora_cadastro = hora_cadastro;
       if (cadastrado_em && /^\d{4}-\d{2}-\d{2}T/.test(cadastrado_em)) out.cadastrado_em = cadastrado_em;
+      if (data_ativacao_cto && /^\d{4}-\d{2}-\d{2}/.test(data_ativacao_cto)) {
+        out.data_ativacao_cto = data_ativacao_cto.slice(0, 10);
+      }
       return out;
     });
     const { error } = await client.from('condominios_mdu').insert(batch);
