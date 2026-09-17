@@ -1710,7 +1710,7 @@
                   <img src={mapPreviewImage} alt="Prévia do Mapa" class="wb-preview-image" />
                 </div>
                 <p class="wb-preview-hint">
-                  O mapa foi capturado automaticamente com todas as CTOs encontradas e suas rotas visíveis.
+                  O mapa foi capturado automaticamente com as CTOs, rotas e condomínios visíveis (quando a opção estiver ativa).
                 </p>
               {:else}
                 <div class="wb-preview-loading">
