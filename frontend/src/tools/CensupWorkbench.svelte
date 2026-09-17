@@ -117,6 +117,31 @@
     };
   }
 
+  /** 2.5 — tabulação automática acompanha o endereço atual no mapa */
+  function onTabulacaoSugeridaFromMap(payload = {}) {
+    const tab = String(payload?.tabulacaoFinal || '').trim();
+    if (!tab) return;
+    if (form.tabulacaoFinal === tab && sugeridaOriginal === tab) return;
+    form.tabulacaoFinal = tab;
+    sugeridaOriginal = tab;
+    form = form;
+    if (statusMsg && /tabula/i.test(statusMsg)) {
+      statusMsg = `Tabulação automática: ${tab}`;
+    }
+  }
+
+  function applyTabulacaoFromMapNow() {
+    try {
+      if (typeof viabilidadeRef?.getWorkbenchTabulacaoSugerida !== 'function') return;
+      const suggestion = viabilidadeRef.getWorkbenchTabulacaoSugerida(chamado?.motivo || '');
+      if (suggestion?.tabulacaoFinal) {
+        onTabulacaoSugeridaFromMap(suggestion);
+      }
+    } catch (err) {
+      console.warn('[Workbench] applyTabulacaoFromMapNow:', err?.message || err);
+    }
+  }
+
   function syncForaLimiteFromRef() {
     try {
       const info =
@@ -746,6 +771,9 @@
       // Rotas podem atualizar a distância um pouco depois
       setTimeout(() => syncForaLimiteFromRef(), 800);
       setTimeout(() => syncForaLimiteFromRef(), 2000);
+      // 2.5 — tabulação automática após localizar (endereço atual)
+      setTimeout(() => applyTabulacaoFromMapNow(), 900);
+      setTimeout(() => applyTabulacaoFromMapNow(), 2200);
       statusMsg = 'Endereço localizado no mapa';
     } catch (err) {
       error = err?.message || String(err);
@@ -806,6 +834,8 @@
     error = '';
     mapPreviewImage = '';
     ensureProjetistaFromLogin();
+    // Tabulação automática sempre pela posição atual do endereço no mapa
+    applyTabulacaoFromMapNow();
     // Atualiza opções do select antes de mostrar o modal
     await refreshTabulacoesForReport();
     showInfoModal = true;
@@ -821,6 +851,7 @@
         applyMapAddressToForm(await viabilidadeRef.syncWorkbenchAddressFromMap());
       }
       ensureProjetistaFromLogin();
+      applyTabulacaoFromMapNow();
 
       const preview = await viabilidadeRef.refreshWorkbenchMapPreview();
       if (!preview) {
@@ -883,23 +914,30 @@
       });
       if (analyzed?.chamado) {
         chamado = analyzed.chamado;
-        const tab =
-          chamado.tabulacaoFinal ||
-          chamado.analiseIa?.tabulacaoSugerida ||
-          '';
-        if (tab) {
-          form.tabulacaoFinal = tab;
-          sugeridaOriginal = chamado.analiseIa?.tabulacaoSugerida || tab;
-        }
         // Mantém endereço/CEP/coords já vindos do mapa (não sobrescrever com Agenda)
         const end = chamado.endereco || {};
         if (!form.cep && end.cep) form.cep = end.cep;
         form = form;
       }
-      statusMsg = 'Tabulação atualizada pela posição da casinha';
+      // Regras 2.1–2.4 pelo mapa (CTOs/cobertura/motivo) têm prioridade
+      applyTabulacaoFromMapNow();
+      if (!form.tabulacaoFinal && analyzed?.chamado) {
+        const tab =
+          analyzed.chamado.tabulacaoFinal ||
+          analyzed.chamado.analiseIa?.tabulacaoSugerida ||
+          '';
+        if (tab) {
+          form.tabulacaoFinal = tab;
+          sugeridaOriginal = analyzed.chamado.analiseIa?.tabulacaoSugerida || tab;
+        }
+      }
+      statusMsg = form.tabulacaoFinal
+        ? `Tabulação automática: ${form.tabulacaoFinal}`
+        : 'Tabulação atualizada pela posição da casinha';
     } catch (err) {
       console.warn('[Workbench] Reanálise:', err?.message || err);
-      statusMsg = 'Posição atualizada (falha ao recalcular tabulação)';
+      applyTabulacaoFromMapNow();
+      statusMsg = 'Posição atualizada (falha ao recalcular tabulação no servidor)';
     } finally {
       reanalyzing = false;
     }
@@ -1457,6 +1495,7 @@
               mapDomId="censup-workbench-map"
               currentUser={usuario}
               preferredMapType={preferredMapType}
+              workbenchMotivo={chamado?.motivo || ''}
               initialAddress={mapAddress}
               initialLat={mapLat}
               initialLng={mapLng}
@@ -1464,6 +1503,7 @@
               onMapPreviewChange={onMapPreviewFromViabilidade}
               onEquipamentosChange={onEquipamentosFromViabilidade}
               onForaLimiteChange={onForaLimiteFromViabilidade}
+              onTabulacaoSugeridaChange={onTabulacaoSugeridaFromMap}
               onMapReady={onMapReadyFromViabilidade}
             />
           </div>
