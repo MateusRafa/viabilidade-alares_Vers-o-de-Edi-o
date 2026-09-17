@@ -2303,6 +2303,73 @@
     return 'green';
   }
 
+  /** Soma portas das CTOs internas de um MDU (mesma regra de ocupação das CTOs de rua). */
+  function aggregateMduPortsFromInternas(ctosInternas) {
+    const list = Array.isArray(ctosInternas) ? ctosInternas : [];
+    let total = 0;
+    let conectadas = 0;
+    for (const c of list) {
+      const n = normalizeCtoPortCounts(c);
+      total += n.vagas_total || 0;
+      conectadas += n.clientes_conectados || 0;
+    }
+    if (total < conectadas) total = conectadas;
+    const disponiveis = Math.max(0, total - conectadas);
+    const pct_ocup = total === 0 || disponiveis === 0 ? 100 : (conectadas / total) * 100;
+    return {
+      vagas_total: total,
+      clientes_conectados: conectadas,
+      portas_disponiveis: disponiveis,
+      pct_ocup
+    };
+  }
+
+  function getPredioStrokeForFill(fillColor) {
+    const f = String(fillColor || '').toUpperCase();
+    if (f === COLOR_CTO_GREEN.toUpperCase() || f === '#28A745') return '#2E7D32';
+    if (f === COLOR_CTO_ORANGE.toUpperCase()) return '#EF6C00';
+    if (f === COLOR_CTO_RED.toUpperCase() || f === '#DC3545') return '#C62828';
+    if (f === '#95A5A6') return '#7F8C8D';
+    if (f === '#6C63FF') return '#4F46E5';
+    return '#333333';
+  }
+
+  function getOccupancySoftBg(fillColor) {
+    const f = String(fillColor || '').toUpperCase();
+    if (f === COLOR_CTO_GREEN.toUpperCase() || f === '#28A745') return '#f1f8e9';
+    if (f === COLOR_CTO_ORANGE.toUpperCase()) return '#fff8e1';
+    if (f === COLOR_CTO_RED.toUpperCase() || f === '#DC3545') return '#fff5f5';
+    return '#f8f9fa';
+  }
+
+  /** Cores do ícone de prédio: MDU por ocupação agregada; legacy por ATIVADO. */
+  function getPredioMarkerColors(cto) {
+    const isMdu = cto?.fonte_condominio === 'mdu' || cto?.condominio_data?.fonte === 'mdu';
+    if (isMdu) {
+      const internas = cto.ctos_internas || cto.condominio_data?.ctos_internas || [];
+      const ports =
+        Array.isArray(internas) && internas.length > 0
+          ? aggregateMduPortsFromInternas(internas)
+          : normalizeCtoPortCounts(cto);
+      const windowColor = getCTOMarkerColor(ports);
+      return {
+        windowColor,
+        strokeColor: getPredioStrokeForFill(windowColor),
+        fillColor: windowColor,
+        ports
+      };
+    }
+    const statusCto = cto?.status_cto_condominio || cto?.condominio_data?.status_cto || '';
+    const isAtivado = !!(statusCto && statusCto.toUpperCase().trim() === 'ATIVADO');
+    const windowColor = isAtivado ? '#28A745' : '#95A5A6';
+    return {
+      windowColor,
+      strokeColor: getPredioStrokeForFill(windowColor),
+      fillColor: windowColor,
+      ports: null
+    };
+  }
+
   function normalizeMotivoTabulacao(value) {
     return String(value || '')
       .normalize('NFD')
@@ -4466,7 +4533,10 @@
         if (prediosData.success && prediosData.condominios) {
           predios = prediosData.condominios
             .filter(p => p.distancia_metros <= 250)
-            .map(p => ({
+            .map(p => {
+              const internas = Array.isArray(p.ctos_internas) ? p.ctos_internas : [];
+              const ports = aggregateMduPortsFromInternas(internas);
+              return {
               nome: p.nome_predio || p.descricao || 'Condomínio',
               latitude: parseFloat(p.latitude),
               longitude: parseFloat(p.longitude),
@@ -4474,21 +4544,22 @@
               fonte_condominio: p.fonte || prediosData.source || 'mdu',
               condominio_data: p,
               status_cto_condominio: p.situacao_cto || p.tipo || p.status_cto || null,
-              ctos_internas: Array.isArray(p.ctos_internas) ? p.ctos_internas : [],
+              ctos_internas: internas,
               endereco_completo: p.endereco_completo || '',
               id_mdu: p.id_mdu ?? null,
               tipo_mdu: p.tipo || null,
               distancia_metros: p.distancia_metros,
               distancia_km: Math.round((p.distancia_metros / 1000) * 1000) / 1000,
               distancia_real: p.distancia_metros,
-              // Campos vazios para prédios (não são CTOs)
-              vagas_total: 0,
-              clientes_conectados: 0,
-              pct_ocup: 0,
+              vagas_total: ports.vagas_total,
+              clientes_conectados: ports.clientes_conectados,
+              portas_disponiveis: ports.portas_disponiveis,
+              pct_ocup: ports.pct_ocup,
               cidade: p.nome_cidade || '',
               pop: '',
               id: p.id_mdu != null ? `mdu-${p.id_mdu}` : `mdu-${p.latitude},${p.longitude}`
-            }));
+            };
+            });
           
           console.log(`✅ [Frontend] ${predios.length} condomínios MDU encontrados dentro de 250m`);
           
@@ -6539,15 +6610,7 @@
     // Determinar cor e ícone (mesma lógica de drawRoutesAndMarkers)
     let ctoColor;
     if (isPredio) {
-      // Base MDU: condomínio cadastrado (cor fixa). Legacy: ATIVADO = verde.
-      const isMdu = cto.fonte_condominio === 'mdu' || cto.condominio_data?.fonte === 'mdu';
-      if (isMdu) {
-        ctoColor = '#6C63FF';
-      } else {
-        const statusCto = cto.status_cto_condominio || cto.condominio_data?.status_cto || '';
-        const isAtivado = statusCto && statusCto.toUpperCase().trim() === 'ATIVADO';
-        ctoColor = isAtivado ? '#28A745' : '#95A5A6';
-      }
+      ctoColor = getPredioMarkerColors(cto).fillColor;
     } else {
       // Para CTOs normais, usar cor baseada na porcentagem de ocupação
       // Se estiver fora do limite, usar cor laranja
@@ -6557,11 +6620,7 @@
     // Criar ícone
     let iconConfig;
     if (isPredio) {
-      const isMdu = cto.fonte_condominio === 'mdu' || cto.condominio_data?.fonte === 'mdu';
-      const statusCto = cto.status_cto_condominio || cto.condominio_data?.status_cto || '';
-      const isAtivado = !isMdu && statusCto && statusCto.toUpperCase().trim() === 'ATIVADO';
-      const windowColor = isMdu ? '#6C63FF' : (isAtivado ? '#28A745' : '#95A5A6');
-      const strokeColor = isMdu ? '#4F46E5' : (isAtivado ? '#1E7E34' : '#7F8C8D');
+      const { windowColor, strokeColor } = getPredioMarkerColors(cto);
       const svgDataUri =
         'data:image/svg+xml;charset=UTF-8,' +
         encodeURIComponent(buildPredioIconSvg({ windowColor, strokeColor }));
@@ -6590,7 +6649,7 @@
       position: originalPosition,
       map: isPredio && !prediosVisibleOnMap ? null : map,
       title: isPredio 
-        ? `🏢 ${cto.nome} (PRÉDIO) - ${cto.distancia_metros}m - Não cria rota`
+        ? `🏢 ${cto.nome} (PRÉDIO) - ${cto.distancia_metros}m - ${Math.max(0, (cto.portas_disponiveis ?? ((cto.vagas_total || 0) - (cto.clientes_conectados || 0))))} portas disponíveis`
         : `${cto.nome} - ${cto.distancia_metros}m (${Math.max(0, (cto.vagas_total || 0) - (cto.clientes_conectados || 0))} portas disponíveis)`,
       icon: iconConfig,
       label: isPredio ? undefined : (markerNumber ? {
@@ -6748,15 +6807,11 @@
       
       try {
         
-        // Para prédios, usar verde baseado no STATUS_CTO
-        // STATUS_CTO = "ATIVADO" → verde mais vivo (#28A745 ou similar)
-        // STATUS_CTO ≠ "ATIVADO" → verde mais apagado (#6C757D ou #95A5A6)
+        // Para prédios MDU: cor por ocupação agregada das CTOs internas
+        // Legacy: ATIVADO = verde / senão cinza
         let ctoColor;
         if (isPredio) {
-          const isMdu = cto.fonte_condominio === 'mdu' || cto.condominio_data?.fonte === 'mdu';
-          const statusCto = cto.status_cto_condominio || cto.condominio_data?.status_cto || '';
-          const isAtivado = !isMdu && statusCto && statusCto.toUpperCase().trim() === 'ATIVADO';
-          ctoColor = isMdu ? '#6C63FF' : (isAtivado ? '#28A745' : '#95A5A6');
+          ctoColor = getPredioMarkerColors(cto).fillColor;
         } else {
           // Para CTOs normais, usar cor baseada na porcentagem de ocupação
           // Se estiver fora do limite, usar cor laranja
@@ -6772,14 +6827,10 @@
         let iconConfig;
         
         if (isPredio) {
-          const isMdu = cto.fonte_condominio === 'mdu' || cto.condominio_data?.fonte === 'mdu';
-          const statusCto = cto.status_cto_condominio || cto.condominio_data?.status_cto || '';
-          const isAtivado = !isMdu && statusCto && statusCto.toUpperCase().trim() === 'ATIVADO';
+          const { windowColor, strokeColor } = getPredioMarkerColors(cto);
           
-          console.log(`🏢 Criando marcador de condomínio: ${cto.nome}, mdu: ${isMdu}, status: ${statusCto}`);
+          console.log(`🏢 Criando marcador de condomínio: ${cto.nome}, cor ocupação: ${windowColor}`);
           
-          const windowColor = isMdu ? '#6C63FF' : (isAtivado ? '#28A745' : '#95A5A6');
-          const strokeColor = isMdu ? '#4F46E5' : (isAtivado ? '#1E7E34' : '#7F8C8D');
           const svgDataUri =
             'data:image/svg+xml;charset=UTF-8,' +
             encodeURIComponent(buildPredioIconSvg({ windowColor, strokeColor }));
@@ -6809,7 +6860,7 @@
           position: originalPosition,
           map: isPredio && !prediosVisibleOnMap ? null : map,
           title: isPredio 
-            ? `🏢 ${cto.nome} (PRÉDIO) - ${cto.distancia_metros}m - Não cria rota`
+            ? `🏢 ${cto.nome} (PRÉDIO) - ${cto.distancia_metros}m - ${Math.max(0, (cto.portas_disponiveis ?? ((cto.vagas_total || 0) - (cto.clientes_conectados || 0))))} portas disponíveis`
             : `${cto.nome} - ${cto.distancia_metros}m (${Math.max(0, (cto.vagas_total || 0) - (cto.clientes_conectados || 0))} portas disponíveis)`,
           icon: iconConfig,
           label: isPredio ? undefined : (currentMarkerNumber ? { // Sem label para prédios, label numérico para CTOs normais
@@ -6850,7 +6901,6 @@
           
           if (isPredio) {
             const nomePredio = cto.nome || 'Condomínio';
-            const isMdu = cto.fonte_condominio === 'mdu' || cto.condominio_data?.fonte === 'mdu';
             const tipoMdu = cto.tipo_mdu || cto.status_cto_condominio || cto.condominio_data?.tipo || 'N/A';
             const enderecoMdu =
               cto.endereco_completo ||
@@ -6858,12 +6908,13 @@
               '';
             const idMdu = cto.id_mdu ?? cto.condominio_data?.id_mdu ?? cto.id ?? 'N/A';
             const ctosInternas = cto.ctos_internas || [];
+            const predioOcc = getPredioMarkerColors(cto);
             
             let detalheHTML = '';
             if (ctosInternas.length === 0) {
               detalheHTML = `
-                <div style="margin-top: 12px; padding: 8px; background-color: #eef2ff; border-left: 3px solid #6C63FF; border-radius: 4px;">
-                  <strong style="color: #4338ca;">Condomínio cadastrado (base MDU)</strong><br>
+                <div style="margin-top: 12px; padding: 8px; background-color: ${getOccupancySoftBg(predioOcc.windowColor)}; border-left: 3px solid ${predioOcc.windowColor}; border-radius: 4px;">
+                  <strong style="color: #333;">Condomínio cadastrado (base MDU)</strong><br>
                   <span style="color: #4b5563; font-size: 12px;">Nenhuma CTO interna listada neste registro.</span>
                 </div>
               `;
@@ -6876,37 +6927,37 @@
                   statusCtoInterna &&
                   (statusCtoInterna.toUpperCase().trim() === 'ATIVADO' ||
                     statusCtoInterna.toUpperCase().trim() === 'ATIVO');
-                const borderColor = isAtiva ? '#28A745' : '#DC3545';
-                const bgColor = isAtiva ? '#f8f9fa' : '#fff5f5';
+                const portsInterna = normalizeCtoPortCounts(ctoInterna);
+                const borderColor = getCTOMarkerColor(portsInterna);
+                const bgColor = getOccupancySoftBg(borderColor);
                 detalheHTML += `
                   <div style="margin-top: 8px; padding: 8px; background-color: ${bgColor}; border-left: 3px solid ${borderColor}; border-radius: 4px;">
                     <strong style="color: #333; font-size: 12px;">CTO ${idx + 1}:</strong><br>
                     <strong>Nome:</strong> ${String(ctoInterna.nome || 'N/A')}<br>
                     ${ctoInterna.id ? `<strong>ID:</strong> ${String(ctoInterna.id)}<br>` : ''}
-                    <strong>Portas Disponíveis:</strong> ${Number(ctoInterna.portas_disponiveis || 0)}<br>
-                    <strong>Portas Totais:</strong> ${Number(ctoInterna.vagas_total || 0)}<br>
-                    <strong>Portas Conectadas:</strong> ${Number(ctoInterna.clientes_conectados || 0)}<br>
+                    <strong>Portas Disponíveis:</strong> ${Number(portsInterna.portas_disponiveis || 0)}<br>
+                    <strong>Portas Totais:</strong> ${Number(portsInterna.vagas_total || 0)}<br>
+                    <strong>Portas Conectadas:</strong> ${Number(portsInterna.clientes_conectados || 0)}<br>
                     <strong>Status:</strong> <span style="color: ${isAtiva ? '#28A745' : '#DC3545'}; font-weight: bold;">${String(ctoInterna.status_cto || 'N/A')}</span><br>
                   </div>
                 `;
               });
-              const totalPortasDisponiveis = ctosInternas.reduce((sum, c) => sum + (c.portas_disponiveis || 0), 0);
-              const totalPortasTotais = ctosInternas.reduce((sum, c) => sum + (c.vagas_total || 0), 0);
-              const totalPortasConectadas = ctosInternas.reduce((sum, c) => sum + (c.clientes_conectados || 0), 0);
+              const totalsPorts = aggregateMduPortsFromInternas(ctosInternas);
+              const totalsColor = getCTOMarkerColor(totalsPorts);
               detalheHTML += `
-                <div style="margin-top: 8px; padding: 8px; background-color: #e8f5e9; border-left: 3px solid #28A745; border-radius: 4px;">
-                  <strong style="color: #1B5E20; font-size: 12px;">Totais do condomínio</strong><br>
-                  <strong>Disponíveis:</strong> ${totalPortasDisponiveis} ·
-                  <strong>Totais:</strong> ${totalPortasTotais} ·
-                  <strong>Conectadas:</strong> ${totalPortasConectadas}
+                <div style="margin-top: 8px; padding: 8px; background-color: ${getOccupancySoftBg(totalsColor)}; border-left: 3px solid ${totalsColor}; border-radius: 4px;">
+                  <strong style="color: #333; font-size: 12px;">Totais do condomínio</strong><br>
+                  <strong>Disponíveis:</strong> ${totalsPorts.portas_disponiveis} ·
+                  <strong>Totais:</strong> ${totalsPorts.vagas_total} ·
+                  <strong>Conectadas:</strong> ${totalsPorts.clientes_conectados}
                 </div>
               </div>`;
             }
             
             infoWindowContent = `
               <div style="padding: 12px; font-family: 'Inter', sans-serif; line-height: 1.6; max-width: 350px;">
-                <div style="background-color: #EEF2FF; padding: 8px; margin-bottom: 12px; border-left: 4px solid #6C63FF; border-radius: 4px;">
-                  <strong style="color: #4338ca; font-size: 14px;">🏢 CONDOMÍNIO CADASTRADO</strong>
+                <div style="background-color: ${getOccupancySoftBg(predioOcc.windowColor)}; padding: 8px; margin-bottom: 12px; border-left: 4px solid ${predioOcc.windowColor}; border-radius: 4px;">
+                  <strong style="color: #333; font-size: 14px;">🏢 CONDOMÍNIO CADASTRADO</strong>
                 </div>
                 <strong>Nome:</strong> ${String(nomePredio)}<br>
                 <strong>Tipo:</strong> ${String(tipoMdu)}<br>
@@ -7105,33 +7156,33 @@
                             statusCtoInterna &&
                             (statusCtoInterna.toUpperCase().trim() === 'ATIVADO' ||
                               statusCtoInterna.toUpperCase().trim() === 'ATIVO');
-                          const borderColor = isAtiva ? '#28A745' : '#DC3545';
-                          const bgColor = isAtiva ? '#f8f9fa' : '#fff5f5';
+                          const borderColor = getCTOMarkerColor(ctoInterna);
+                          const bgColor = getOccupancySoftBg(borderColor);
+                          const portsInterna = normalizeCtoPortCounts(ctoInterna);
                           
                           ctosListHTML += `
                             <div style="margin-top: 8px; padding: 8px; background-color: ${bgColor}; border-left: 3px solid ${borderColor}; border-radius: 4px;">
                               <strong style="color: #333; font-size: 12px;">CTO ${idx + 1}:</strong><br>
                               <strong>Nome:</strong> ${String(ctoInterna.nome || 'N/A')}<br>
                               ${ctoInterna.id ? `<strong>ID:</strong> ${String(ctoInterna.id)}<br>` : ''}
-                              <strong>Portas Disponíveis:</strong> ${Number(ctoInterna.portas_disponiveis || 0)}<br>
-                              <strong>Portas Totais:</strong> ${Number(ctoInterna.vagas_total || 0)}<br>
-                              <strong>Portas Conectadas:</strong> ${Number(ctoInterna.clientes_conectados || 0)}<br>
+                              <strong>Portas Disponíveis:</strong> ${Number(portsInterna.portas_disponiveis || 0)}<br>
+                              <strong>Portas Totais:</strong> ${Number(portsInterna.vagas_total || 0)}<br>
+                              <strong>Portas Conectadas:</strong> ${Number(portsInterna.clientes_conectados || 0)}<br>
                               <strong>Status:</strong> <span style="color: ${isAtiva ? '#28A745' : '#DC3545'}; font-weight: bold;">${String(ctoInterna.status_cto || 'N/A')}</span><br>
                               ${!isAtiva ? '<div style="color: #DC3545; font-size: 11px; margin-top: 4px; font-weight: bold;">⚠️ CTO NÃO ATIVA</div>' : ''}
                             </div>
                           `;
                         });
                         
-                        const totalPortasDisponiveis = ctosInternas.reduce((sum, c) => sum + (c.portas_disponiveis || 0), 0);
-                        const totalPortasTotais = ctosInternas.reduce((sum, c) => sum + (c.vagas_total || 0), 0);
-                        const totalPortasConectadas = ctosInternas.reduce((sum, c) => sum + (c.clientes_conectados || 0), 0);
+                        const totalsPorts = aggregateMduPortsFromInternas(ctosInternas);
+                        const totalsColor = getCTOMarkerColor(totalsPorts);
                         
                         ctosListHTML += `
-                          <div style="margin-top: 8px; padding: 8px; background-color: #e8f5e9; border-left: 3px solid #28A745; border-radius: 4px;">
-                            <strong style="color: #1B5E20;">Resumo Total:</strong><br>
-                            <strong>Total de Portas Disponíveis:</strong> ${totalPortasDisponiveis}<br>
-                            <strong>Total de Portas:</strong> ${totalPortasTotais}<br>
-                            <strong>Total de Portas Conectadas:</strong> ${totalPortasConectadas}<br>
+                          <div style="margin-top: 8px; padding: 8px; background-color: ${getOccupancySoftBg(totalsColor)}; border-left: 3px solid ${totalsColor}; border-radius: 4px;">
+                            <strong style="color: #333;">Resumo Total:</strong><br>
+                            <strong>Total de Portas Disponíveis:</strong> ${totalsPorts.portas_disponiveis}<br>
+                            <strong>Total de Portas:</strong> ${totalsPorts.vagas_total}<br>
+                            <strong>Total de Portas Conectadas:</strong> ${totalsPorts.clientes_conectados}<br>
                           </div>
                         `;
                         
@@ -7144,10 +7195,11 @@
                         `;
                       }
                       
+                      const predioOccFallback = getPredioMarkerColors(cto);
                       const updatedContent = `
                         <div style="padding: 12px; font-family: 'Inter', sans-serif; line-height: 1.6; max-width: 350px;">
-                          <div style="background-color: #FFE5E5; padding: 8px; margin-bottom: 12px; border-left: 4px solid #DC3545; border-radius: 4px;">
-                            <strong style="color: #DC3545; font-size: 14px;">🏢 PRÉDIO/CONDOMÍNIO</strong>
+                          <div style="background-color: ${getOccupancySoftBg(predioOccFallback.windowColor)}; padding: 8px; margin-bottom: 12px; border-left: 4px solid ${predioOccFallback.windowColor}; border-radius: 4px;">
+                            <strong style="color: #333; font-size: 14px;">🏢 PRÉDIO/CONDOMÍNIO</strong>
                           </div>
                           <strong>Nome:</strong> ${String(nomePredio)}<br>
                           <strong>Status:</strong> ${String(statusCto)}<br>
