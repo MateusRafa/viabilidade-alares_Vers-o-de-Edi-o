@@ -121,13 +121,9 @@
   function onTabulacaoSugeridaFromMap(payload = {}) {
     const tab = String(payload?.tabulacaoFinal || '').trim();
     if (!tab) return;
-    if (form.tabulacaoFinal === tab && sugeridaOriginal === tab) return;
     form.tabulacaoFinal = tab;
     sugeridaOriginal = tab;
     form = form;
-    if (statusMsg && /tabula/i.test(statusMsg)) {
-      statusMsg = `Tabulação automática: ${tab}`;
-    }
   }
 
   function applyTabulacaoFromMapNow() {
