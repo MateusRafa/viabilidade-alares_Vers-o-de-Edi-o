@@ -848,9 +848,12 @@
     await new Promise((r) => setTimeout(r, 120));
 
     try {
-      // Endereço Completo / CEP = encontrados no pin do mapa (igual Viabilidade oficial)
+      // Endereço Completo / CEP / nº = encontrados no pin do mapa (igual box do mapa)
       if (typeof viabilidadeRef.syncWorkbenchAddressFromMap === 'function') {
-        applyMapAddressToForm(await viabilidadeRef.syncWorkbenchAddressFromMap());
+        const pinAddr = await viabilidadeRef.syncWorkbenchAddressFromMap();
+        if (pinAddr) {
+          applyMapAddressToForm(pinAddr);
+        }
       }
       ensureProjetistaFromLogin();
       applyTabulacaoFromMapNow();
@@ -892,6 +895,7 @@
       pinCoords = { lat, lng };
       form.coordenadas = formatCoords(lat, lng);
     }
+    // Sempre aplica endereço do pin (mesmo se coords iguais) — corrige Agenda ≠ pin
     applyMapAddressToForm(address);
     scheduleReanaliseTabulacao();
   }
@@ -1146,6 +1150,12 @@
     statusMsg = 'Gerando PDF…';
 
     try {
+      // Garante que o PDF use o endereço do pin (não o da Agenda)
+      if (typeof viabilidadeRef.syncWorkbenchAddressFromMap === 'function') {
+        const pinAddr = await viabilidadeRef.syncWorkbenchAddressFromMap();
+        if (pinAddr) applyMapAddressToForm(pinAddr);
+      }
+
       // Reusa a prévia já capturada ao abrir o modal — só captura de novo se faltar
       if (!mapPreviewImage && typeof viabilidadeRef.refreshWorkbenchMapPreview === 'function') {
         capturingMapPreview = true;
