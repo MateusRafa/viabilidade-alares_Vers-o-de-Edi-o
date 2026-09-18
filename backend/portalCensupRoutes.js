@@ -376,7 +376,8 @@ export function registerPortalCensupRoutes(app) {
       const result = await salvarRelatorioWorkbench(req.params.id, {
         usuario,
         report: req.body || {},
-        persist
+        persist,
+        seed: req.body?.seed || null
       });
       res.json({ success: true, ...result });
     } catch (err) {
