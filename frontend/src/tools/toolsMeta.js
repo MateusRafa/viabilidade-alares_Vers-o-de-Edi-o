@@ -105,7 +105,7 @@ export const portalToolsMeta = [
     id: 'portal-censup',
     title: 'Portal CENSUP',
     description:
-      'Fila de chamados da Agenda com tabulação automática via Viabilidade e revisão com IA',
+      'Arquivo de relatórios finalizados da extensão — prévia e impressão dos ALAs salvos',
     icon: '📥',
     color: '#6366F1',
     available: true
