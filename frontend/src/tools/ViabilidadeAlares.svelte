@@ -4528,21 +4528,34 @@
     // Limpar CTOs anteriores ANTES de buscar novas
     clearCTOs();
 
-    // Pequeno delay para garantir que a limpeza visual foi feita
-    await new Promise(resolve => setTimeout(resolve, 50));
-
     try {
+      const lat = clientCoords.lat;
+      const lng = clientCoords.lng;
+      const headers = clusterFetchHeaders();
+
       // ============================================
-      // ETAPA 1: Buscar PRÉDIOS MDU próximos (250m)
+      // ETAPA 1+2 em paralelo: PRÉDIOS MDU + CTOs (250m)
+      // DROP da casinha já terminou antes de searchCTOs — animação intacta.
       // ============================================
-      console.log(`🏢 [Frontend] ETAPA 1: Buscando PRÉDIOS próximos de (${clientCoords.lat}, ${clientCoords.lng}) dentro de 250m...`);
-      
-      const prediosResponse = await fetch(getApiUrl(`/api/condominios/nearby?lat=${clientCoords.lat}&lng=${clientCoords.lng}&radius=250`), {
-        headers: clusterFetchHeaders()
-      });
-      
+      console.log(
+        `🏢 [Frontend] Buscando PRÉDIOS + CTOs em paralelo perto de (${lat}, ${lng}) dentro de 250m...`
+      );
+
+      const prediosFetch = fetch(
+        getApiUrl(`/api/condominios/nearby?lat=${lat}&lng=${lng}&radius=250`),
+        { headers }
+      );
+      // Fora da cobertura: não gasta o nearby 250m (vai direto à busca progressiva)
+      const ctosFetch =
+        isClientCovered === false
+          ? Promise.resolve(null)
+          : fetch(getApiUrl(`/api/ctos/nearby?lat=${lat}&lng=${lng}&radius=250`), { headers });
+
+      // Processa MDU assim que chegar (CTOs seguem em paralelo)
+      const prediosResponse = await prediosFetch;
+
       let predios = [];
-      if (prediosResponse.ok) {
+      if (prediosResponse?.ok) {
         const prediosData = await prediosResponse.json();
         if (prediosData.success && prediosData.condominios) {
           predios = prediosData.condominios
@@ -4580,7 +4593,7 @@
           // Adicionar prédios imediatamente ao array (sem calcular rotas)
           if (predios.length > 0) {
             ctos = [...predios].map(normalizeCtoPortCounts);
-            // Desenhar prédios IMEDIATAMENTE (sem esperar CTOs)
+            // Desenhar prédios IMEDIATAMENTE (sem esperar processamento das CTOs)
             await drawRoutesAndMarkers();
           }
         }
@@ -4602,14 +4615,14 @@
         // Continuar para ETAPA 5 (busca progressiva) abaixo
       } else {
         // ============================================
-        // ETAPA 2: Buscar CTOs dentro de 250m (apenas se DENTRO da área de cobertura)
+        // ETAPA 2: processar CTOs (fetch já disparado em paralelo com MDU)
         // ============================================
-        console.log(`🔍 [Frontend] ETAPA 2: Buscando CTOs próximas de (${clientCoords.lat}, ${clientCoords.lng})...`);
+        console.log(`🔍 [Frontend] ETAPA 2: Processando CTOs próximas de (${lat}, ${lng})...`);
         
-        const response = await fetch(getApiUrl(`/api/ctos/nearby?lat=${clientCoords.lat}&lng=${clientCoords.lng}&radius=250`), {
-          headers: clusterFetchHeaders()
-        });
-        
+        const response = await ctosFetch;
+        if (!response) {
+          throw new Error('Resposta vazia da API de CTOs');
+        }
         if (!response.ok) {
           const errorData = await response.json().catch(() => ({}));
           throw new Error(errorData.error || `Erro HTTP ${response.status}`);
