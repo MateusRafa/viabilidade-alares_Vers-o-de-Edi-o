@@ -90,18 +90,66 @@ async function trySupabase(action, fn) {
   }
 }
 
+function parseSituacaoDate(value) {
+  if (!value) return null;
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value;
+  }
+  const raw = String(value).trim();
+  if (!raw) return null;
+
+  const br = raw.match(
+    /(\d{2})\/(\d{2})\/(\d{4})(?:,?\s*(\d{2}):(\d{2})(?::(\d{2}))?)?/
+  );
+  if (br) {
+    const [, dd, mm, yyyy, hh = '00', mi = '00', ss = '00'] = br;
+    const d = new Date(`${yyyy}-${mm}-${dd}T${hh}:${mi}:${ss}`);
+    if (!Number.isNaN(d.getTime())) return d;
+  }
+
+  const d = new Date(raw);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
 function formatDataSituacao(iso) {
-  if (!iso) return '—';
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return String(iso);
-  return d.toLocaleString('pt-BR', {
+  const d = parseSituacaoDate(iso);
+  if (!d) return iso ? String(iso) : '—';
+  return d.toLocaleDateString('pt-BR', {
     day: '2-digit',
     month: '2-digit',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit'
+    year: 'numeric'
   });
+}
+
+function formatHoraCurta(iso) {
+  const d = parseSituacaoDate(iso);
+  if (!d) return '—';
+  return d.toLocaleTimeString('pt-BR', {
+    hour: '2-digit',
+    minute: '2-digit'
+  });
+}
+
+function resolveHoraFechamentoIso(item) {
+  return (
+    item?.relatorioSalvoAt ||
+    item?.relatorio?.savedAt ||
+    item?.geradoEm ||
+    (item?.filaStatus === 'finalizada' || item?.relatorioSalvo === true
+      ? item?.updatedAt
+      : null) ||
+    null
+  );
+}
+
+function withPortalListLabels(item) {
+  return {
+    ...item,
+    dataSituacaoLabel: formatDataSituacao(item.dataSituacao),
+    horaAberturaLabel: formatHoraCurta(item.dataSituacao),
+    horaFechamentoLabel: formatHoraCurta(resolveHoraFechamentoIso(item)),
+    situacaoLabel: formatSituacaoLabel(item)
+  };
 }
 
 function extractAnalistaFromSituacao(situacao) {
@@ -673,11 +721,7 @@ function paginateStore(store, { q = '', page = 1, limit = 10, filaStatus = 'na_f
   const safeLimit = Math.min(Math.max(parseInt(limit, 10) || 10, 1), 100);
   const safePage = Math.max(parseInt(page, 10) || 1, 1);
   const start = (safePage - 1) * safeLimit;
-  const items = filtered.slice(start, start + safeLimit).map((item) => ({
-    ...item,
-    dataSituacaoLabel: formatDataSituacao(item.dataSituacao),
-    situacaoLabel: formatSituacaoLabel(item)
-  }));
+  const items = filtered.slice(start, start + safeLimit).map((item) => withPortalListLabels(item));
 
   return {
     chamados: items,
@@ -703,11 +747,7 @@ function withListLabels(chamados) {
       delete rel.pdfHtml;
       light.relatorio = rel;
     }
-    return {
-      ...light,
-      dataSituacaoLabel: formatDataSituacao(light.dataSituacao),
-      situacaoLabel: formatSituacaoLabel(light)
-    };
+    return withPortalListLabels(light);
   });
 }
 
@@ -798,9 +838,7 @@ export async function getChamadoById(id, { usuario } = {}) {
       : null;
 
   return {
-    ...chamado,
-    dataSituacaoLabel: formatDataSituacao(chamado.dataSituacao),
-    situacaoLabel: formatSituacaoLabel(chamado),
+    ...withPortalListLabels(chamado),
     pdfHtml: savedPdfHtml || buildChamadoPdfHtml(chamado)
   };
 }
@@ -1377,6 +1415,9 @@ export async function salvarRelatorioWorkbench(id, { usuario, report = {}, persi
   const resultadoFinal =
     resolveResultadoFinal({ tabulacaoFinal }) || 'reprovado';
 
+  const geradoEmDate = parseSituacaoDate(report.geradoEm || report.geradoEmAt || null);
+  const fechamentoIso = geradoEmDate ? geradoEmDate.toISOString() : new Date().toISOString();
+
   const next = {
     ...chamado,
     pedido: numeroALA || chamado.pedido,
@@ -1399,6 +1440,8 @@ export async function salvarRelatorioWorkbench(id, { usuario, report = {}, persi
       projetista: projetista || chamado.viabilidadeResumo?.projetista || null
     },
     ...(mapPreviewImage ? { mapPreviewImage } : {}),
+    geradoEm: fechamentoIso,
+    relatorioSalvoAt: fechamentoIso,
     relatorio: {
       numeroALA: numeroALA || null,
       cidade,
@@ -1408,11 +1451,11 @@ export async function salvarRelatorioWorkbench(id, { usuario, report = {}, persi
       tabulacaoFinal,
       projetista,
       resultadoFinal,
-      savedAt: new Date().toISOString(),
+      savedAt: fechamentoIso,
       savedBy: usuario || null,
       ...(mapPreviewImage ? { mapPreviewImage } : {})
     },
-    updatedAt: new Date().toISOString()
+    updatedAt: fechamentoIso
   };
 
   // Preferir HTML do print do Workbench; senão montar template com a prévia do mapa
@@ -1429,7 +1472,7 @@ export async function salvarRelatorioWorkbench(id, { usuario, report = {}, persi
     next.tabulacaoStatus = corrected ? 'corrigida' : 'aprovada';
     next.filaStatus = 'finalizada';
     next.relatorioSalvo = true;
-    next.relatorioSalvoAt = next.updatedAt;
+    next.relatorioSalvoAt = fechamentoIso;
 
     await upsertChamado(next);
 
