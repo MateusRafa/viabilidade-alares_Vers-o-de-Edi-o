@@ -35,6 +35,8 @@
 
   let usuario = '';
   let chamadoId = '';
+  /** Seed da Agenda (extensão) — usado para criar no Portal só ao finalizar. */
+  let workbenchSeed = null;
   let chamado = null;
   let loading = true;
   let error = '';
@@ -901,7 +903,12 @@
   }
 
   function scheduleReanaliseTabulacao() {
-    if (!chamadoId || !usuario || !pinCoords) return;
+    if (!usuario || !pinCoords) return;
+    if (!chamadoId) {
+      // Sem Portal ainda: tabulação só pelo mapa local
+      applyTabulacaoFromMapNow();
+      return;
+    }
     if (reanaliseTimer) clearTimeout(reanaliseTimer);
     reanaliseTimer = setTimeout(() => {
       void reanalisarTabulacaoAposCasinha();
@@ -1036,6 +1043,7 @@
   async function applyInitPayload(payload = {}) {
     usuario = String(payload.usuario || '').trim();
     chamadoId = String(payload.chamadoId || payload.id || '').trim();
+    workbenchSeed = payload.seed && typeof payload.seed === 'object' ? payload.seed : workbenchSeed;
     ensureProjetistaFromLogin();
 
     let positionedFromSeed = false;
@@ -1064,6 +1072,7 @@
         positionedFromSeed = true;
         statusMsg = 'Endereço posicionado no mapa';
         requestMapResize(30);
+        setTimeout(() => applyTabulacaoFromMapNow(), 1200);
       } else if ((form.enderecoCompleto || '').trim()) {
         // Sem coords: pesquisa já, sem esperar a API do chamado
         statusMsg = 'Localizando endereço no mapa…';
@@ -1087,13 +1096,17 @@
       return;
     }
 
+    // Sem ID no Portal: trabalha com seed até Salvar / Gerar PDF
     loading = false;
-    if (!positionedFromSeed) {
+    error = '';
+    if (positionedFromSeed || (form.numeroALA && form.enderecoCompleto)) {
+      statusMsg = 'Pronto para revisar — salve ou gere o PDF para gravar no Portal';
+      postToParent('READY', { chamadoId: '', pedido: form.numeroALA });
+    } else {
       chamado = null;
       equipamentos = [];
       mapPreviewImage = '';
       capturingMapPreview = false;
-      error = '';
       statusMsg = 'Mapa pronto — sincronize um chamado para preencher o formulário';
     }
     ensureProjetistaFromLogin();
@@ -1184,12 +1197,12 @@
       showInfoModal = false;
       if (chamadoId) {
         postToParent('REPORT_GENERATED', { chamadoId, viAla: result?.viAla || null });
-        // Por trás: finaliza e salva o mesmo print no Portal
-        void salvarRelatorio({
-          silent: true,
-          pdfHtml: result?.htmlContent || null
-        });
       }
+      // Por trás: cria/finaliza no Portal (mesmo sem chamadoId prévio)
+      void salvarRelatorio({
+        silent: true,
+        pdfHtml: result?.htmlContent || null
+      });
     } catch (err) {
       error = err?.message || String(err);
       statusMsg = mapPreviewImage ? 'Prévia ok — corrija os campos e tente de novo' : '';
@@ -1208,8 +1221,11 @@
   }
 
   async function salvarRelatorio({ silent = false, pdfHtml = null } = {}) {
-    if (!chamadoId) {
-      if (!silent) error = 'Chamado não carregado.';
+    const pedidoKey = String(form.numeroALA || workbenchSeed?.pedido || chamadoId || '')
+      .replace(/\D/g, '')
+      .trim();
+    if (!pedidoKey && !chamadoId) {
+      if (!silent) error = 'Informe o número do ALA / pedido.';
       return;
     }
     if (!silent) {
@@ -1228,14 +1244,16 @@
         }
       }
 
+      const targetId = chamadoId || pedidoKey;
       const response = await fetch(
-        getApiUrl(`/api/portal-censup/chamados/${encodeURIComponent(chamadoId)}/relatorio`),
+        getApiUrl(`/api/portal-censup/chamados/${encodeURIComponent(targetId)}/relatorio`),
         {
           method: 'POST',
           headers: authHeaders(),
           body: JSON.stringify({
             ...buildReportPayload(),
             persist: true,
+            seed: workbenchSeed || undefined,
             ...(pdfHtml ? { pdfHtml } : {})
           })
         }
@@ -1245,12 +1263,15 @@
         throw new Error(data.error || `Falha ao salvar relatório (${response.status})`);
       }
       chamado = data.chamado || chamado;
+      if (chamado?.id) {
+        chamadoId = String(chamado.id);
+      }
       if (!silent) {
         statusMsg = 'Relatório salvo no arquivo do Portal';
       }
       postToParent('REPORT_SAVED', {
-        chamadoId,
-        pedido: chamado?.pedido,
+        chamadoId: chamadoId || chamado?.id || targetId,
+        pedido: chamado?.pedido || pedidoKey,
         corrected: data.corrected === true,
         silent: silent === true
       });
@@ -1273,6 +1294,7 @@
   function resetWorkbenchUi() {
     chamado = null;
     chamadoId = '';
+    workbenchSeed = null;
     equipamentos = [];
     clearEquipSelection();
     foraLimiteInfo = null;
@@ -1752,7 +1774,7 @@
 
           <div class="wb-modal-actions">
             <button type="button" class="wb-modal-btn-cancel" on:click={closeInfoModal}>Cancelar</button>
-            <button type="submit" class="wb-modal-btn-save" disabled={saving || loading || !chamadoId}>
+            <button type="submit" class="wb-modal-btn-save" disabled={saving || loading || !(form.numeroALA || '').trim()}>
               {saving ? 'Salvando…' : 'Salvar Relatório'}
             </button>
             <button
