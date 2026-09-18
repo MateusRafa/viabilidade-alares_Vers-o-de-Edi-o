@@ -3,7 +3,7 @@ import path from 'path';
 import crypto from 'crypto';
 import { analisarLocalizacaoChamado } from './analiseLocalizacao.js';
 import { isPortalCensupSupabaseAvailable } from './supabaseCensup.js';
-import { dbFindChamado, dbListAllChamados, dbListChamadosNaFila, dbReconcileChamadosComAgenda, dbUpsertChamado } from './chamadosDb.js';
+import { dbFindChamado, dbListAllChamados, dbListChamadosNaFila, dbReconcileChamadosComAgenda, dbRestoreChamadosSalvosArquivados, dbUpsertChamado } from './chamadosDb.js';
 import { peekAtribuicaoPedido } from './filaEsteira.js';
 
 const FAKE_SEED_ID = '5303036a-6e14-4ca1-b5a7-46207c301735';
@@ -124,7 +124,30 @@ function isPendenteNaAgenda(situacao) {
   return isDateLikeSituacao(raw);
 }
 
+export function resolveResultadoFinal(chamado) {
+  const explicit = String(chamado?.resultadoFinal || chamado?.relatorio?.resultadoFinal || '')
+    .trim()
+    .toLowerCase();
+  if (explicit === 'aprovado' || explicit === 'reprovado') return explicit;
+
+  const tab = String(
+    chamado?.tabulacaoFinal || chamado?.relatorio?.tabulacaoFinal || ''
+  ).trim();
+  if (!tab) return null;
+  return /^aprovado\b/i.test(tab) ? 'aprovado' : 'reprovado';
+}
+
 export function formatSituacaoLabel(chamado) {
+  const fila = chamado?.filaStatus || 'na_fila';
+  const salvo = chamado?.relatorioSalvo === true || fila === 'finalizada';
+
+  if (salvo) {
+    const resultado = resolveResultadoFinal(chamado);
+    if (resultado === 'aprovado') return 'Aprovado';
+    if (resultado === 'reprovado') return 'Reprovado';
+    return 'Finalizado';
+  }
+
   const raw = String(chamado?.situacao ?? '').trim();
   const analista = extractAnalistaFromSituacao(raw) || String(chamado?.usuarioAnalise ?? '').trim();
 
@@ -675,6 +698,15 @@ export async function listChamados({ q = '', page = 1, limit = 10, view = 'pende
   const filaStatus = resolvePortalCensupFilaStatus(view);
 
   if (isPortalCensupSupabaseAvailable()) {
+    // Recupera salvos que o reconcile antigo marcou como executada_agenda
+    if (filaStatus === 'finalizada') {
+      try {
+        await dbRestoreChamadosSalvosArquivados();
+      } catch (err) {
+        console.warn('⚠️ [PortalCENSUP] Falha ao restaurar salvos arquivados:', err.message);
+      }
+    }
+
     const fromDb = await dbListChamadosNaFila({ q, page, limit, filaStatus });
     syncJsonFromSupabase().catch((err) => {
       console.warn('⚠️ [PortalCENSUP] Não atualizou o JSON local a partir da table:', err.message);
@@ -690,6 +722,25 @@ export async function listChamados({ q = '', page = 1, limit = 10, view = 'pende
       view: view === 'resolvidos' ? 'resolvidos' : 'pendentes',
       filaStatus
     };
+  }
+
+  // JSON local: restaurar salvos arquivados por engano
+  if (filaStatus === 'finalizada') {
+    const store = await readStore();
+    let restored = 0;
+    for (const item of store.chamados) {
+      const isSalvo =
+        item.relatorioSalvo === true ||
+        !!(item.pdfHtml || item.relatorio);
+      if (item.filaStatus === 'executada_agenda' && isSalvo) {
+        item.filaStatus = 'finalizada';
+        restored += 1;
+      }
+    }
+    if (restored > 0) {
+      await writeStore(store);
+      console.log(`✅ [PortalCENSUP] ${restored} relatório(s) salvo(s) restaurado(s) no JSON local.`);
+    }
   }
 
   return paginateStore(await readStore(), { q, page, limit, filaStatus }, {
@@ -712,7 +763,11 @@ export async function getChamadoById(id, { usuario } = {}) {
   }
 
   if (usuario) {
-    chamado = (await claimChamadoForAnalise(id, usuario)) || chamado;
+    const jaFinalizado =
+      chamado.filaStatus === 'finalizada' || chamado.relatorioSalvo === true;
+    if (!jaFinalizado) {
+      chamado = (await claimChamadoForAnalise(id, usuario)) || chamado;
+    }
   }
 
   // Relatório finalizado: preservar o HTML/print salvo (não regenerar e perder o print do Workbench)
@@ -787,8 +842,8 @@ export async function upsertChamadoFromAgenda(payload) {
 }
 
 /**
- * Chamados que sumiram da Agenda (aprovados/reprovados lá) saem das views do Portal.
- * Não vão para Resolvidos — apenas fila_status = executada_agenda (oculto).
+ * Chamados que sumiram da Agenda saem da fila pendente (na_fila → executada_agenda).
+ * Relatórios finalizados/salvos NUNCA são arquivados — ficam no Portal para sempre.
  */
 export async function reconcileChamadosComAgenda(activePedidos = [], situacoes = []) {
   const activeSet = new Set(
@@ -822,9 +877,13 @@ export async function reconcileChamadosComAgenda(activePedidos = [], situacoes =
   for (const item of store.chamados) {
     const status = item.filaStatus || 'na_fila';
     const pedido = String(item.pedido || '').trim();
+    const isSalvo =
+      item.relatorioSalvo === true ||
+      status === 'finalizada' ||
+      !!(item.pdfHtml || item.relatorio);
 
-    // Atualizar situação se mudou
-    if (pedido && situacaoMap.has(pedido)) {
+    // Atualizar situação da Agenda só em pendentes (não sobrescrever arquivo salvo)
+    if (!isSalvo && pedido && situacaoMap.has(pedido)) {
       const novaSituacao = situacaoMap.get(pedido);
       if (novaSituacao && novaSituacao !== item.situacao) {
         item.situacao = novaSituacao;
@@ -832,7 +891,8 @@ export async function reconcileChamadosComAgenda(activePedidos = [], situacoes =
       }
     }
 
-    if (status !== 'na_fila' && status !== 'finalizada') continue;
+    // Só arquiva pendentes da fila — nunca finalizados/salvos
+    if (status !== 'na_fila' || isSalvo) continue;
     if (!pedido || activeSet.has(pedido)) continue;
     item.filaStatus = 'executada_agenda';
     item.executadaAgendaAt = new Date().toISOString();
@@ -1212,6 +1272,8 @@ export async function salvarRelatorioWorkbench(id, { usuario, report = {}, persi
     report.mapPreviewImage || report.previewImage || chamado.mapPreviewImage || ''
   ).trim();
   const clientPdfHtml = String(report.pdfHtml || '').trim();
+  const resultadoFinal =
+    resolveResultadoFinal({ tabulacaoFinal }) || 'reprovado';
 
   const next = {
     ...chamado,
@@ -1225,6 +1287,7 @@ export async function salvarRelatorioWorkbench(id, { usuario, report = {}, persi
       cidade: cidade || chamado.endereco?.cidade || null
     },
     tabulacaoFinal,
+    resultadoFinal,
     viabilidadeResumo: {
       ...(chamado.viabilidadeResumo || {}),
       projetista: projetista || chamado.viabilidadeResumo?.projetista || null
@@ -1238,6 +1301,7 @@ export async function salvarRelatorioWorkbench(id, { usuario, report = {}, persi
       cep,
       tabulacaoFinal,
       projetista,
+      resultadoFinal,
       savedAt: new Date().toISOString(),
       savedBy: usuario || null,
       ...(mapPreviewImage ? { mapPreviewImage } : {})
