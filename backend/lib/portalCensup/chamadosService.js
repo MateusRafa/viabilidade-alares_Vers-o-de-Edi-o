@@ -683,11 +683,24 @@ function paginateStore(store, { q = '', page = 1, limit = 10, filaStatus = 'na_f
 }
 
 function withListLabels(chamados) {
-  return (chamados || []).map((item) => ({
-    ...item,
-    dataSituacaoLabel: formatDataSituacao(item.dataSituacao),
-    situacaoLabel: formatSituacaoLabel(item)
-  }));
+  return (chamados || []).map((item) => {
+    const light = { ...item };
+    delete light.pdfHtml;
+    delete light.mapPreviewImage;
+    delete light.previewImage;
+    if (light.relatorio && typeof light.relatorio === 'object') {
+      const rel = { ...light.relatorio };
+      delete rel.mapPreviewImage;
+      delete rel.previewImage;
+      delete rel.pdfHtml;
+      light.relatorio = rel;
+    }
+    return {
+      ...light,
+      dataSituacaoLabel: formatDataSituacao(light.dataSituacao),
+      situacaoLabel: formatSituacaoLabel(light)
+    };
+  });
 }
 
 export function resolvePortalCensupFilaStatus(view = 'pendentes') {
