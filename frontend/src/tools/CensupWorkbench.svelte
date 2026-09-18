@@ -1119,9 +1119,16 @@
       // Não chama clearWorkbenchMap aqui — localizar/search substitui o pin e evita corrida
       pinCoords = null;
 
-      const enderecoTxt = String(
+      const enderecoTxtRaw = String(
         seed.enderecoCompleto || seed.endereco?.completo || seed.endereco?.logradouro || ''
       ).trim();
+      // Agenda mostra "????" até LOCALIZAR — não geocodifica placeholder
+      const enderecoTxt =
+        !enderecoTxtRaw ||
+        /\?{2,}/.test(enderecoTxtRaw) ||
+        /endere[cç]o\s*\?+/i.test(enderecoTxtRaw)
+          ? ''
+          : enderecoTxtRaw;
       const cidadeTxt = String(seed.cidade || seed.endereco?.cidade || '').trim();
       // Monta query de geocode completa (rua + cidade) quando possível
       let enderecoBusca = enderecoTxt;
