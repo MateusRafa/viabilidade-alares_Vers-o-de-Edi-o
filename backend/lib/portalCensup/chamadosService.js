@@ -90,6 +90,8 @@ async function trySupabase(action, fn) {
   }
 }
 
+const TZ_BR = 'America/Sao_Paulo';
+
 function parseSituacaoDate(value) {
   if (!value) return null;
   if (value instanceof Date) {
@@ -98,12 +100,13 @@ function parseSituacaoDate(value) {
   const raw = String(value).trim();
   if (!raw) return null;
 
+  // Agenda: relógio de Brasília (sem DST desde 2019)
   const br = raw.match(
     /(\d{2})\/(\d{2})\/(\d{4})(?:,?\s*(\d{2}):(\d{2})(?::(\d{2}))?)?/
   );
   if (br) {
     const [, dd, mm, yyyy, hh = '00', mi = '00', ss = '00'] = br;
-    const d = new Date(`${yyyy}-${mm}-${dd}T${hh}:${mi}:${ss}`);
+    const d = new Date(`${yyyy}-${mm}-${dd}T${hh}:${mi}:${ss}-03:00`);
     if (!Number.isNaN(d.getTime())) return d;
   }
 
@@ -111,23 +114,48 @@ function parseSituacaoDate(value) {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
-function formatDataSituacao(iso) {
-  const d = parseSituacaoDate(iso);
-  if (!d) return iso ? String(iso) : '—';
+/** Divide "18/09/2026, 14:18:45" da Agenda sem converter fuso. */
+function splitAgendaDataHora(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  const m = raw.match(/(\d{2}\/\d{2}\/\d{4})(?:,?\s*(\d{2}:\d{2}(?::\d{2})?))?/);
+  if (!m) return null;
+  let hora = m[2] || '';
+  if (hora && /^\d{2}:\d{2}$/.test(hora)) hora = `${hora}:00`;
+  return { data: m[1], hora: hora || null };
+}
+
+function formatDataSituacao(value) {
+  const split = splitAgendaDataHora(value);
+  if (split?.data) return split.data;
+
+  const d = parseSituacaoDate(value);
+  if (!d) return value ? String(value) : '—';
   return d.toLocaleDateString('pt-BR', {
     day: '2-digit',
     month: '2-digit',
-    year: 'numeric'
+    year: 'numeric',
+    timeZone: TZ_BR
   });
 }
 
-function formatHoraCurta(iso) {
-  const d = parseSituacaoDate(iso);
+/** Hora com segundos — Agenda / SALVO EM. */
+function formatHoraCompleta(value) {
+  const split = splitAgendaDataHora(value);
+  if (split?.hora) return split.hora;
+
+  const d = parseSituacaoDate(value);
   if (!d) return '—';
   return d.toLocaleTimeString('pt-BR', {
     hour: '2-digit',
-    minute: '2-digit'
+    minute: '2-digit',
+    second: '2-digit',
+    timeZone: TZ_BR
   });
+}
+
+function resolveDataSituacaoSource(item) {
+  return item?.dataSituacaoRaw || item?.dataSituacao || null;
 }
 
 function resolveHoraFechamentoIso(item) {
@@ -143,11 +171,12 @@ function resolveHoraFechamentoIso(item) {
 }
 
 function withPortalListLabels(item) {
+  const chegada = resolveDataSituacaoSource(item);
   return {
     ...item,
-    dataSituacaoLabel: formatDataSituacao(item.dataSituacao),
-    horaAberturaLabel: formatHoraCurta(item.dataSituacao),
-    horaFechamentoLabel: formatHoraCurta(resolveHoraFechamentoIso(item)),
+    dataSituacaoLabel: formatDataSituacao(chegada),
+    horaAberturaLabel: formatHoraCompleta(chegada),
+    horaFechamentoLabel: formatHoraCompleta(resolveHoraFechamentoIso(item)),
     situacaoLabel: formatSituacaoLabel(item)
   };
 }
@@ -1336,7 +1365,12 @@ export async function salvarRelatorioWorkbench(id, { usuario, report = {}, persi
       pdv: cleanText(seed?.pdv) || null,
       motivo: cleanText(seed?.motivo) || null,
       situacao: cleanText(seed?.situacao) || null,
-      dataSituacao: seed?.dataSituacao || seed?.dataSituacaoRaw || null,
+      dataSituacao:
+        parseSituacaoDate(seed?.dataSituacao || seed?.dataSituacaoRaw)?.toISOString() ||
+        seed?.dataSituacao ||
+        seed?.dataSituacaoRaw ||
+        null,
+      dataSituacaoRaw: cleanText(seed?.dataSituacaoRaw || seed?.dataSituacao) || null,
       endereco: {
         ...seedEnd,
         completo:
@@ -1377,7 +1411,16 @@ export async function salvarRelatorioWorkbench(id, { usuario, report = {}, persi
       pdv: cleanText(chamado.pdv) || cleanText(seed.pdv) || null,
       motivo: cleanText(chamado.motivo) || cleanText(seed.motivo) || null,
       situacao: cleanText(chamado.situacao) || cleanText(seed.situacao) || null,
-      dataSituacao: chamado.dataSituacao || seed.dataSituacao || seed.dataSituacaoRaw || null,
+      dataSituacao:
+        chamado.dataSituacao ||
+        parseSituacaoDate(seed.dataSituacao || seed.dataSituacaoRaw)?.toISOString() ||
+        seed.dataSituacao ||
+        seed.dataSituacaoRaw ||
+        null,
+      dataSituacaoRaw:
+        cleanText(chamado.dataSituacaoRaw) ||
+        cleanText(seed.dataSituacaoRaw || seed.dataSituacao) ||
+        null,
       cidade:
         cleanText(chamado.cidade) ||
         cleanText(seed.cidade) ||
