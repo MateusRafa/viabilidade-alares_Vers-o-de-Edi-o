@@ -7981,13 +7981,18 @@
         );
       }
 
-      await exportToPDF();
+      const exportResult = await exportToPDF();
 
       if (showPopupInstructions) {
         throw new Error('Pop-up bloqueado. Permita pop-ups para este site e tente de novo.');
       }
 
-      return { success: true, preview: mapPreviewImage, viAla: currentVIALA || null };
+      return {
+        success: true,
+        preview: mapPreviewImage,
+        viAla: currentVIALA || exportResult?.viAla || null,
+        htmlContent: exportResult?.htmlContent || null
+      };
     } finally {
       capturingMap = false;
     }
@@ -8990,7 +8995,7 @@
         generatingPDF = false;
         showPopupInstructions = true; // Mostrar instruções sobreposta ao modal
         error = null; // Limpar erro anterior para mostrar instruções
-        return;
+        return { htmlContent, viAla: currentVIALA, printed: false };
       }
       
       console.log('Janela de impressão aberta com sucesso');
@@ -9166,6 +9171,8 @@
         }
       }, 8000);
 
+      return { htmlContent, viAla: currentVIALA, printed: true };
+
     } catch (err) {
       console.error('Erro na geração de PDF:', err);
       generatingPDF = false;
@@ -9178,6 +9185,7 @@
       } else {
         error = 'Erro ao registrar VI ALA / exportar PDF: ' + err.message;
       }
+      return null;
     }
   }
 
