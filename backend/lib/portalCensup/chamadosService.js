@@ -258,6 +258,18 @@ export function buildChamadoPdfHtml(chamado) {
   }
 
   const mapUrl = buildStaticMapUrl(lat, lng);
+  const mapPreviewRaw =
+    chamado.mapPreviewImage ||
+    chamado.relatorio?.mapPreviewImage ||
+    chamado.previewImage ||
+    '';
+  // data:image base64 do Workbench — usar sem escape que quebre o data URL
+  const mapPreviewSrc =
+    typeof mapPreviewRaw === 'string' && mapPreviewRaw.startsWith('data:image')
+      ? mapPreviewRaw
+      : mapPreviewRaw
+        ? escapeHtml(mapPreviewRaw)
+        : '';
   const coordsTxt =
     lat != null && lng != null && !Number.isNaN(lat) && !Number.isNaN(lng)
       ? `${lat.toFixed(6)}, ${lng.toFixed(6)}`
@@ -297,13 +309,14 @@ export function buildChamadoPdfHtml(chamado) {
             </td>
           </tr>`;
 
-  const mapSection = mapUrl
+  const mapImgSrc = mapPreviewSrc || (mapUrl ? escapeHtml(mapUrl) : '');
+  const mapSection = mapImgSrc
     ? `
               <div class="map-section">
                 <h2>Visualização do Mapa</h2>
                 <div class="map-wrapper">
                   <div class="map-image-container">
-                    <img src="${escapeHtml(mapUrl)}" alt="Mapa com localização do cliente" class="map-image" />
+                    <img src="${mapImgSrc}" alt="Mapa com localização do cliente" class="map-image" />
                   </div>
                 </div>
               </div>`
@@ -311,7 +324,7 @@ export function buildChamadoPdfHtml(chamado) {
               <div class="map-section">
                 <h2>Visualização do Mapa</h2>
                 <div class="map-placeholder">
-                  Mapa indisponível — execute <strong>Analisar localização</strong> para obter coordenadas.
+                  Mapa indisponível — o relatório ainda não tem prévia capturada.
                 </div>
               </div>`;
 
@@ -702,11 +715,17 @@ export async function getChamadoById(id, { usuario } = {}) {
     chamado = (await claimChamadoForAnalise(id, usuario)) || chamado;
   }
 
+  // Relatório finalizado: preservar o HTML/print salvo (não regenerar e perder o print do Workbench)
+  const savedPdfHtml =
+    chamado.relatorioSalvo && typeof chamado.pdfHtml === 'string' && chamado.pdfHtml.trim()
+      ? chamado.pdfHtml
+      : null;
+
   return {
     ...chamado,
     dataSituacaoLabel: formatDataSituacao(chamado.dataSituacao),
     situacaoLabel: formatSituacaoLabel(chamado),
-    pdfHtml: buildChamadoPdfHtml(chamado)
+    pdfHtml: savedPdfHtml || buildChamadoPdfHtml(chamado)
   };
 }
 
@@ -1189,6 +1208,11 @@ export async function salvarRelatorioWorkbench(id, { usuario, report = {}, persi
     throw err;
   }
 
+  const mapPreviewImage = String(
+    report.mapPreviewImage || report.previewImage || chamado.mapPreviewImage || ''
+  ).trim();
+  const clientPdfHtml = String(report.pdfHtml || '').trim();
+
   const next = {
     ...chamado,
     pedido: numeroALA || chamado.pedido,
@@ -1205,6 +1229,7 @@ export async function salvarRelatorioWorkbench(id, { usuario, report = {}, persi
       ...(chamado.viabilidadeResumo || {}),
       projetista: projetista || chamado.viabilidadeResumo?.projetista || null
     },
+    ...(mapPreviewImage ? { mapPreviewImage } : {}),
     relatorio: {
       numeroALA: numeroALA || null,
       cidade,
@@ -1214,12 +1239,14 @@ export async function salvarRelatorioWorkbench(id, { usuario, report = {}, persi
       tabulacaoFinal,
       projetista,
       savedAt: new Date().toISOString(),
-      savedBy: usuario || null
+      savedBy: usuario || null,
+      ...(mapPreviewImage ? { mapPreviewImage } : {})
     },
     updatedAt: new Date().toISOString()
   };
 
-  const pdfHtml = buildChamadoPdfHtml(next);
+  // Preferir HTML do print do Workbench; senão montar template com a prévia do mapa
+  const pdfHtml = clientPdfHtml || buildChamadoPdfHtml(next);
   next.pdfHtml = pdfHtml;
 
   let corrected = false;
