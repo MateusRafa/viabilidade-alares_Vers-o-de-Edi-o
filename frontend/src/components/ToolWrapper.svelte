@@ -417,16 +417,51 @@
   }
 
   .app-container.theme-dark .main-content {
-    background: #0f1220;
+    background: #0b1220;
+  }
+
+  /* Header dark — mesma paleta da extensão (.censup-theme-dark .censup-panel-header) */
+  .app-container.theme-dark header {
+    background: linear-gradient(135deg, #3b2f8a 0%, #3647a0 55%, #3a5bb8 100%);
+    border-bottom: 2px solid #5b4cdb;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+    color: #ffffff;
+  }
+
+  .app-container.theme-dark .back-button {
+    background: rgba(255, 255, 255, 0.12);
+    border: 1px solid rgba(255, 255, 255, 0.22);
+  }
+
+  .app-container.theme-dark .back-button:hover {
+    background: rgba(255, 255, 255, 0.2);
+  }
+
+  .app-container.theme-dark .header-action-button,
+  .app-container.theme-dark .settings-button {
+    background: rgba(255, 255, 255, 0.12);
+    border: 1px solid rgba(255, 255, 255, 0.22);
+    color: #ffffff;
+  }
+
+  .app-container.theme-dark .header-action-button.active {
+    background: rgba(255, 255, 255, 0.22);
+  }
+
+  .app-container.theme-dark .header-action-button:hover:not(:disabled),
+  .app-container.theme-dark .settings-button:hover {
+    background: rgba(255, 255, 255, 0.2);
   }
 
   .app-container.theme-dark .header-search-input {
-    background: #1a1f33;
-    color: #e5e7eb;
+    background: #1e293b;
+    color: #e2e8f0;
+    border: 1px solid #334155;
+    box-shadow: none;
   }
 
   .app-container.theme-dark .header-search-input::placeholder {
-    color: #6b7280;
+    color: #94a3b8;
   }
 
   @media (max-width: 768px) {
