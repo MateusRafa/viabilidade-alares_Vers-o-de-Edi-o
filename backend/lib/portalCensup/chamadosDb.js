@@ -97,6 +97,35 @@ export function rowToChamado(row) {
   };
 }
 
+/** Remove HTML/print/base64 da listagem — evita 502 por payload gigante. */
+export function stripHeavyChamadoFields(chamado, { keepFlags = true } = {}) {
+  if (!chamado || typeof chamado !== 'object') return chamado;
+  const next = { ...chamado };
+  const hadPdf = typeof next.pdfHtml === 'string' && next.pdfHtml.trim().length > 0;
+  const hadPreview =
+    typeof next.mapPreviewImage === 'string' && next.mapPreviewImage.trim().length > 0;
+
+  delete next.pdfHtml;
+  delete next.mapPreviewImage;
+  delete next.previewImage;
+
+  if (next.relatorio && typeof next.relatorio === 'object') {
+    const rel = { ...next.relatorio };
+    delete rel.mapPreviewImage;
+    delete rel.previewImage;
+    delete rel.pdfHtml;
+    next.relatorio = rel;
+  }
+
+  if (keepFlags) {
+    if (hadPdf || next.relatorioSalvo) next.relatorioSalvo = true;
+    if (hadPdf) next.hasPdfHtml = true;
+    if (hadPreview) next.hasMapPreview = true;
+  }
+
+  return next;
+}
+
 function client() {
   const supabaseCensup = getPortalCensupSupabase();
   if (!supabaseCensup) {
@@ -160,7 +189,7 @@ export async function dbListAllChamados() {
     .select('*')
     .order('created_at', { ascending: false });
   throwIfError(error, 'listar todos os chamados');
-  return (data || []).map(rowToChamado);
+  return (data || []).map((row) => stripHeavyChamadoFields(rowToChamado(row)));
 }
 
 export async function dbListChamadosNaFila({ q = '', page = 1, limit = 10, filaStatus = 'na_fila' } = {}) {
@@ -173,9 +202,35 @@ export async function dbListChamadosNaFila({ q = '', page = 1, limit = 10, filaS
   const query = (q || '').trim();
   const status = filaStatus === 'finalizada' ? 'finalizada' : 'na_fila';
 
+  // Sem extras na listagem: pdfHtml/print em base64 no JSONB derruba a API (502).
   let builder = client()
     .from(TABLE)
-    .select('*', { count: 'exact' })
+    .select(
+      [
+        'id',
+        'agenda_code',
+        'pedido',
+        'uf',
+        'cidade',
+        'sistema',
+        'pdv',
+        'motivo',
+        'situacao',
+        'data_situacao',
+        'endereco',
+        'mapa_coords',
+        'mapa_referencias',
+        'origem',
+        'agenda_url',
+        'fila_status',
+        'tabulacao_status',
+        'tabulacao_final',
+        'pdf_path',
+        'created_at',
+        'updated_at'
+      ].join(', '),
+      { count: 'exact' }
+    )
     .eq('fila_status', status)
     .order('created_at', { ascending: false })
     .range(from, to);
@@ -199,8 +254,17 @@ export async function dbListChamadosNaFila({ q = '', page = 1, limit = 10, filaS
   const { data, error, count } = await builder;
   throwIfError(error, 'listar fila');
 
+  const chamados = (data || []).map((row) => {
+    const item = stripHeavyChamadoFields(rowToChamado({ ...row, extras: {} }));
+    // Lista de finalizados = relatório salvo (extras não vêm neste select)
+    if (item.filaStatus === 'finalizada') {
+      item.relatorioSalvo = true;
+    }
+    return item;
+  });
+
   return {
-    chamados: (data || []).map(rowToChamado),
+    chamados,
     total: count || 0,
     page: safePage,
     limit: safeLimit
@@ -226,7 +290,7 @@ export async function dbReconcileChamadosComAgenda(activePedidos = new Set(), si
   const { data, error } = await client()
     .from(TABLE)
     .select('id, pedido, fila_status, situacao')
-    .in('fila_status', ['na_fila', 'finalizada']);
+    .eq('fila_status', 'na_fila');
   throwIfError(error, 'listar chamados para reconciliação com Agenda');
 
   const toArchive = (data || []).filter((row) => {
@@ -241,6 +305,7 @@ export async function dbReconcileChamadosComAgenda(activePedidos = new Set(), si
     const { error: updateError } = await client()
       .from(TABLE)
       .update({ fila_status: 'executada_agenda', updated_at: now })
+      .eq('fila_status', 'na_fila')
       .in('id', ids);
     throwIfError(updateError, 'arquivar chamados executados na Agenda');
 
@@ -274,6 +339,49 @@ export async function dbReconcileChamadosComAgenda(activePedidos = new Set(), si
   }
 
   return { updated, situacoesAtualizadas };
+}
+
+let lastRestoreAt = 0;
+const RESTORE_COOLDOWN_MS = 5 * 60 * 1000;
+
+export async function dbRestoreChamadosSalvosArquivados() {
+  if (!isPortalCensupSupabaseAvailable()) return { restored: 0 };
+
+  const nowMs = Date.now();
+  if (nowMs - lastRestoreAt < RESTORE_COOLDOWN_MS) {
+    return { restored: 0, skipped: true };
+  }
+  lastRestoreAt = nowMs;
+
+  // Só IDs — nunca baixar extras/pdfHtml (payload enorme → 502)
+  const { data, error } = await client()
+    .from(TABLE)
+    .select('id')
+    .eq('fila_status', 'executada_agenda')
+    .or(
+      [
+        'extras->>relatorioSalvo.eq.true',
+        'extras->pdfHtml.not.is.null',
+        'extras->relatorio.not.is.null'
+      ].join(',')
+    );
+  throwIfError(error, 'listar salvos arquivados por engano');
+
+  const toRestore = data || [];
+  if (!toRestore.length) return { restored: 0 };
+
+  const ids = toRestore.map((row) => row.id);
+  const now = new Date().toISOString();
+  const { error: updateError } = await client()
+    .from(TABLE)
+    .update({ fila_status: 'finalizada', updated_at: now })
+    .in('id', ids);
+  throwIfError(updateError, 'restaurar chamados salvos no Portal');
+
+  console.log(
+    `✅ [PortalCENSUP][Supabase] ${ids.length} relatório(s) salvo(s) restaurado(s) para finalizada.`
+  );
+  return { restored: ids.length };
 }
 
 export async function dbUpsertChamado(chamado) {
