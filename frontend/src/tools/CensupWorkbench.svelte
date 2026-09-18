@@ -47,6 +47,8 @@
   /** Preferência da extensão: 'roadmap' | 'satellite' */
   let preferredMapType = 'roadmap';
   let sugeridaOriginal = '';
+  /** true = usuário escolheu a tabulação no select; não sobrescrever com sugestão automática */
+  let tabulacaoUserOverride = false;
   let showInfoModal = false;
   let equipamentos = [];
   /** Box “Fora do Limite” (CTO > 250m) — espelho do oficial. */
@@ -123,8 +125,10 @@
   function onTabulacaoSugeridaFromMap(payload = {}) {
     const tab = String(payload?.tabulacaoFinal || '').trim();
     if (!tab) return;
-    form.tabulacaoFinal = tab;
+    // Sempre atualiza o texto de sugestão; a escolha manual no select prevalece
     sugeridaOriginal = tab;
+    if (tabulacaoUserOverride) return;
+    form.tabulacaoFinal = tab;
     form = form;
   }
 
@@ -138,6 +142,14 @@
     } catch (err) {
       console.warn('[Workbench] applyTabulacaoFromMapNow:', err?.message || err);
     }
+  }
+
+  function onTabulacaoManualChange() {
+    tabulacaoUserOverride = true;
+  }
+
+  function clearTabulacaoUserOverride() {
+    tabulacaoUserOverride = false;
   }
 
   function syncForaLimiteFromRef() {
@@ -938,9 +950,9 @@
         if (!form.cep && end.cep) form.cep = end.cep;
         form = form;
       }
-      // Regras 2.1–2.4 pelo mapa (CTOs/cobertura/motivo) têm prioridade
+      // Regras 2.1–2.4 pelo mapa (CTOs/cobertura/motivo) — só se o usuário não escolheu manualmente
       applyTabulacaoFromMapNow();
-      if (!form.tabulacaoFinal && analyzed?.chamado) {
+      if (!tabulacaoUserOverride && !form.tabulacaoFinal && analyzed?.chamado) {
         const tab =
           analyzed.chamado.tabulacaoFinal ||
           analyzed.chamado.analiseIa?.tabulacaoSugerida ||
@@ -949,10 +961,14 @@
           form.tabulacaoFinal = tab;
           sugeridaOriginal = analyzed.chamado.analiseIa?.tabulacaoSugerida || tab;
         }
+      } else if (analyzed?.chamado?.analiseIa?.tabulacaoSugerida) {
+        sugeridaOriginal = analyzed.chamado.analiseIa.tabulacaoSugerida;
       }
-      statusMsg = form.tabulacaoFinal
-        ? `Tabulação automática: ${form.tabulacaoFinal}`
-        : 'Tabulação atualizada pela posição da casinha';
+      statusMsg = tabulacaoUserOverride
+        ? `Tabulação mantida (sua escolha): ${form.tabulacaoFinal || '—'}`
+        : form.tabulacaoFinal
+          ? `Tabulação automática: ${form.tabulacaoFinal}`
+          : 'Tabulação atualizada pela posição da casinha';
     } catch (err) {
       console.warn('[Workbench] Reanálise:', err?.message || err);
       applyTabulacaoFromMapNow();
@@ -1044,6 +1060,7 @@
     usuario = String(payload.usuario || '').trim();
     chamadoId = String(payload.chamadoId || payload.id || '').trim();
     workbenchSeed = payload.seed && typeof payload.seed === 'object' ? payload.seed : workbenchSeed;
+    clearTabulacaoUserOverride();
     ensureProjetistaFromLogin();
 
     let positionedFromSeed = false;
@@ -1300,6 +1317,7 @@
     foraLimiteInfo = null;
     showInfoForaLimite = false;
     sugeridaOriginal = '';
+    tabulacaoUserOverride = false;
     error = '';
     statusMsg = 'Aguardando chamado…';
     mapPreviewImage = '';
@@ -1727,7 +1745,7 @@
           </div>
           <div class="wb-modal-field">
             <label for="wb-modal-tab">7. Tabulação Final</label>
-            <select id="wb-modal-tab" bind:value={form.tabulacaoFinal}>
+            <select id="wb-modal-tab" bind:value={form.tabulacaoFinal} on:change={onTabulacaoManualChange}>
               <option value="">Selecione uma opção</option>
               {#each tabulacoes as tab}
                 <option value={tab}>{tab}</option>
@@ -1738,7 +1756,7 @@
             </select>
             {#if sugeridaOriginal}
               <small class="hint">
-                Sugestão automática: {sugeridaOriginal}{reanalyzing ? ' (recalculando…)' : ''}
+                Sugestão automática: {sugeridaOriginal}{reanalyzing ? ' (recalculando…)' : ''}{tabulacaoUserOverride ? ' — mantida a sua escolha' : ''}
               </small>
             {:else if reanalyzing}
               <small class="hint">Recalculando tabulação…</small>
