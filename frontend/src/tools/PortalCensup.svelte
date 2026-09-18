@@ -418,9 +418,6 @@
                   <td>{item.situacaoLabel || item.situacao || 'Pendente Analise'}</td>
                   <td class="col-action">
                     <div class="col-action-buttons">
-                      {#if item.relatorioSalvo || item.pdfHtml}
-                        <span class="report-badge" title="Relatório salvo">PDF</span>
-                      {/if}
                       <button
                         type="button"
                         class="btn-lupa"
