@@ -1253,12 +1253,58 @@ export async function findLearnedTabulacaoForChamado(chamado) {
   return null;
 }
 
-export async function salvarRelatorioWorkbench(id, { usuario, report = {}, persist = true } = {}) {
-  const chamado = await findChamadoByPedidoOrCode({ id });
+export async function salvarRelatorioWorkbench(id, { usuario, report = {}, persist = true, seed = null } = {}) {
+  let chamado = await findChamadoByPedidoOrCode({ id, pedido: id });
+
+  // Primeira finalização: cria o chamado no Portal só agora (não na abertura da extensão)
   if (!chamado) {
-    const err = new Error('Chamado não encontrado');
-    err.statusCode = 404;
-    throw err;
+    const pedido =
+      String(report.numeroALA || seed?.pedido || id || '')
+        .replace(/\D/g, '') || String(id || '').trim();
+    if (!pedido) {
+      const err = new Error('Chamado não encontrado e sem pedido para criar');
+      err.statusCode = 404;
+      throw err;
+    }
+
+    const seedEnd = seed?.endereco && typeof seed.endereco === 'object' ? seed.endereco : {};
+    const lat =
+      report.latitude != null
+        ? Number(report.latitude)
+        : seed?.mapaCoords?.lat ?? seed?.localizacao?.lat ?? seed?.lat ?? null;
+    const lng =
+      report.longitude != null
+        ? Number(report.longitude)
+        : seed?.mapaCoords?.lng ?? seed?.localizacao?.lng ?? seed?.lng ?? null;
+
+    chamado = await upsertChamado({
+      pedido,
+      agendaCode: seed?.agendaCode || null,
+      uf: seed?.uf || seedEnd.uf || null,
+      cidade: String(report.cidade || seed?.cidade || seedEnd.cidade || '').trim() || null,
+      sistema: seed?.sistema || null,
+      pdv: seed?.pdv || null,
+      motivo: seed?.motivo || null,
+      situacao: seed?.situacao || null,
+      dataSituacao: seed?.dataSituacao || seed?.dataSituacaoRaw || null,
+      endereco: {
+        ...seedEnd,
+        completo:
+          String(report.enderecoCompleto || seedEnd.completo || seed?.enderecoCompleto || '').trim() ||
+          null,
+        numero:
+          String(report.numeroEndereco || seedEnd.numero || seed?.numeroEndereco || '').trim() || null,
+        cep: String(report.cep || seedEnd.cep || seed?.cep || '').trim() || null,
+        cidade: String(report.cidade || seedEnd.cidade || seed?.cidade || '').trim() || null
+      },
+      mapaCoords:
+        lat != null && lng != null && !Number.isNaN(lat) && !Number.isNaN(lng)
+          ? { lat, lng }
+          : seed?.mapaCoords || seed?.localizacao || null,
+      origem: 'workbench-finalize',
+      agendaUrl: seed?.agendaUrl || null,
+      filaStatus: 'na_fila'
+    });
   }
 
   const numeroALA = String(report.numeroALA || chamado.pedido || '').replace(/\D/g, '');
