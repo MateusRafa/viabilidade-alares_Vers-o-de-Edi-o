@@ -42,16 +42,23 @@ export function chamadoToRow(chamado) {
     if (!CORE_KEYS.has(key) && value !== undefined) extras[key] = value;
   }
 
+  const clean = (v) => {
+    if (v == null) return null;
+    const s = String(v).trim();
+    if (!s || /^null$/i.test(s) || /^undefined$/i.test(s)) return null;
+    return s;
+  };
+
   return {
     id: chamado.id,
-    agenda_code: chamado.agendaCode || null,
+    agenda_code: clean(chamado.agendaCode),
     pedido: chamado.pedido != null ? String(chamado.pedido) : null,
-    uf: chamado.uf || null,
-    cidade: chamado.cidade || null,
-    sistema: chamado.sistema || null,
-    pdv: chamado.pdv || null,
-    motivo: chamado.motivo || null,
-    situacao: chamado.situacao || null,
+    uf: clean(chamado.uf),
+    cidade: clean(chamado.cidade),
+    sistema: clean(chamado.sistema),
+    pdv: clean(chamado.pdv),
+    motivo: clean(chamado.motivo),
+    situacao: clean(chamado.situacao),
     data_situacao: parseDataSituacao(chamado.dataSituacao),
     endereco: chamado.endereco && typeof chamado.endereco === 'object' ? chamado.endereco : {},
     mapa_coords: chamado.mapaCoords || null,
@@ -60,7 +67,7 @@ export function chamadoToRow(chamado) {
     agenda_url: chamado.agendaUrl || null,
     fila_status: chamado.filaStatus || 'na_fila',
     tabulacao_status: chamado.tabulacaoStatus || 'aguardando_analise',
-    tabulacao_final: chamado.tabulacaoFinal || null,
+    tabulacao_final: clean(chamado.tabulacaoFinal),
     pdf_path: chamado.pdfPath || null,
     extras,
     updated_at: new Date().toISOString(),
