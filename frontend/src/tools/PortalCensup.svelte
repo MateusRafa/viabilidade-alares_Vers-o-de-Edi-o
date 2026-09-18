@@ -232,6 +232,13 @@
     return 'Finalizado';
   }
 
+  function cellText(value) {
+    if (value == null) return '—';
+    const s = String(value).trim();
+    if (!s || /^null$/i.test(s) || /^undefined$/i.test(s)) return '—';
+    return s;
+  }
+
   function imprimirRelatorioSalvo() {
     const html = selectedChamado?.pdfHtml;
     if (!html) {
@@ -408,14 +415,14 @@
             {:else}
               {#each chamados as item (item.id)}
                 <tr>
-                  <td>{item.uf}</td>
-                  <td>{item.cidade}</td>
-                  <td>{item.sistema}</td>
-                  <td>{item.pedido}</td>
-                  <td>{item.dataSituacaoLabel || '—'}</td>
-                  <td>{item.pdv}</td>
-                  <td>{item.motivo}</td>
-                  <td>{item.situacaoLabel || item.situacao || 'Pendente Analise'}</td>
+                  <td>{cellText(item.uf)}</td>
+                  <td>{cellText(item.cidade)}</td>
+                  <td>{cellText(item.sistema)}</td>
+                  <td>{cellText(item.pedido)}</td>
+                  <td>{cellText(item.dataSituacaoLabel || item.dataSituacao)}</td>
+                  <td>{cellText(item.pdv)}</td>
+                  <td>{cellText(item.motivo)}</td>
+                  <td>{cellText(item.situacaoLabel || item.situacao || 'Finalizado')}</td>
                   <td class="col-action">
                     <div class="col-action-buttons">
                       <button
