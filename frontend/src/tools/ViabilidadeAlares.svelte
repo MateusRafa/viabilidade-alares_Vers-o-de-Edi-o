@@ -2381,14 +2381,14 @@
 
   function isMotivoAnaliseComplemento(motivo) {
     const m = normalizeMotivoTabulacao(motivo);
-    return m.includes('analise de complemento');
+    return m.includes('analise de complemento') || m.includes('analise complemento');
   }
 
   /**
    * Tabulação automática pelo estado atual do mapa (sempre relativa ao endereço).
    * 2.2 fora cobertura / além 250m → Fora da Área de Cobertura
-   * 2.3 1 CTO ou todas vermelhas → Alívio; 2+ com ao menos 1 verde/laranja → Com Portas
    * 2.4 Análise de complemento + equipamentos válidos → Atendimento Externo
+   * 2.3 1 CTO ou todas vermelhas → Alívio; 2+ com ao menos 1 verde/laranja → Com Portas
    */
   function computeTabulacaoSugeridaFromMap(motivoRaw = workbenchMotivo) {
     const TAB_FORA = 'Fora da Área de Cobertura';
@@ -2426,6 +2426,15 @@
       };
     }
 
+    // 2.4 — Análise de complemento (antes de Portas/Alívio)
+    if (isMotivoAnaliseComplemento(motivoRaw)) {
+      return {
+        tabulacaoFinal: TAB_EXTERNO,
+        motivoSugestao:
+          'Motivo Análise de complemento com equipamento(s) válido(s) no endereço — Atendimento Externo.'
+      };
+    }
+
     // 2.3 — mesma cor do marcador no mapa (normalize + getCTOColor)
     const bands = withinLimit.map((c) => getCTOOccupancyBand(c));
     const onlyOne = withinLimit.length === 1;
@@ -2447,15 +2456,6 @@
       tab = TAB_PORTAS;
       motivoSugestao =
         'Há equipamento(s) verde(s) ou laranja(s) dentro de 250m — Aprovado Com Portas.';
-    }
-
-    // 2.4 — Análise de complemento
-    if (isMotivoAnaliseComplemento(motivoRaw)) {
-      return {
-        tabulacaoFinal: TAB_EXTERNO,
-        motivoSugestao:
-          'Motivo Análise de complemento com equipamento(s) válido(s) no endereço — Atendimento Externo.'
-      };
     }
 
     return { tabulacaoFinal: tab, motivoSugestao, debugBands: bands };
@@ -2976,6 +2976,20 @@
     } catch (err) {
       console.warn('[Workbench] Atualização de localização falhou:', err);
     }
+  }
+
+  /** WORKBENCH — reexecuta sync de coords (ex.: MAP_READY após seed chegar cedo). */
+  export async function forceWorkbenchLocationSync() {
+    if (!workbenchMode) return false;
+    lastWorkbenchLocKey = '';
+    // Aguarda mapa se ainda estiver subindo
+    const start = Date.now();
+    while ((!map || !googleMapsLoaded) && Date.now() - start < 8000) {
+      await new Promise((r) => setTimeout(r, 120));
+    }
+    if (!map || !googleMapsLoaded) return false;
+    await syncWorkbenchLocationFromProps();
+    return !!clientCoords;
   }
 
   $: if (workbenchMode) {
@@ -7867,6 +7881,11 @@
     const text = String(address || '').trim();
     if (!text) {
       throw new Error('Informe um endereço para localizar.');
+    }
+    // Aguarda o mapa (duplo clique / sync manual pode chegar cedo)
+    const start = Date.now();
+    while ((!map || !googleMapsLoaded) && Date.now() - start < 8000) {
+      await new Promise((r) => setTimeout(r, 120));
     }
     if (!map || !googleMapsLoaded) {
       throw new Error('Aguarde o mapa carregar e tente de novo.');
