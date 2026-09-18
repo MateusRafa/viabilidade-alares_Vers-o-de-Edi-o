@@ -8010,7 +8010,8 @@
         success: true,
         preview: mapPreviewImage,
         viAla: currentVIALA || exportResult?.viAla || null,
-        htmlContent: exportResult?.htmlContent || null
+        htmlContent: exportResult?.htmlContent || null,
+        geradoEm: exportResult?.geradoEm || null
       };
     } finally {
       capturingMap = false;
@@ -8189,6 +8190,7 @@
       const now = new Date();
       const dateStr = now.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' });
       const timeStr = now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+      const geradoEm = now.toISOString();
       const horaFormatada = `${timeStr}h`;
       const dataHoraLegivel = `${dateStr} ${timeStr}`;
 
@@ -9014,7 +9016,7 @@
         generatingPDF = false;
         showPopupInstructions = true; // Mostrar instruções sobreposta ao modal
         error = null; // Limpar erro anterior para mostrar instruções
-        return { htmlContent, viAla: currentVIALA, printed: false };
+        return { htmlContent, viAla: currentVIALA, printed: false, geradoEm };
       }
       
       console.log('Janela de impressão aberta com sucesso');
@@ -9190,7 +9192,7 @@
         }
       }, 8000);
 
-      return { htmlContent, viAla: currentVIALA, printed: true };
+      return { htmlContent, viAla: currentVIALA, printed: true, geradoEm };
 
     } catch (err) {
       console.error('Erro na geração de PDF:', err);
