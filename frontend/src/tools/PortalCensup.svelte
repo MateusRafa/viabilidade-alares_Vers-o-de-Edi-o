@@ -14,23 +14,11 @@
   import { theme } from '../themeStore.js';
   import {
     fetchPortalCensupChamados,
-    fetchPortalCensupChamadoById,
-    sendPortalCensupFeedback,
-    fetchTabulacoesList,
-    analisarPortalCensupChamado
+    fetchPortalCensupChamadoById
   } from './portalCensupApi.js';
 
-  // Import dinâmico — evita ciclo PortalCensup ↔ ViabilidadeAlares no bundle
-  let ViabilidadeAlares = null;
-
-  async function ensureViabilidadeAlares() {
-    if (ViabilidadeAlares) return;
-    const mod = await import('./ViabilidadeAlares.svelte');
-    ViabilidadeAlares = mod.default;
-  }
-
   export let currentUser = '';
-  export let userTipo = 'user';
+  export let userTipo = 'user'; // mantido para compatibilidade com o shell de ferramentas
   export let onBackToDashboard = () => {};
   export let onBackRequest = null;
 
@@ -39,7 +27,8 @@
   const REFRESH_INTERVAL_MS = 30000;
   const pageSize = 50;
 
-  let listView = 'pendentes';
+  // Portal = arquivo de chamados finalizados (Salvar Relatório / Gerar PDF)
+  let listView = 'resolvidos';
   let chamados = [];
   let total = 0;
   let totalPages = 1;
@@ -56,13 +45,7 @@
   let selectedChamado = null;
   let loadingDetail = false;
   let detailError = '';
-  let tabulacoesList = [];
-  let tabulacaoCorrigida = '';
-  let showCorrectionForm = false;
-  let submittingFeedback = false;
   let feedbackMessage = '';
-  let analyzing = false;
-  let analyzeError = '';
 
   $: showingDetail = !!selectedChamado;
   $: isDark = $theme === 'dark';
@@ -98,21 +81,10 @@
   }
 
   $: isRefreshing, syncHeaderRefresh();
-  $: listView, syncHeaderViewToggle();
 
-  function syncHeaderViewToggle({ enabled = true } = {}) {
-    if (!enabled) {
-      toolShellViewToggle.set(null);
-      return;
-    }
-
-    const showingResolved = listView === 'resolvidos';
-    toolShellViewToggle.set({
-      label: showingResolved ? 'Pendentes' : 'Resolvidos',
-      title: showingResolved ? 'Voltar para a fila de pendentes' : 'Ver ALAs resolvidos',
-      active: showingResolved,
-      onClick: toggleListView
-    });
+  function syncHeaderViewToggle() {
+    // Portal agora é só arquivo de finalizados — sem toggle pendentes/resolvidos
+    toolShellViewToggle.set(null);
   }
 
   function syncHeaderViabilidadeShortcut({ enabled = true } = {}) {
@@ -127,12 +99,6 @@
       title: 'Viabilidade Alares — busca avulsa',
       onClick: abrirViabilidadeAvulsa
     });
-  }
-
-  function toggleListView() {
-    listView = listView === 'resolvidos' ? 'pendentes' : 'resolvidos';
-    page = 1;
-    carregarChamados();
   }
 
   function abrirViabilidadeAvulsa() {
@@ -196,9 +162,6 @@
     loadingDetail = true;
     detailError = '';
     feedbackMessage = '';
-    analyzeError = '';
-    showCorrectionForm = false;
-    tabulacaoCorrigida = '';
     selectedChamado = {
       id: item.id,
       pedido: item.pedido,
@@ -208,20 +171,9 @@
     syncShellChrome();
 
     try {
-      await ensureViabilidadeAlares();
       selectedChamado = await fetchPortalCensupChamadoById(currentUser, item.id);
       syncShellChrome();
       await carregarChamados({ silent: true });
-      const precisaAnalise =
-        !selectedChamado?.tabulacaoFinal ||
-        selectedChamado?.analiseStatus === 'aguardando_analise' ||
-        selectedChamado?.analiseStatus === 'processando' ||
-        selectedChamado?.analiseStatus === 'falhou' ||
-        selectedChamado?.tabulacaoStatus === 'aguardando_analise';
-
-      if (precisaAnalise) {
-        await executarAnalise({ silent: true });
-      }
     } catch (err) {
       detailError = err?.message || 'Não foi possível abrir o chamado.';
       selectedChamado = null;
@@ -231,33 +183,10 @@
     }
   }
 
-  async function executarAnalise({ silent = false, force = false } = {}) {
-    if (!selectedChamado?.id || analyzing) return;
-    analyzing = true;
-    analyzeError = '';
-    try {
-      const result = await analisarPortalCensupChamado(currentUser, selectedChamado.id, { force });
-      selectedChamado = result.chamado;
-      syncShellChrome();
-      if (!silent && result.skipped) {
-        feedbackMessage = result.reason || 'Análise não refeita.';
-      }
-      await carregarChamados({ silent: true });
-    } catch (err) {
-      analyzeError = err?.message || 'Falha ao analisar localização.';
-      if (!silent) feedbackMessage = analyzeError;
-    } finally {
-      analyzing = false;
-    }
-  }
-
   function fecharDetalhe() {
     selectedChamado = null;
     detailError = '';
     feedbackMessage = '';
-    analyzeError = '';
-    showCorrectionForm = false;
-    tabulacaoCorrigida = '';
     syncShellChrome();
   }
 
@@ -270,7 +199,7 @@
       toolShellBackHandler.set(() => fecharDetalhe());
       syncHeaderSearch({ enabled: false });
       syncHeaderViabilidadeShortcut({ enabled: false });
-      syncHeaderViewToggle({ enabled: false });
+      syncHeaderViewToggle();
       if (typeof document !== 'undefined') {
         document.title = `ALA-${pedido}`;
       }
@@ -279,64 +208,14 @@
       toolShellBackHandler.set(null);
       syncHeaderSearch({ enabled: true });
       syncHeaderViabilidadeShortcut({ enabled: true });
-      syncHeaderViewToggle({ enabled: true });
+      syncHeaderViewToggle();
       if (typeof document !== 'undefined') {
         document.title = 'Portal CENSUP';
       }
     }
 
-    // Mantém compatibilidade com ferramentas que usam onBackRequest
     if (typeof onBackRequest === 'function') {
       onBackRequest(inDetail ? () => fecharDetalhe() : null);
-    }
-  }
-
-  async function confirmarTabulacaoCorreta() {
-    if (!selectedChamado || submittingFeedback) return;
-    submittingFeedback = true;
-    feedbackMessage = '';
-    try {
-      const result = await sendPortalCensupFeedback(currentUser, selectedChamado.id, {
-        correto: true
-      });
-      selectedChamado = result.chamado;
-      feedbackMessage = 'Tabulação confirmada como correta.';
-      await carregarChamados({ silent: true });
-    } catch (err) {
-      feedbackMessage = err?.message || 'Erro ao registrar confirmação.';
-    } finally {
-      submittingFeedback = false;
-    }
-  }
-
-  function iniciarCorrecao() {
-    showCorrectionForm = true;
-    tabulacaoCorrigida = selectedChamado?.tabulacaoFinal || '';
-    feedbackMessage = '';
-  }
-
-  async function enviarCorrecao() {
-    if (!selectedChamado || submittingFeedback) return;
-    if (!(tabulacaoCorrigida || '').trim()) {
-      feedbackMessage = 'Selecione a tabulação correta.';
-      return;
-    }
-
-    submittingFeedback = true;
-    feedbackMessage = '';
-    try {
-      const result = await sendPortalCensupFeedback(currentUser, selectedChamado.id, {
-        correto: false,
-        tabulacaoCorrigida: tabulacaoCorrigida.trim()
-      });
-      selectedChamado = result.chamado;
-      showCorrectionForm = false;
-      feedbackMessage = 'Correção registrada. A IA usará este exemplo nas próximas análises.';
-      await carregarChamados({ silent: true });
-    } catch (err) {
-      feedbackMessage = err?.message || 'Erro ao registrar correção.';
-    } finally {
-      submittingFeedback = false;
     }
   }
 
@@ -350,22 +229,7 @@
     if (status === 'aprovada') return 'Aprovada';
     if (status === 'corrigida') return 'Corrigida';
     if (status === 'aguardando_analise') return 'Aguardando análise';
-    return 'Pendente revisão';
-  }
-
-  function metodoLocalizacaoLabel(loc) {
-    if (!loc?.metodo) return '—';
-    if (loc.metodo === 'referencia_mapa') return `Referência: ${loc.referencia || 'mapa'}`;
-    if (loc.metodo === 'coords_agenda') return 'Coordenadas da Agenda';
-    if (loc.metodo === 'endereco' || loc.metodo === 'endereco_baixa_precisao') return 'Endereço geocodificado';
-    return loc.metodo;
-  }
-
-  function formatDistanciaCobertura(metros) {
-    if (metros == null || Number.isNaN(Number(metros))) return '—';
-    const n = Number(metros);
-    if (n >= 1000) return `${(n / 1000).toFixed(2)} km`;
-    return `${Math.round(n)} m`;
+    return 'Finalizado';
   }
 
   function imprimirRelatorioSalvo() {
@@ -396,9 +260,8 @@
     syncHeaderRefresh();
     syncHeaderSearch({ enabled: true });
     syncHeaderViabilidadeShortcut({ enabled: true });
-    syncHeaderViewToggle({ enabled: true });
+    syncHeaderViewToggle();
     toolShellThemeToggle.set(true);
-    tabulacoesList = await fetchTabulacoesList();
     await carregarChamados();
 
     refreshInterval = setInterval(() => {
@@ -418,158 +281,92 @@
   {#if showingDetail}
     <div class="detail-view">
       {#if loadingDetail}
-        <div class="detail-loading"><Loading currentMessage="Abrindo tabulação…" /></div>
+        <div class="detail-loading"><Loading currentMessage="Abrindo relatório…" /></div>
       {:else if detailError}
         <p class="load-error" role="alert">{detailError}</p>
       {:else if selectedChamado}
-        {@const viabLat = selectedChamado.localizacao?.lat ?? selectedChamado.mapaCoords?.lat ?? null}
-        {@const viabLng = selectedChamado.localizacao?.lng ?? selectedChamado.mapaCoords?.lng ?? null}
-        <div class="detail-viabilidade">
-          {#key `${selectedChamado.id}:${viabLat ?? ''}:${viabLng ?? ''}`}
-            {#if ViabilidadeAlares}
-            <svelte:component
-              this={ViabilidadeAlares}
-              embedded={true}
-              mapDomId="portal-censup-viab-map"
-              currentUser={currentUser}
-              userTipo={userTipo}
-              initialAddress={selectedChamado.endereco?.completo || ''}
-              initialLat={viabLat}
-              initialLng={viabLng}
-            >
-              <div slot="tabulacao" class="censup-tabulacao">
-                <div class="info-grid">
-                  <div class="info-item">
-                    <span class="label">Pedido</span>
-                    <span class="value">{selectedChamado.pedido}</span>
-                  </div>
-                  <div class="info-item">
-                    <span class="label">Cidade</span>
-                    <span class="value">{selectedChamado.endereco?.cidade || selectedChamado.cidade}</span>
-                  </div>
-                  <div class="info-item full">
-                    <span class="label">Endereço</span>
-                    <span class="value">{selectedChamado.endereco?.completo || '—'}</span>
-                  </div>
-                  {#if selectedChamado.endereco?.bairro || selectedChamado.endereco?.cep}
-                    <div class="info-item">
-                      <span class="label">Bairro</span>
-                      <span class="value">{selectedChamado.endereco?.bairro || '—'}</span>
-                    </div>
-                    <div class="info-item">
-                      <span class="label">CEP</span>
-                      <span class="value">{selectedChamado.endereco?.cep || '—'}</span>
-                    </div>
-                  {/if}
-                  {#if selectedChamado.mapaReferencias?.length}
-                    <div class="info-item full">
-                      <span class="label">Referências no mapa</span>
-                      <span class="value">{selectedChamado.mapaReferencias.join(' · ')}</span>
-                    </div>
-                  {/if}
-                  <div class="info-item">
-                    <span class="label">Local resolvido por</span>
-                    <span class="value">{metodoLocalizacaoLabel(selectedChamado.localizacao)}</span>
-                  </div>
-                  <div class="info-item">
-                    <span class="label">Cobertura</span>
-                    <span class="value">
-                      {#if selectedChamado.viabilidadeResumo?.dentroCobertura === true}
-                        Dentro da área
-                      {:else if selectedChamado.viabilidadeResumo?.dentroCobertura === false}
-                        Fora da área ({formatDistanciaCobertura(selectedChamado.viabilidadeResumo?.distanciaCoberturaMetros)})
-                      {:else}
-                        —
-                      {/if}
-                    </span>
-                  </div>
-                  {#if selectedChamado.localizacao?.lat != null}
-                    <div class="info-item full">
-                      <span class="label">Coordenadas</span>
-                      <span class="value mono">
-                        {selectedChamado.localizacao.lat}, {selectedChamado.localizacao.lng}
-                      </span>
-                    </div>
-                  {/if}
-                  <div class="info-item">
-                    <span class="label">Tabulação sugerida</span>
-                    <span class="value highlight">{selectedChamado.tabulacaoFinal || '—'}</span>
-                  </div>
-                  <div class="info-item">
-                    <span class="label">Status</span>
-                    <span class="value status-badge status-badge--{selectedChamado.tabulacaoStatus || 'pendente'}">
-                      {statusLabel(selectedChamado.tabulacaoStatus)}
-                    </span>
-                  </div>
-                </div>
-
-                {#if selectedChamado.analiseIa?.motivoSugestao}
-                  <div class="ia-box">
-                    <strong>Análise automática</strong>
-                    <p>{selectedChamado.analiseIa.motivoSugestao}</p>
-                  </div>
-                {/if}
-
-                {#if analyzeError}
-                  <p class="load-error" role="alert">{analyzeError}</p>
-                {/if}
-
-                <div class="feedback-actions">
-                  <button
-                    type="button"
-                    class="btn-primary"
-                    on:click={() => executarAnalise({ force: true })}
-                    disabled={analyzing || loadingDetail}
-                  >
-                    {analyzing ? 'Analisando…' : 'Analisar localização'}
-                  </button>
-                  <button
-                    type="button"
-                    class="btn-success"
-                    on:click={confirmarTabulacaoCorreta}
-                    disabled={submittingFeedback || analyzing || selectedChamado.tabulacaoStatus === 'aprovada'}
-                  >
-                    Tabulação correta
-                  </button>
-                  <button
-                    type="button"
-                    class="btn-warning"
-                    on:click={iniciarCorrecao}
-                    disabled={submittingFeedback || analyzing}
-                  >
-                    Tabulação errada
-                  </button>
-                  {#if selectedChamado.pdfHtml || selectedChamado.relatorioSalvo}
-                    <button type="button" class="btn-secondary" on:click={imprimirRelatorioSalvo}>
-                      Imprimir relatório salvo
-                    </button>
-                  {/if}
-                </div>
-
-                {#if showCorrectionForm}
-                  <div class="correction-form">
-                    <label for="tabulacao-corrigida">Tabulação correta</label>
-                    <select id="tabulacao-corrigida" bind:value={tabulacaoCorrigida} disabled={submittingFeedback}>
-                      <option value="">Selecione…</option>
-                      {#each tabulacoesList as tabulacao}
-                        <option value={tabulacao}>{tabulacao}</option>
-                      {/each}
-                    </select>
-                    <button type="button" class="btn-primary" on:click={enviarCorrecao} disabled={submittingFeedback}>
-                      Salvar correção
-                    </button>
-                  </div>
-                {/if}
-
-                {#if feedbackMessage}
-                  <p class="feedback-message" role="status">{feedbackMessage}</p>
-                {/if}
+        <div class="detail-arquivo">
+          <aside class="detail-side">
+            <div class="info-grid">
+              <div class="info-item">
+                <span class="label">Pedido</span>
+                <span class="value">{selectedChamado.pedido}</span>
               </div>
-            </svelte:component>
-            {:else}
-              <div class="detail-loading"><Loading currentMessage="Carregando mapa…" /></div>
+              <div class="info-item">
+                <span class="label">Cidade</span>
+                <span class="value">{selectedChamado.endereco?.cidade || selectedChamado.cidade}</span>
+              </div>
+              <div class="info-item full">
+                <span class="label">Endereço</span>
+                <span class="value">{selectedChamado.endereco?.completo || '—'}</span>
+              </div>
+              {#if selectedChamado.endereco?.bairro || selectedChamado.endereco?.cep}
+                <div class="info-item">
+                  <span class="label">Bairro</span>
+                  <span class="value">{selectedChamado.endereco?.bairro || '—'}</span>
+                </div>
+                <div class="info-item">
+                  <span class="label">CEP</span>
+                  <span class="value">{selectedChamado.endereco?.cep || '—'}</span>
+                </div>
+              {/if}
+              <div class="info-item">
+                <span class="label">Tabulação</span>
+                <span class="value highlight">{selectedChamado.tabulacaoFinal || selectedChamado.relatorio?.tabulacaoFinal || '—'}</span>
+              </div>
+              <div class="info-item">
+                <span class="label">Projetista</span>
+                <span class="value">{selectedChamado.relatorio?.projetista || selectedChamado.viabilidadeResumo?.projetista || '—'}</span>
+              </div>
+              <div class="info-item">
+                <span class="label">Status</span>
+                <span class="value status-badge status-badge--{selectedChamado.tabulacaoStatus || 'aprovada'}">
+                  {statusLabel(selectedChamado.tabulacaoStatus)}
+                </span>
+              </div>
+              {#if selectedChamado.relatorioSalvoAt || selectedChamado.relatorio?.savedAt}
+                <div class="info-item full">
+                  <span class="label">Salvo em</span>
+                  <span class="value">
+                    {new Date(selectedChamado.relatorioSalvoAt || selectedChamado.relatorio.savedAt).toLocaleString('pt-BR')}
+                  </span>
+                </div>
+              {/if}
+            </div>
+
+            <div class="feedback-actions">
+              {#if selectedChamado.pdfHtml || selectedChamado.relatorioSalvo}
+                <button type="button" class="btn-primary" on:click={imprimirRelatorioSalvo}>
+                  Imprimir relatório
+                </button>
+              {/if}
+            </div>
+
+            {#if feedbackMessage}
+              <p class="feedback-message" role="status">{feedbackMessage}</p>
             {/if}
-          {/key}
+          </aside>
+
+          <div class="detail-preview">
+            {#if selectedChamado.pdfHtml}
+              <iframe
+                class="report-preview-frame"
+                title="Prévia do relatório ALA-{selectedChamado.pedido}"
+                srcdoc={selectedChamado.pdfHtml}
+              ></iframe>
+            {:else if selectedChamado.mapPreviewImage || selectedChamado.relatorio?.mapPreviewImage}
+              <div class="preview-map-only">
+                <img
+                  src={selectedChamado.mapPreviewImage || selectedChamado.relatorio.mapPreviewImage}
+                  alt="Prévia do mapa do relatório"
+                />
+              </div>
+            {:else}
+              <div class="detail-loading">
+                <p>Este chamado finalizado ainda não tem prévia de relatório salva.</p>
+              </div>
+            {/if}
+          </div>
         </div>
       {/if}
     </div>
@@ -605,7 +402,7 @@
             {:else if chamados.length === 0}
               <tr>
                 <td colspan="9" class="empty-cell">
-                  {listView === 'resolvidos' ? 'Nenhum ALA resolvido' : 'Sem dados na tabela'}
+                  Nenhum relatório finalizado ainda
                 </td>
               </tr>
             {:else}
@@ -628,8 +425,8 @@
                         type="button"
                         class="btn-lupa"
                         on:click={() => abrirChamado(item)}
-                        aria-label="Abrir tabulação do pedido {item.pedido}"
-                        title="Abrir tabulação"
+                        aria-label="Abrir relatório do pedido {item.pedido}"
+                        title="Abrir relatório"
                       >
                         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
                           <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2.5" />
@@ -702,6 +499,58 @@
     height: 100%;
     position: relative;
     overflow: hidden;
+  }
+
+  .detail-arquivo {
+    flex: 1;
+    min-height: 0;
+    height: 100%;
+    display: grid;
+    grid-template-columns: minmax(260px, 320px) 1fr;
+    gap: 0;
+    overflow: hidden;
+    background: #fff;
+  }
+
+  .detail-side {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    padding: 1.25rem;
+    border-right: 1px solid #e5e7eb;
+    overflow: auto;
+    background: #f8fafc;
+  }
+
+  .detail-preview {
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    background: #eef1f8;
+  }
+
+  .report-preview-frame {
+    width: 100%;
+    height: 100%;
+    border: 0;
+    background: #fff;
+  }
+
+  .preview-map-only {
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1rem;
+    box-sizing: border-box;
+  }
+
+  .preview-map-only img {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+    border-radius: 8px;
+    box-shadow: 0 4px 18px rgba(15, 23, 42, 0.12);
   }
 
   .censup-tabulacao {
@@ -1362,6 +1211,19 @@
       width: 100%;
       flex-basis: auto;
     }
+  }
+
+  .theme-dark .detail-arquivo {
+    background: #0b1220;
+  }
+
+  .theme-dark .detail-side {
+    background: #111827;
+    border-right-color: #1f2937;
+  }
+
+  .theme-dark .detail-preview {
+    background: #0b1220;
   }
 
   .portal-censup.theme-dark {
