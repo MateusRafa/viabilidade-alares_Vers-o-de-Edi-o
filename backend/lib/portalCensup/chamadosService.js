@@ -190,6 +190,14 @@ function escapeHtml(value) {
     .replace(/'/g, '&#39;');
 }
 
+/** Evita gravar/exibir o texto literal "null" / "undefined". */
+function cleanText(value) {
+  if (value == null) return null;
+  const s = String(value).trim();
+  if (!s || /^null$/i.test(s) || /^undefined$/i.test(s)) return null;
+  return s;
+}
+
 function getMapsApiKey() {
   return (
     process.env.GOOGLE_MAPS_API_KEY ||
@@ -1279,47 +1287,82 @@ export async function salvarRelatorioWorkbench(id, { usuario, report = {}, persi
 
     chamado = await upsertChamado({
       pedido,
-      agendaCode: seed?.agendaCode || null,
-      uf: seed?.uf || seedEnd.uf || null,
-      cidade: String(report.cidade || seed?.cidade || seedEnd.cidade || '').trim() || null,
-      sistema: seed?.sistema || null,
-      pdv: seed?.pdv || null,
-      motivo: seed?.motivo || null,
-      situacao: seed?.situacao || null,
+      agendaCode: cleanText(seed?.agendaCode) || null,
+      uf: cleanText(seed?.uf) || cleanText(seedEnd.uf) || null,
+      cidade:
+        cleanText(report.cidade) ||
+        cleanText(seed?.cidade) ||
+        cleanText(seedEnd.cidade) ||
+        null,
+      sistema: cleanText(seed?.sistema) || null,
+      pdv: cleanText(seed?.pdv) || null,
+      motivo: cleanText(seed?.motivo) || null,
+      situacao: cleanText(seed?.situacao) || null,
       dataSituacao: seed?.dataSituacao || seed?.dataSituacaoRaw || null,
       endereco: {
         ...seedEnd,
         completo:
-          String(report.enderecoCompleto || seedEnd.completo || seed?.enderecoCompleto || '').trim() ||
+          cleanText(report.enderecoCompleto) ||
+          cleanText(seedEnd.completo) ||
+          cleanText(seed?.enderecoCompleto) ||
           null,
         numero:
-          String(report.numeroEndereco || seedEnd.numero || seed?.numeroEndereco || '').trim() || null,
-        cep: String(report.cep || seedEnd.cep || seed?.cep || '').trim() || null,
-        cidade: String(report.cidade || seedEnd.cidade || seed?.cidade || '').trim() || null
+          cleanText(report.numeroEndereco) ||
+          cleanText(seedEnd.numero) ||
+          cleanText(seed?.numeroEndereco) ||
+          null,
+        cep: cleanText(report.cep) || cleanText(seedEnd.cep) || cleanText(seed?.cep) || null,
+        cidade:
+          cleanText(report.cidade) ||
+          cleanText(seedEnd.cidade) ||
+          cleanText(seed?.cidade) ||
+          null,
+        uf: cleanText(seed?.uf) || cleanText(seedEnd.uf) || null
       },
       mapaCoords:
         lat != null && lng != null && !Number.isNaN(lat) && !Number.isNaN(lng)
           ? { lat, lng }
           : seed?.mapaCoords || seed?.localizacao || null,
       origem: 'workbench-finalize',
-      agendaUrl: seed?.agendaUrl || null,
+      agendaUrl: cleanText(seed?.agendaUrl) || null,
       filaStatus: 'na_fila'
     });
   }
 
+  // Completa meta vazia com o seed (casos já criados sem UF/PDV/etc.)
+  if (seed && typeof seed === 'object') {
+    const seedEnd = seed.endereco && typeof seed.endereco === 'object' ? seed.endereco : {};
+    chamado = {
+      ...chamado,
+      uf: cleanText(chamado.uf) || cleanText(seed.uf) || cleanText(seedEnd.uf) || null,
+      sistema: cleanText(chamado.sistema) || cleanText(seed.sistema) || null,
+      pdv: cleanText(chamado.pdv) || cleanText(seed.pdv) || null,
+      motivo: cleanText(chamado.motivo) || cleanText(seed.motivo) || null,
+      situacao: cleanText(chamado.situacao) || cleanText(seed.situacao) || null,
+      dataSituacao: chamado.dataSituacao || seed.dataSituacao || seed.dataSituacaoRaw || null,
+      cidade:
+        cleanText(chamado.cidade) ||
+        cleanText(seed.cidade) ||
+        cleanText(seedEnd.cidade) ||
+        null
+    };
+  }
+
   const numeroALA = String(report.numeroALA || chamado.pedido || '').replace(/\D/g, '');
-  const cidade = String(report.cidade || chamado.endereco?.cidade || chamado.cidade || '').trim();
-  const enderecoCompleto = String(report.enderecoCompleto || chamado.endereco?.completo || '').trim();
-  const numeroEndereco = String(report.numeroEndereco || chamado.endereco?.numero || '').trim();
-  const cep = String(report.cep || chamado.endereco?.cep || '').trim();
-  const tabulacaoFinal = String(report.tabulacaoFinal || '').trim();
-  const projetista = String(report.projetista || usuario || '').trim();
-  const sugeridaOriginal = String(
+  const cidade = cleanText(report.cidade) || cleanText(chamado.endereco?.cidade) || cleanText(chamado.cidade) || '';
+  const enderecoCompleto =
+    cleanText(report.enderecoCompleto) || cleanText(chamado.endereco?.completo) || '';
+  const numeroEndereco =
+    cleanText(report.numeroEndereco) || cleanText(chamado.endereco?.numero) || '';
+  const cep = cleanText(report.cep) || cleanText(chamado.endereco?.cep) || '';
+  const tabulacaoFinal = cleanText(report.tabulacaoFinal) || '';
+  const projetista = cleanText(report.projetista) || cleanText(usuario) || '';
+  const sugeridaOriginal = cleanText(
     report.tabulacaoSugeridaOriginal ||
       chamado.analiseIa?.tabulacaoSugerida ||
       chamado.tabulacaoFinal ||
       ''
-  ).trim();
+  ) || '';
 
   if (!tabulacaoFinal) {
     const err = new Error('Tabulação Final é obrigatória');
@@ -1337,7 +1380,11 @@ export async function salvarRelatorioWorkbench(id, { usuario, report = {}, persi
   const next = {
     ...chamado,
     pedido: numeroALA || chamado.pedido,
-    cidade: cidade || chamado.cidade,
+    uf: cleanText(chamado.uf) || null,
+    sistema: cleanText(chamado.sistema) || null,
+    pdv: cleanText(chamado.pdv) || null,
+    motivo: cleanText(chamado.motivo) || null,
+    cidade: cidade || cleanText(chamado.cidade) || null,
     endereco: {
       ...(chamado.endereco || {}),
       completo: enderecoCompleto || chamado.endereco?.completo || null,
