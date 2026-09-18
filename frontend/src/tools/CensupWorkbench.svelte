@@ -1109,19 +1109,28 @@
     clearTabulacaoUserOverride();
     sugeridaOriginal = '';
     pendingLocateAfterMapReady = false;
+    addressFromMap = false;
     ensureProjetistaFromLogin();
 
     let positionedFromSeed = false;
 
     if (payload.seed) {
       const seed = payload.seed;
+      // Novo pedido: limpa pin/mapa anterior (evita ficar em SP enquanto o seed ainda carrega)
+      pinCoords = null;
+      try {
+        viabilidadeRef?.clearWorkbenchMap?.();
+      } catch {
+        /* ignore */
+      }
+
       form = {
         numeroALA: String(seed.pedido || seed.numeroALA || '').replace(/\D/g, ''),
         cidade: seed.cidade || seed.endereco?.cidade || '',
         enderecoCompleto: seed.enderecoCompleto || seed.endereco?.completo || '',
         numeroEndereco: seed.numeroEndereco || seed.endereco?.numero || '',
         cep: seed.cep || seed.endereco?.cep || '',
-        coordenadas: form.coordenadas || '',
+        coordenadas: '',
         tabulacaoFinal: seed.tabulacaoFinal || '',
         projetista: usuario || seed.projetista || ''
       };
@@ -1137,6 +1146,7 @@
         positionedFromSeed = true;
         statusMsg = 'Endereço posicionado no mapa';
         requestMapResize(30);
+        void ensureMapPositionedAfterReady();
         setTimeout(() => applyTabulacaoFromMapNow(), 1200);
       } else if ((form.enderecoCompleto || '').trim()) {
         // Sem coords: pesquisa já, sem esperar a API do chamado
@@ -1145,6 +1155,9 @@
         void localizarNoMapa().catch((err) => {
           console.warn('[Workbench] Localizar (seed):', err?.message || err);
         });
+      } else {
+        statusMsg = 'Pedido aberto — aguardando endereço da Agenda…';
+        error = '';
       }
     }
 
@@ -1266,7 +1279,8 @@
       // Por trás: cria/finaliza no Portal (mesmo sem chamadoId prévio)
       void salvarRelatorio({
         silent: true,
-        pdfHtml: result?.htmlContent || null
+        pdfHtml: result?.htmlContent || null,
+        geradoEm: result?.geradoEm || null
       });
     } catch (err) {
       error = err?.message || String(err);
@@ -1285,7 +1299,7 @@
     }
   }
 
-  async function salvarRelatorio({ silent = false, pdfHtml = null } = {}) {
+  async function salvarRelatorio({ silent = false, pdfHtml = null, geradoEm = null } = {}) {
     const pedidoKey = String(form.numeroALA || workbenchSeed?.pedido || chamadoId || '')
       .replace(/\D/g, '')
       .trim();
@@ -1319,7 +1333,8 @@
             ...buildReportPayload(),
             persist: true,
             seed: workbenchSeed || undefined,
-            ...(pdfHtml ? { pdfHtml } : {})
+            ...(pdfHtml ? { pdfHtml } : {}),
+            ...(geradoEm ? { geradoEm } : {})
           })
         }
       );
