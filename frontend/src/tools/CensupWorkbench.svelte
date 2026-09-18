@@ -1104,6 +1104,21 @@
     }
   }
 
+  /** Evita reiniciar geocode/DROP quando a extensão reenvia o mesmo seed. */
+  let lastLocateKey = '';
+  let locateInFlightKey = '';
+
+  function buildLocateKey(pedido, endereco, coords) {
+    const p = String(pedido || '').replace(/\D/g, '');
+    const a = String(endereco || '')
+      .toLowerCase()
+      .replace(/\s+/g, ' ')
+      .trim();
+    const lat = coords?.lat != null ? Number(coords.lat).toFixed(5) : '';
+    const lng = coords?.lng != null ? Number(coords.lng).toFixed(5) : '';
+    return `${p}|${a}|${lat},${lng}`;
+  }
+
   function coordsFromSeed(seed) {
     if (!seed) return null;
     const c = seed.mapaCoords || seed.localizacao || null;
@@ -1121,16 +1136,13 @@
     workbenchSeed = payload.seed && typeof payload.seed === 'object' ? payload.seed : workbenchSeed;
     clearTabulacaoUserOverride();
     sugeridaOriginal = '';
-    pendingLocateAfterMapReady = false;
-    addressFromMap = false;
     ensureProjetistaFromLogin();
 
     let positionedFromSeed = false;
 
     if (payload.seed) {
       const seed = payload.seed;
-      // Não chama clearWorkbenchMap aqui — localizar/search substitui o pin e evita corrida
-      pinCoords = null;
+      // Não limpa o mapa aqui — localizar/search substitui o pin (preserva DROP)
 
       const enderecoTxtRaw = String(
         seed.enderecoCompleto || seed.endereco?.completo || seed.endereco?.logradouro || ''
@@ -1170,8 +1182,48 @@
         }
       }
 
+      const nextPedido = String(seed.pedido || seed.numeroALA || '').replace(/\D/g, '');
+      const seedCoords = coordsFromSeed(seed);
+      const locateKey = buildLocateKey(nextPedido, enderecoBusca || enderecoTxt, seedCoords);
+      const hasLocatePayload = !!(enderecoBusca || enderecoTxt || seedCoords);
+
+      // Mesmo pedido/endereço já localizando ou já no mapa → só atualiza metadados (sem re-DROP)
+      const alreadySame =
+        hasLocatePayload &&
+        locateKey &&
+        (locateKey === lastLocateKey || locateKey === locateInFlightKey) &&
+        (locating || !!pinCoords || locateInFlightKey === locateKey || pendingLocateAfterMapReady);
+      if (alreadySame) {
+        form = {
+          ...form,
+          numeroALA: nextPedido || form.numeroALA,
+          cidade: cidadeTxt || form.cidade,
+          enderecoCompleto: enderecoBusca || enderecoTxt || form.enderecoCompleto,
+          numeroEndereco: seed.numeroEndereco || seed.endereco?.numero || form.numeroEndereco,
+          cep: normalizeCep(seed.cep || seed.endereco?.cep || form.cep),
+          projetista: usuario || seed.projetista || form.projetista
+        };
+        form = form;
+        ensureProjetistaFromLogin();
+        if (chamadoId) {
+          await loadChamado(chamadoId, { preserveMap: true });
+          return;
+        }
+        loading = false;
+        statusMsg = locating || pendingLocateAfterMapReady
+          ? 'Localizando endereço no mapa…'
+          : 'Pronto para revisar — salve ou gere o PDF para gravar no Portal';
+        postToParent('READY', { chamadoId: '', pedido: form.numeroALA });
+        return;
+      }
+
+      // Novo locate (ou upgrade de seed vazio → com endereço)
+      pendingLocateAfterMapReady = false;
+      addressFromMap = false;
+      pinCoords = null;
+
       form = {
-        numeroALA: String(seed.pedido || seed.numeroALA || '').replace(/\D/g, ''),
+        numeroALA: nextPedido,
         cidade: cidadeTxt,
         // Prefere query completa para o Localizar automático trazer CTOs no lugar certo
         enderecoCompleto: enderecoBusca || enderecoTxt,
@@ -1185,7 +1237,6 @@
       ensureProjetistaFromLogin();
       form = form;
 
-      const seedCoords = coordsFromSeed(seed);
       const hasAddress = !!(form.enderecoCompleto || '').trim();
 
       // Preferência: geocode do endereço (traz CTOs). Coords só se não houver endereço.
@@ -1193,21 +1244,28 @@
         statusMsg = 'Localizando endereço no mapa…';
         positionedFromSeed = true;
         pendingLocateAfterMapReady = true;
-        void localizarNoMapa().catch((err) => {
-          console.warn('[Workbench] Localizar (seed):', err?.message || err);
-          // Fallback coords da Agenda se geocode falhar
-          if (seedCoords) {
-            pinCoords = seedCoords;
-            form.coordenadas = formatCoords(seedCoords.lat, seedCoords.lng);
-            form = form;
-            void ensureMapPositionedAfterReady();
-          }
-        });
+        lastLocateKey = locateKey;
+        locateInFlightKey = locateKey;
+        void localizarNoMapa()
+          .catch((err) => {
+            console.warn('[Workbench] Localizar (seed):', err?.message || err);
+            // Fallback coords da Agenda se geocode falhar
+            if (seedCoords) {
+              pinCoords = seedCoords;
+              form.coordenadas = formatCoords(seedCoords.lat, seedCoords.lng);
+              form = form;
+              void ensureMapPositionedAfterReady();
+            }
+          })
+          .finally(() => {
+            if (locateInFlightKey === locateKey) locateInFlightKey = '';
+          });
       } else if (seedCoords) {
         pinCoords = seedCoords;
         form.coordenadas = formatCoords(seedCoords.lat, seedCoords.lng);
         form = form;
         positionedFromSeed = true;
+        lastLocateKey = locateKey;
         statusMsg = 'Endereço posicionado no mapa';
         requestMapResize(30);
         void ensureMapPositionedAfterReady();
@@ -1216,6 +1274,9 @@
         statusMsg = 'Pedido aberto — aguardando endereço da Agenda…';
         error = '';
       }
+    } else {
+      pendingLocateAfterMapReady = false;
+      addressFromMap = false;
     }
 
     if (!usuario) {
