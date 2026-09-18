@@ -395,6 +395,8 @@
               <th>Sistema</th>
               <th>Pedido</th>
               <th>Data Situação</th>
+              <th>Hora da Abertura</th>
+              <th>Hora do Fechamento</th>
               <th>PDV</th>
               <th>Motivo</th>
               <th>Situação</th>
@@ -404,11 +406,11 @@
           <tbody>
             {#if loadingList && chamados.length === 0}
               <tr>
-                <td colspan="9" class="empty-cell">Carregando chamados…</td>
+                <td colspan="11" class="empty-cell">Carregando chamados…</td>
               </tr>
             {:else if chamados.length === 0}
               <tr>
-                <td colspan="9" class="empty-cell">
+                <td colspan="11" class="empty-cell">
                   Nenhum relatório finalizado ainda
                 </td>
               </tr>
@@ -420,6 +422,8 @@
                   <td>{cellText(item.sistema)}</td>
                   <td>{cellText(item.pedido)}</td>
                   <td>{cellText(item.dataSituacaoLabel || item.dataSituacao)}</td>
+                  <td>{cellText(item.horaAberturaLabel)}</td>
+                  <td>{cellText(item.horaFechamentoLabel)}</td>
                   <td>{cellText(item.pdv)}</td>
                   <td>{cellText(item.motivo)}</td>
                   <td>{cellText(item.situacaoLabel || item.situacao || 'Finalizado')}</td>
