@@ -32,7 +32,22 @@ const CORE_KEYS = new Set([
 
 function parseDataSituacao(value) {
   if (!value) return null;
-  const date = new Date(value);
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value.toISOString();
+  }
+  const raw = String(value).trim();
+  if (!raw) return null;
+
+  const br = raw.match(
+    /(\d{2})\/(\d{2})\/(\d{4})(?:,?\s*(\d{2}):(\d{2})(?::(\d{2}))?)?/
+  );
+  if (br) {
+    const [, dd, mm, yyyy, hh = '00', mi = '00', ss = '00'] = br;
+    const date = new Date(`${yyyy}-${mm}-${dd}T${hh}:${mi}:${ss}-03:00`);
+    if (!Number.isNaN(date.getTime())) return date.toISOString();
+  }
+
+  const date = new Date(raw);
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
@@ -49,6 +64,16 @@ export function chamadoToRow(chamado) {
     return s;
   };
 
+  // Preserva texto BR da Agenda mesmo se data_situacao for gravado em ISO
+  const rawAgenda =
+    clean(chamado.dataSituacaoRaw) ||
+    (typeof chamado.dataSituacao === 'string' && /\d{2}\/\d{2}\/\d{4}/.test(chamado.dataSituacao)
+      ? clean(chamado.dataSituacao)
+      : null);
+  if (rawAgenda && !extras.dataSituacaoRaw) {
+    extras.dataSituacaoRaw = rawAgenda;
+  }
+
   return {
     id: chamado.id,
     agenda_code: clean(chamado.agendaCode),
@@ -59,7 +84,7 @@ export function chamadoToRow(chamado) {
     pdv: clean(chamado.pdv),
     motivo: clean(chamado.motivo),
     situacao: clean(chamado.situacao),
-    data_situacao: parseDataSituacao(chamado.dataSituacao),
+    data_situacao: parseDataSituacao(chamado.dataSituacao || rawAgenda),
     endereco: chamado.endereco && typeof chamado.endereco === 'object' ? chamado.endereco : {},
     mapa_coords: chamado.mapaCoords || null,
     mapa_referencias: Array.isArray(chamado.mapaReferencias) ? chamado.mapaReferencias : [],
@@ -209,7 +234,8 @@ export async function dbListChamadosNaFila({ q = '', page = 1, limit = 10, filaS
   const query = (q || '').trim();
   const status = filaStatus === 'finalizada' ? 'finalizada' : 'na_fila';
 
-  // Sem extras na listagem: pdfHtml/print em base64 no JSONB derruba a API (502).
+  // Sem extras completos: pdfHtml em JSONB derruba a API.
+  // Puxa só chaves leves para Data Situação (Agenda) e SALVO EM.
   let builder = client()
     .from(TABLE)
     .select(
@@ -234,7 +260,11 @@ export async function dbListChamadosNaFila({ q = '', page = 1, limit = 10, filaS
         'tabulacao_final',
         'pdf_path',
         'created_at',
-        'updated_at'
+        'updated_at',
+        'dataSituacaoRaw:extras->>dataSituacaoRaw',
+        'relatorioSalvoAt:extras->>relatorioSalvoAt',
+        'geradoEm:extras->>geradoEm',
+        'relatorioSavedAt:extras->relatorio->>savedAt'
       ].join(', '),
       { count: 'exact' }
     )
@@ -262,8 +292,26 @@ export async function dbListChamadosNaFila({ q = '', page = 1, limit = 10, filaS
   throwIfError(error, 'listar fila');
 
   const chamados = (data || []).map((row) => {
-    const item = stripHeavyChamadoFields(rowToChamado({ ...row, extras: {} }));
-    // Lista de finalizados = relatório salvo (extras não vêm neste select)
+    const {
+      dataSituacaoRaw,
+      relatorioSalvoAt,
+      geradoEm,
+      relatorioSavedAt,
+      ...coreRow
+    } = row || {};
+    const item = stripHeavyChamadoFields(rowToChamado({ ...coreRow, extras: {} }));
+
+    if (dataSituacaoRaw) item.dataSituacaoRaw = dataSituacaoRaw;
+    if (!item.dataSituacao && dataSituacaoRaw) {
+      item.dataSituacao = parseDataSituacao(dataSituacaoRaw) || dataSituacaoRaw;
+    }
+    if (relatorioSalvoAt) item.relatorioSalvoAt = relatorioSalvoAt;
+    if (geradoEm) item.geradoEm = geradoEm;
+    if (relatorioSavedAt) {
+      item.relatorio = { ...(item.relatorio || {}), savedAt: relatorioSavedAt };
+    }
+
+    // Lista de finalizados = relatório salvo (extras pesados não vêm neste select)
     if (item.filaStatus === 'finalizada') {
       item.relatorioSalvo = true;
     }
