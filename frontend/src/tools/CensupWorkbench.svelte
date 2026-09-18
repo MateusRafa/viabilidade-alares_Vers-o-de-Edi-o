@@ -1112,7 +1112,9 @@
       longitude: pinCoords?.lng ?? null,
       tabulacaoFinal: form.tabulacaoFinal.trim(),
       projetista: (form.projetista || usuario || '').trim(),
-      tabulacaoSugeridaOriginal: sugeridaOriginal || null
+      tabulacaoSugeridaOriginal: sugeridaOriginal || null,
+      mapPreviewImage: mapPreviewImage || null,
+      previewImage: mapPreviewImage || null
     };
   }
 
@@ -1182,6 +1184,11 @@
       showInfoModal = false;
       if (chamadoId) {
         postToParent('REPORT_GENERATED', { chamadoId, viAla: result?.viAla || null });
+        // Por trás: finaliza e salva o mesmo print no Portal
+        void salvarRelatorio({
+          silent: true,
+          pdfHtml: result?.htmlContent || null
+        });
       }
     } catch (err) {
       error = err?.message || String(err);
@@ -1200,21 +1207,37 @@
     }
   }
 
-  async function salvarRelatorio() {
+  async function salvarRelatorio({ silent = false, pdfHtml = null } = {}) {
     if (!chamadoId) {
-      error = 'Chamado não carregado.';
+      if (!silent) error = 'Chamado não carregado.';
       return;
     }
-    saving = true;
-    error = '';
-    statusMsg = 'Salvando relatório no Portal…';
+    if (!silent) {
+      saving = true;
+      error = '';
+      statusMsg = 'Salvando relatório no Portal…';
+    }
     try {
+      if (!mapPreviewImage && typeof viabilidadeRef?.refreshWorkbenchMapPreview === 'function') {
+        capturingMapPreview = true;
+        try {
+          const preview = await viabilidadeRef.refreshWorkbenchMapPreview();
+          if (preview) mapPreviewImage = preview;
+        } finally {
+          capturingMapPreview = false;
+        }
+      }
+
       const response = await fetch(
         getApiUrl(`/api/portal-censup/chamados/${encodeURIComponent(chamadoId)}/relatorio`),
         {
           method: 'POST',
           headers: authHeaders(),
-          body: JSON.stringify({ ...buildReportPayload(), persist: true })
+          body: JSON.stringify({
+            ...buildReportPayload(),
+            persist: true,
+            ...(pdfHtml ? { pdfHtml } : {})
+          })
         }
       );
       const data = await response.json().catch(() => ({}));
@@ -1222,17 +1245,24 @@
         throw new Error(data.error || `Falha ao salvar relatório (${response.status})`);
       }
       chamado = data.chamado || chamado;
-      statusMsg = 'Relatório salvo no arquivo do Portal';
+      if (!silent) {
+        statusMsg = 'Relatório salvo no arquivo do Portal';
+      }
       postToParent('REPORT_SAVED', {
         chamadoId,
         pedido: chamado?.pedido,
-        corrected: data.corrected === true
+        corrected: data.corrected === true,
+        silent: silent === true
       });
     } catch (err) {
-      error = err?.message || String(err);
-      statusMsg = '';
+      if (!silent) {
+        error = err?.message || String(err);
+        statusMsg = '';
+      } else {
+        console.warn('[Workbench] Falha ao salvar relatório no Portal após Gerar PDF:', err);
+      }
     } finally {
-      saving = false;
+      if (!silent) saving = false;
     }
   }
 
