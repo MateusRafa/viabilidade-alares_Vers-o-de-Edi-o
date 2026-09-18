@@ -1116,18 +1116,27 @@
 
     if (payload.seed) {
       const seed = payload.seed;
-      // Novo pedido: limpa pin/mapa anterior (evita ficar em SP enquanto o seed ainda carrega)
+      // Não chama clearWorkbenchMap aqui — localizar/search substitui o pin e evita corrida
       pinCoords = null;
-      try {
-        viabilidadeRef?.clearWorkbenchMap?.();
-      } catch {
-        /* ignore */
+
+      const enderecoTxt = String(
+        seed.enderecoCompleto || seed.endereco?.completo || seed.endereco?.logradouro || ''
+      ).trim();
+      const cidadeTxt = String(seed.cidade || seed.endereco?.cidade || '').trim();
+      // Monta query de geocode completa (rua + cidade) quando possível
+      let enderecoBusca = enderecoTxt;
+      if (
+        enderecoBusca &&
+        cidadeTxt &&
+        !enderecoBusca.toLowerCase().includes(cidadeTxt.toLowerCase())
+      ) {
+        enderecoBusca = `${enderecoBusca}, ${cidadeTxt}`;
       }
 
       form = {
         numeroALA: String(seed.pedido || seed.numeroALA || '').replace(/\D/g, ''),
-        cidade: seed.cidade || seed.endereco?.cidade || '',
-        enderecoCompleto: seed.enderecoCompleto || seed.endereco?.completo || '',
+        cidade: cidadeTxt,
+        enderecoCompleto: enderecoTxt || enderecoBusca,
         numeroEndereco: seed.numeroEndereco || seed.endereco?.numero || '',
         cep: seed.cep || seed.endereco?.cep || '',
         coordenadas: '',
@@ -1136,10 +1145,27 @@
       };
       form.cep = normalizeCep(form.cep);
       ensureProjetistaFromLogin();
+      form = form;
 
-      // Prioridade: coords da Agenda → pin imediato (sem geocode)
       const seedCoords = coordsFromSeed(seed);
-      if (seedCoords) {
+      const hasAddress = !!(form.enderecoCompleto || '').trim();
+
+      // Preferência: geocode do endereço (traz CTOs). Coords só se não houver endereço.
+      if (hasAddress) {
+        statusMsg = 'Localizando endereço no mapa…';
+        positionedFromSeed = true;
+        pendingLocateAfterMapReady = true;
+        void localizarNoMapa().catch((err) => {
+          console.warn('[Workbench] Localizar (seed):', err?.message || err);
+          // Fallback coords da Agenda se geocode falhar
+          if (seedCoords) {
+            pinCoords = seedCoords;
+            form.coordenadas = formatCoords(seedCoords.lat, seedCoords.lng);
+            form = form;
+            void ensureMapPositionedAfterReady();
+          }
+        });
+      } else if (seedCoords) {
         pinCoords = seedCoords;
         form.coordenadas = formatCoords(seedCoords.lat, seedCoords.lng);
         form = form;
@@ -1148,13 +1174,6 @@
         requestMapResize(30);
         void ensureMapPositionedAfterReady();
         setTimeout(() => applyTabulacaoFromMapNow(), 1200);
-      } else if ((form.enderecoCompleto || '').trim()) {
-        // Sem coords: pesquisa já, sem esperar a API do chamado
-        statusMsg = 'Localizando endereço no mapa…';
-        positionedFromSeed = true;
-        void localizarNoMapa().catch((err) => {
-          console.warn('[Workbench] Localizar (seed):', err?.message || err);
-        });
       } else {
         statusMsg = 'Pedido aberto — aguardando endereço da Agenda…';
         error = '';
@@ -1454,7 +1473,7 @@
       void refreshTabulacoesForReport();
     }, 1500);
 
-    // Bootstrap via query (fallback sem postMessage)
+    // Bootstrap via query (seed da Agenda na URL — caminho principal no reload do iframe)
     const params = new URLSearchParams(window.location.search);
     const qTheme = params.get('theme');
     if (qTheme === 'dark' || qTheme === 'light') {
@@ -1466,8 +1485,17 @@
     }
     const qUser = params.get('usuario') || '';
     const qId = params.get('chamadoId') || params.get('id') || '';
-    if (qUser || qId) {
-      await applyInitPayload({ usuario: qUser, chamadoId: qId });
+    let qSeed = null;
+    try {
+      const rawSeed = params.get('seed');
+      if (rawSeed) {
+        qSeed = typeof rawSeed === 'string' ? JSON.parse(rawSeed) : rawSeed;
+      }
+    } catch (err) {
+      console.warn('[Workbench] seed na URL inválido:', err?.message || err);
+    }
+    if (qUser || qId || qSeed) {
+      await applyInitPayload({ usuario: qUser, chamadoId: qId, seed: qSeed });
     } else {
       loading = false;
       statusMsg = 'Aguardando dados da extensão…';
