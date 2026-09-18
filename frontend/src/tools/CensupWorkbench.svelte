@@ -49,6 +49,8 @@
   let sugeridaOriginal = '';
   /** true = usuário escolheu a tabulação no select; não sobrescrever com sugestão automática */
   let tabulacaoUserOverride = false;
+  /** Se a localização falhou porque o mapa ainda não estava pronto, tenta de novo no MAP_READY */
+  let pendingLocateAfterMapReady = false;
   let showInfoModal = false;
   let equipamentos = [];
   /** Box “Fora do Limite” (CTO > 250m) — espelho do oficial. */
@@ -122,6 +124,10 @@
   }
 
   /** 2.5 — tabulação automática acompanha o endereço atual no mapa */
+  function motivoAtual() {
+    return String(chamado?.motivo || workbenchSeed?.motivo || '').trim();
+  }
+
   function onTabulacaoSugeridaFromMap(payload = {}) {
     const tab = String(payload?.tabulacaoFinal || '').trim();
     if (!tab) return;
@@ -135,7 +141,7 @@
   function applyTabulacaoFromMapNow() {
     try {
       if (typeof viabilidadeRef?.getWorkbenchTabulacaoSugerida !== 'function') return;
-      const suggestion = viabilidadeRef.getWorkbenchTabulacaoSugerida(chamado?.motivo || '');
+      const suggestion = viabilidadeRef.getWorkbenchTabulacaoSugerida(motivoAtual());
       if (suggestion?.tabulacaoFinal) {
         onTabulacaoSugeridaFromMap(suggestion);
       }
@@ -709,6 +715,11 @@
   function fillFormFromChamado(item) {
     const end = item?.endereco || {};
     const coords = coordsFromChamado(item);
+    const keepTabFromMap =
+      tabulacaoUserOverride ||
+      (!!sugeridaOriginal &&
+        !!form.tabulacaoFinal &&
+        form.tabulacaoFinal === sugeridaOriginal);
     const next = {
       numeroALA: String(item?.pedido || '').replace(/\D/g, ''),
       cidade: end.cidade || item?.cidade || '',
@@ -716,7 +727,9 @@
       numeroEndereco: end.numero || '',
       cep: normalizeCep(end.cep),
       coordenadas: coords ? formatCoords(coords.lat, coords.lng) : form.coordenadas || '',
-      tabulacaoFinal: item?.tabulacaoFinal || '',
+      tabulacaoFinal: keepTabFromMap
+        ? form.tabulacaoFinal
+        : item?.tabulacaoFinal || form.tabulacaoFinal || '',
       projetista: String(usuario || '').trim() || item?.viabilidadeResumo?.projetista || ''
     };
     // Se o mapa já resolveu o endereço do pin, não voltar para o texto da Agenda/busca
@@ -735,7 +748,10 @@
         Math.abs(Number(pinCoords.lng) - Number(coords.lng)) < 1e-6;
       if (!same) pinCoords = coords;
     }
-    sugeridaOriginal = item?.tabulacaoFinal || item?.analiseIa?.tabulacaoSugerida || '';
+    // Não sobrescrever sugestão do mapa com a do backend (ex.: Complemento → Externo)
+    if (!sugeridaOriginal) {
+      sugeridaOriginal = item?.analiseIa?.tabulacaoSugerida || item?.tabulacaoFinal || '';
+    }
     ensureProjetistaFromLogin();
   }
 
@@ -763,10 +779,15 @@
       mapSearchError = 'Informe um endereço para localizar.';
       return;
     }
-    if (!viabilidadeRef || typeof viabilidadeRef.searchWorkbenchAddress !== 'function') {
+
+    // Aguarda o mapa ficar pronto (duplo clique às vezes chega antes do iframe)
+    const mapReady = await waitForViabilidadeMap(8000);
+    if (!mapReady || typeof viabilidadeRef.searchWorkbenchAddress !== 'function') {
+      pendingLocateAfterMapReady = true;
       error = 'Mapa ainda carregando. Aguarde e tente de novo.';
       return;
     }
+    pendingLocateAfterMapReady = false;
     locating = true;
     error = '';
     statusMsg = 'Localizando endereço no mapa…';
@@ -792,11 +813,27 @@
       setTimeout(() => applyTabulacaoFromMapNow(), 2200);
       statusMsg = 'Endereço localizado no mapa';
     } catch (err) {
-      error = err?.message || String(err);
+      const msg = err?.message || String(err);
+      // Mapa ainda inicializando → reagenda
+      if (/aguarde o mapa|mapa carregar|não está disponível/i.test(msg)) {
+        pendingLocateAfterMapReady = true;
+      }
+      error = msg;
       statusMsg = '';
     } finally {
       locating = false;
     }
+  }
+
+  async function waitForViabilidadeMap(timeoutMs = 8000) {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      if (viabilidadeRef && typeof viabilidadeRef.searchWorkbenchAddress === 'function') {
+        return true;
+      }
+      await new Promise((r) => setTimeout(r, 150));
+    }
+    return !!(viabilidadeRef && typeof viabilidadeRef.searchWorkbenchAddress === 'function');
   }
 
   function openInfoModal() {
@@ -961,7 +998,9 @@
           form.tabulacaoFinal = tab;
           sugeridaOriginal = analyzed.chamado.analiseIa?.tabulacaoSugerida || tab;
         }
-      } else if (analyzed?.chamado?.analiseIa?.tabulacaoSugerida) {
+      }
+      // Se o mapa ainda não sugeriu, usa backend só como fallback de texto
+      if (!sugeridaOriginal && analyzed?.chamado?.analiseIa?.tabulacaoSugerida) {
         sugeridaOriginal = analyzed.chamado.analiseIa.tabulacaoSugerida;
       }
       statusMsg = tabulacaoUserOverride
@@ -1003,8 +1042,10 @@
         });
       } else if (pinCoords) {
         statusMsg = 'Endereço posicionado no mapa';
+        void ensureMapPositionedAfterReady();
         setTimeout(() => syncForaLimiteFromRef(), 1200);
         setTimeout(() => syncForaLimiteFromRef(), 3000);
+        setTimeout(() => applyTabulacaoFromMapNow(), 1500);
       }
 
       void (async () => {
@@ -1018,14 +1059,19 @@
           if (!form.tabulacaoFinal && chamado?.tabulacaoFinal) {
             form.tabulacaoFinal = chamado.tabulacaoFinal;
           }
-          sugeridaOriginal =
-            chamado?.analiseIa?.tabulacaoSugerida ||
-            chamado?.tabulacaoFinal ||
-            sugeridaOriginal ||
-            '';
+          if (!sugeridaOriginal) {
+            sugeridaOriginal =
+              chamado?.analiseIa?.tabulacaoSugerida ||
+              chamado?.tabulacaoFinal ||
+              '';
+          }
           if (!form.tabulacaoFinal && sugeridaOriginal) {
             form.tabulacaoFinal = sugeridaOriginal;
           }
+          // Mapa manda: Complemento → Externo (não fica preso em Com Portas do backend)
+          applyTabulacaoFromMapNow();
+          setTimeout(() => applyTabulacaoFromMapNow(), 1200);
+          setTimeout(() => applyTabulacaoFromMapNow(), 2800);
           if (!statusMsg || /Posicionando|Localizando|Carregando/i.test(statusMsg)) {
             statusMsg = 'Pronto para revisar';
           }
@@ -1061,6 +1107,8 @@
     chamadoId = String(payload.chamadoId || payload.id || '').trim();
     workbenchSeed = payload.seed && typeof payload.seed === 'object' ? payload.seed : workbenchSeed;
     clearTabulacaoUserOverride();
+    sugeridaOriginal = '';
+    pendingLocateAfterMapReady = false;
     ensureProjetistaFromLogin();
 
     let positionedFromSeed = false;
@@ -1419,6 +1467,48 @@
     setTimeout(() => syncForaLimiteFromRef(), 600);
     setTimeout(() => syncForaLimiteFromRef(), 1800);
     setTimeout(() => syncForaLimiteFromRef(), 4000);
+    setTimeout(() => applyTabulacaoFromMapNow(), 1000);
+    setTimeout(() => applyTabulacaoFromMapNow(), 2500);
+
+    // Duplo clique chegou antes do mapa: completa a localização agora
+    if (pendingLocateAfterMapReady && (form.enderecoCompleto || '').trim()) {
+      pendingLocateAfterMapReady = false;
+      void localizarNoMapa().catch((err) => {
+        console.warn('[Workbench] Localizar (retry MAP_READY):', err?.message || err);
+      });
+      return;
+    }
+
+    if (pinCoords) {
+      void ensureMapPositionedAfterReady();
+      return;
+    }
+
+    if ((form.enderecoCompleto || '').trim()) {
+      void localizarNoMapa().catch((err) => {
+        console.warn('[Workbench] Localizar (MAP_READY):', err?.message || err);
+      });
+    }
+  }
+
+  async function ensureMapPositionedAfterReady() {
+    if (!viabilidadeRef) return;
+    try {
+      if (typeof viabilidadeRef.forceWorkbenchLocationSync === 'function') {
+        const ok = await viabilidadeRef.forceWorkbenchLocationSync();
+        if (ok) {
+          syncForaLimiteFromRef();
+          applyTabulacaoFromMapNow();
+          statusMsg = statusMsg || 'Endereço posicionado no mapa';
+          return;
+        }
+      }
+      if ((form.enderecoCompleto || '').trim()) {
+        await localizarNoMapa();
+      }
+    } catch (err) {
+      console.warn('[Workbench] ensureMapPositionedAfterReady:', err?.message || err);
+    }
   }
 
   function onMapPreviewFromViabilidade(payload = {}) {
@@ -1583,7 +1673,7 @@
               mapDomId="censup-workbench-map"
               currentUser={usuario}
               preferredMapType={preferredMapType}
-              workbenchMotivo={chamado?.motivo || ''}
+              workbenchMotivo={chamado?.motivo || workbenchSeed?.motivo || ''}
               initialAddress={mapAddress}
               initialLat={mapLat}
               initialLng={mapLng}
