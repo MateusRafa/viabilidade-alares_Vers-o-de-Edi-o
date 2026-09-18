@@ -720,12 +720,25 @@
       (!!sugeridaOriginal &&
         !!form.tabulacaoFinal &&
         form.tabulacaoFinal === sugeridaOriginal);
+    const rawCompleto = String(end.completo || '').trim();
+    const completoOk =
+      rawCompleto &&
+      !/\?{2,}/.test(rawCompleto) &&
+      !/endere[cç]o\s*\?+/i.test(rawCompleto)
+        ? rawCompleto
+        : '';
+    // Não sobrescrever endereço bom do seed/mapa com placeholder da API
+    const enderecoCompleto =
+      completoOk ||
+      (form.enderecoCompleto && !/\?{2,}/.test(form.enderecoCompleto)
+        ? form.enderecoCompleto
+        : '');
     const next = {
       numeroALA: String(item?.pedido || '').replace(/\D/g, ''),
-      cidade: end.cidade || item?.cidade || '',
-      enderecoCompleto: end.completo || '',
-      numeroEndereco: end.numero || '',
-      cep: normalizeCep(end.cep),
+      cidade: end.cidade || item?.cidade || form.cidade || '',
+      enderecoCompleto,
+      numeroEndereco: end.numero || form.numeroEndereco || '',
+      cep: normalizeCep(end.cep || form.cep),
       coordenadas: coords ? formatCoords(coords.lat, coords.lng) : form.coordenadas || '',
       tabulacaoFinal: keepTabFromMap
         ? form.tabulacaoFinal
@@ -1122,28 +1135,46 @@
       const enderecoTxtRaw = String(
         seed.enderecoCompleto || seed.endereco?.completo || seed.endereco?.logradouro || ''
       ).trim();
-      // Agenda mostra "????" até LOCALIZAR — não geocodifica placeholder
+      // Agenda mostra "????" no card do mapa — não geocodifica placeholder
       const enderecoTxt =
         !enderecoTxtRaw ||
         /\?{2,}/.test(enderecoTxtRaw) ||
         /endere[cç]o\s*\?+/i.test(enderecoTxtRaw)
           ? ''
           : enderecoTxtRaw;
-      const cidadeTxt = String(seed.cidade || seed.endereco?.cidade || '').trim();
-      // Monta query de geocode completa (rua + cidade) quando possível
+      let cidadeTxt = String(seed.cidade || seed.endereco?.cidade || '').trim();
+      // "EUNAPOLIS/BA" → cidade + UF
+      const cidadeUf = cidadeTxt.match(/^(.+?)\s*\/\s*([A-Za-z]{2})$/);
+      if (cidadeUf) cidadeTxt = cidadeUf[1].trim();
+      const bairroTxt = String(seed.bairro || seed.endereco?.bairro || '').trim();
+      // Monta query de geocode completa (rua + bairro + cidade) quando possível
       let enderecoBusca = enderecoTxt;
-      if (
-        enderecoBusca &&
-        cidadeTxt &&
-        !enderecoBusca.toLowerCase().includes(cidadeTxt.toLowerCase())
-      ) {
-        enderecoBusca = `${enderecoBusca}, ${cidadeTxt}`;
+      if (enderecoBusca) {
+        const extras = [];
+        if (
+          bairroTxt &&
+          !/\?/.test(bairroTxt) &&
+          !enderecoBusca.toLowerCase().includes(bairroTxt.toLowerCase())
+        ) {
+          extras.push(bairroTxt);
+        }
+        if (
+          cidadeTxt &&
+          !enderecoBusca.toLowerCase().includes(cidadeTxt.toLowerCase())
+        ) {
+          extras.push(cidadeTxt);
+        }
+        if (extras.length) enderecoBusca = `${enderecoBusca}, ${extras.join(', ')}`;
+        if (!/,\s*brasil\b/i.test(enderecoBusca)) {
+          enderecoBusca = `${enderecoBusca}, Brasil`;
+        }
       }
 
       form = {
         numeroALA: String(seed.pedido || seed.numeroALA || '').replace(/\D/g, ''),
         cidade: cidadeTxt,
-        enderecoCompleto: enderecoTxt || enderecoBusca,
+        // Prefere query completa para o Localizar automático trazer CTOs no lugar certo
+        enderecoCompleto: enderecoBusca || enderecoTxt,
         numeroEndereco: seed.numeroEndereco || seed.endereco?.numero || '',
         cep: seed.cep || seed.endereco?.cep || '',
         coordenadas: '',
