@@ -2342,11 +2342,38 @@
     return '#f8f9fa';
   }
 
-  /** Cores do ícone de prédio: MDU por ocupação agregada; legacy por ATIVADO. */
+  /** Cores do ícone de prédio: MDU por ocupação agregada; sem equipamentos internos = cinza; legacy por ATIVADO. */
   function getPredioMarkerColors(cto) {
     const isMdu = cto?.fonte_condominio === 'mdu' || cto?.condominio_data?.fonte === 'mdu';
     if (isMdu) {
       const internas = cto.ctos_internas || cto.condominio_data?.ctos_internas || [];
+      const nomesRaw = cto.nomes_cto ?? cto.condominio_data?.nomes_cto ?? null;
+      const hasNomesCto =
+        (Array.isArray(nomesRaw) && nomesRaw.some((n) => String(n || '').trim())) ||
+        (typeof nomesRaw === 'string' &&
+          String(nomesRaw)
+            .split(/[,;|/]+/)
+            .some((s) => s.trim()));
+      const hasEquipamentosInternos =
+        (Array.isArray(internas) && internas.length > 0) || hasNomesCto;
+
+      // Sem CTO/equipamento interno na planilha MDU → cinza
+      if (!hasEquipamentosInternos) {
+        const windowColor = '#95A5A6';
+        return {
+          windowColor,
+          strokeColor: getPredioStrokeForFill(windowColor),
+          fillColor: windowColor,
+          ports: {
+            vagas_total: 0,
+            clientes_conectados: 0,
+            portas_disponiveis: 0,
+            pct_ocup: null
+          },
+          semEquipamentoInterno: true
+        };
+      }
+
       const ports =
         Array.isArray(internas) && internas.length > 0
           ? aggregateMduPortsFromInternas(internas)
@@ -2356,7 +2383,8 @@
         windowColor,
         strokeColor: getPredioStrokeForFill(windowColor),
         fillColor: windowColor,
-        ports
+        ports,
+        semEquipamentoInterno: false
       };
     }
     const statusCto = cto?.status_cto_condominio || cto?.condominio_data?.status_cto || '';
@@ -2366,7 +2394,8 @@
       windowColor,
       strokeColor: getPredioStrokeForFill(windowColor),
       fillColor: windowColor,
-      ports: null
+      ports: null,
+      semEquipamentoInterno: false
     };
   }
 
@@ -6942,7 +6971,7 @@
               detalheHTML = `
                 <div style="margin-top: 12px; padding: 8px; background-color: ${getOccupancySoftBg(predioOcc.windowColor)}; border-left: 3px solid ${predioOcc.windowColor}; border-radius: 4px;">
                   <strong style="color: #333;">Condomínio cadastrado (base MDU)</strong><br>
-                  <span style="color: #4b5563; font-size: 12px;">Nenhuma CTO interna listada neste registro.</span>
+                  <span style="color: #4b5563; font-size: 12px;">Sem equipamentos internos — marcador cinza.</span>
                 </div>
               `;
             } else {
