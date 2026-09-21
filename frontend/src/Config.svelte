@@ -261,26 +261,24 @@
     // 5. Atualizando CTOs: 90-95% (pode ser lento)
     // 6. Finalizando: 95-100%
     
-    // Estágio: Carregando CTOs existentes (0% a 5%)
-    // Se stage é 'idle' ou não definido, estamos no início
+    // Estágio: Carregando / preparando staging (início)
+    // Se stage é 'idle' ou não definido, estamos no início — confiar no uploadPercent do backend
     if (!progress.stage || progress.stage === 'idle') {
-      // Se temos processedRows ou totalRows do processamento Excel, já passou do carregamento
-      if (progress.processedRows > 0 && progress.totalRows > 0 && progress.stage !== 'idle') {
-        // Já passou do carregamento inicial, está processando
-        return 5;
+      // Se já há linhas processadas do Excel, tratar como processing
+      if (progress.processedRows > 0 && progress.totalRows > 0) {
+        const basePercent = 5;
+        const stageRange = 75;
+        const rowProgress = Math.min(100, (progress.processedRows / progress.totalRows) * 100);
+        return Math.min(80, Math.round(basePercent + (rowProgress / 100) * stageRange));
       }
-      // Ainda carregando CTOs existentes ou início do processo
-      // Se temos uploadPercent do backend (0-5%), usar diretamente
+      // Confiar no percentual do backend (staging sobe 6–8% etc.)
       if (progress.uploadPercent !== undefined && progress.uploadPercent !== null && progress.uploadPercent > 0) {
-        return Math.min(5, Math.max(0, Math.round(progress.uploadPercent)));
+        return Math.min(95, Math.max(0, Math.round(progress.uploadPercent)));
       }
-      // Se a mensagem indica carregamento de CTOs, mostrar progresso mínimo
       const message = (progress.message || '').toLowerCase();
-      if (message.includes('carregando cto') || message.includes('iniciando')) {
-        // Se já começou mas ainda não temos percentual, mostrar 0% (início)
-        return 0;
+      if (message.includes('carregando') || message.includes('iniciando') || message.includes('staging')) {
+        return Math.max(1, Math.round(progress.uploadPercent || 1));
       }
-      // Fallback: início do processo - SEMPRE retornar 0%
       return 0;
     }
     
@@ -289,7 +287,7 @@
       const basePercent = 5;
       const stageRange = 75; // 5% a 80% = 75% de range
       
-      // ÚNICA FONTE: Usar processedRows/totalRows (não confiar em uploadPercent do backend)
+      // Preferir processedRows/totalRows; se ainda não há total, usar uploadPercent do backend
       if (progress.totalRows > 0 && progress.processedRows >= 0) {
         // Se totalRows é uma estimativa (maior que processedRows), usar processedRows como base
         // Caso contrário, calcular normalmente
@@ -300,6 +298,11 @@
         const calculatedPercent = basePercent + (processingProgressPercent / 100) * stageRange;
         // Garantir que está no range 5-80% e arredondar com precisão
         return Math.min(80, Math.max(basePercent, Math.round(calculatedPercent * 100) / 100));
+      }
+
+      // Sem totalRows ainda: usar uploadPercent do backend (staging / início do parse)
+      if (progress.uploadPercent !== undefined && progress.uploadPercent !== null && progress.uploadPercent > 0) {
+        return Math.min(80, Math.max(basePercent, Math.round(progress.uploadPercent)));
       }
       
       // Se não temos dados ainda, retornar início do estágio
@@ -3115,13 +3118,30 @@
             <div class="progress-container" style="margin-top: 1rem;">
               <div class="progress-bar-wrapper">
                 <div class="progress-label">
-                  Carregando<span class="loading-dots">
-                    <span class="dot">.</span><span class="dot">.</span><span class="dot">.</span>
-                  </span> {Math.round(displayedPercent)}%
+                  {#if uploadProgress?.message}
+                    {uploadProgress.message}
+                  {:else}
+                    Carregando<span class="loading-dots">
+                      <span class="dot">.</span><span class="dot">.</span><span class="dot">.</span>
+                    </span>
+                  {/if}
+                  {' '}{Math.round(displayedPercent)}%
                 </div>
                 <div class="progress-bar">
                   <div class="progress-fill" style="width: {displayedPercent}%;"></div>
                 </div>
+                {#if uploadProgress?.processedRows > 0 && uploadProgress?.totalRows > 0}
+                  <p style="margin: 0.35rem 0 0; font-size: 0.8rem; opacity: 0.85;">
+                    {uploadProgress.processedRows} / {uploadProgress.totalRows} linhas
+                    {#if uploadProgress.stage}
+                      · estágio: {uploadProgress.stage}
+                    {/if}
+                  </p>
+                {:else if uploadProgress?.stage}
+                  <p style="margin: 0.35rem 0 0; font-size: 0.8rem; opacity: 0.85;">
+                    estágio: {uploadProgress.stage}
+                  </p>
+                {/if}
               </div>
             </div>
           {/if}
