@@ -2670,7 +2670,7 @@
   .wb-map-pane {
     flex: 1 1 auto;
     align-self: stretch;
-    min-width: 0;
+    min-width: 464px;
     min-height: 0;
     width: auto;
     max-width: 100%;
@@ -2688,7 +2688,9 @@
     top: 10px;
     right: 10px;
     z-index: 25;
-    width: min(280px, calc(100% - 20px));
+    width: 280px;
+    /* Reserva espaço do grupo Mapa/Satélite à esquerda — evita salto/sobreposição */
+    max-width: calc(100% - 168px);
     display: flex;
     flex-direction: column;
     gap: 0.35rem;
