@@ -8131,105 +8131,94 @@ app.post('/api/upload-base', (req, res, next) => {
             console.log('📤 [Background] ===== INICIANDO IMPORTAÇÃO SUPABASE =====');
             console.log('📤 [Background] Usando processamento em STREAMING (exceljs) para arquivos grandes...');
             
-            // NOVO FLUXO: Carregar CTOs existentes para comparação inteligente
+            // NOVO FLUXO: Staging / atualização inteligente
             // POLÍGONOS NÃO SÃO TRATADOS AQUI - apenas no botão "Criar Nova Mancha de Cobertura"
-            uploadProgress.stage = 'idle'; // Manter como 'idle' durante carregamento
-            uploadProgress.uploadPercent = 5; // Já estamos em 5% (validação completa)
+            uploadProgress.stage = 'processing';
+            uploadProgress.uploadPercent = 5;
             uploadProgress.processedRows = 0;
             uploadProgress.totalRows = 0;
-            uploadProgress.message = 'Carregando CTOs existentes para comparação inteligente...';
+            uploadProgress.message = 'Iniciando atualização (staging)...';
             console.log('📥 [Background] ===== INICIANDO ATUALIZAÇÃO INTELIGENTE =====');
-            console.log('📥 [Background] Carregando CTOs existentes do Supabase para comparação...');
 
-            // Staging + swap: grava em dataset staging; leituras seguem no active
+            // Staging + swap: Excel no staging VAZIO (sem clonar 227k — travava em 5% no Railway).
             let writeDatasetId = null;
             let stagingMode = false;
             if (await isDatasetStagingEnabled(supabase)) {
+              uploadProgress.uploadPercent = 6;
+              uploadProgress.message =
+                'Criando base staging (ferramenta continua liberada)...';
+              console.log('🆕 [Background] Staging habilitado — insert direto do Excel (sem clone)');
               const activeId = await ensureActiveDataset(supabase);
+              console.log(`🆕 [Background] Active dataset: ${activeId}`);
               const staging = await createStagingDataset(supabase, {
                 label: fileName || `upload-${Date.now()}`,
-                meta: { fileName, fileSize }
+                meta: { fileName, fileSize, strategy: 'excel-full-insert' }
               });
               writeDatasetId = staging.id;
               stagingMode = true;
               uploadProgress.stagingDatasetId = writeDatasetId;
               uploadProgress.pendingSwap = true;
+              uploadProgress.uploadPercent = 8;
               uploadProgress.message =
-                'Preparando base staging (a ferramenta continua liberada para uso)...';
-              console.log(
-                `🆕 [Background] Staging ${writeDatasetId} (active=${activeId}) — clonando CTOs...`
-              );
-              try {
-                await cloneCtosBetweenDatasets(supabase, activeId, writeDatasetId, {
-                  pgUrl: resolvePgUrlForActiveWrite(),
-                  onProgress: (p) => {
-                    if (p?.cloned != null) {
-                      uploadProgress.message = `Preparando staging... ${p.cloned} CTO(s) clonada(s)`;
-                    }
-                  }
-                });
-              } catch (cloneErr) {
-                await markDatasetFailed(supabase, writeDatasetId, cloneErr.message);
-                throw new Error(`Falha ao preparar staging: ${cloneErr.message}`);
-              }
-              uploadProgress.message = 'Staging pronto. Comparando com o Excel...';
+                'Staging criado. Processando Excel (base active intacta)...';
+              console.log(`🆕 [Background] Staging pronto: ${writeDatasetId}`);
             }
-            
-            // Carregar CTOs existentes (IDs e chaves_unicas) — no staging se ativo
-            // Callback para atualizar progresso durante carregamento (mantém em 5% - validação já completa)
-            const loadProgressCallback = (progress) => {
-              // Manter em 5% durante carregamento (validação já completou 5%)
+
+            // Em staging: mapa vazio → todas as linhas viram INSERT. Legado: carrega existing.
+            let existingCTOsMap = new Map();
+            if (!stagingMode) {
+              const loadProgressCallback = (progress) => {
+                uploadProgress.uploadPercent = 5;
+                uploadProgress.message = `Carregando CTOs existentes... ${progress.loaded} CTO(s)`;
+              };
+
+              existingCTOsMap = await loadExistingCTOs(
+                supabase,
+                loadProgressCallback,
+                writeDatasetId
+              );
+              console.log(`✅ [Background] CTOs existentes carregadas: ${existingCTOsMap.size}`);
+
               uploadProgress.uploadPercent = 5;
-              uploadProgress.message = `Carregando CTOs existentes... ${progress.loaded} CTO(s)`;
-            };
-            
-            const existingCTOsMap = await loadExistingCTOs(
-              supabase,
-              loadProgressCallback,
-              writeDatasetId
-            );
-            console.log(`✅ [Background] CTOs existentes carregadas: ${existingCTOsMap.size}`);
-            
-            // Atualizar progresso após carregamento completo (ainda em 5%, próximo passo é processar Excel)
-            uploadProgress.uploadPercent = 5;
-            uploadProgress.message = 'CTOs existentes carregadas. Processando arquivo...';
-            
-            // Processar Excel com comparação inteligente
-            uploadProgress.message = 'Processando arquivo e comparando com base existente...';
+              uploadProgress.message = 'CTOs existentes carregadas. Processando arquivo...';
+            } else {
+              console.log('ℹ️ [Background] Staging: pulando carga de existentes');
+            }
+
+            uploadProgress.message = stagingMode
+              ? 'Processando Excel para staging...'
+              : 'Processando arquivo e comparando com base existente...';
             uploadProgress.stage = 'processing';
-            
-            // Callback para atualizar progresso
-            // NÃO usar uploadPercent do processExcelStreaming (está em escala 0-100% do Excel, não do total)
-            // O frontend calculará o percentual total baseado em processedRows/totalRows
+            uploadProgress.uploadPercent = Math.max(uploadProgress.uploadPercent || 5, 8);
+
             const progressCallback = (progress) => {
               uploadProgress.processedRows = progress.processedRows;
               uploadProgress.totalRows = progress.totalRows;
               uploadProgress.importedRows = progress.importedRows;
-              // NÃO definir uploadPercent aqui - deixar o frontend calcular baseado em processedRows/totalRows
-              // uploadProgress.uploadPercent será calculado pelo frontend: 5% + (processedRows/totalRows * 75%)
+              if (progress.totalRows > 0) {
+                uploadProgress.uploadPercent =
+                  8 + Math.round((progress.processedRows / progress.totalRows) * 72);
+              }
               uploadProgress.message = progress.message || `Processando arquivo... ${progress.processedRows}/${progress.totalRows} linhas`;
             };
-            
-            // Processar Excel com comparação (passar existingCTOsMap)
+
             const result = await processExcelStreaming(tempFilePath, supabase, existingCTOsMap, progressCallback);
             totalRows = result.totalRows;
-            
-            // Garantir que ao final do processamento, o percentual seja 80%
+
             uploadProgress.processedRows = totalRows;
             uploadProgress.totalRows = totalRows;
-            uploadProgress.uploadPercent = 80; // Fim do estágio de processamento (5-80%)
-            
-            // NOVO: Identificar CTOs deletadas (Cenário 1)
-            // CTOs que existem no Supabase mas não existem no Excel
+            uploadProgress.uploadPercent = 80;
+
             uploadProgress.message = 'Identificando CTOs que saíram da base...';
             const idsToDelete = [];
-            for (const [idCto, chaveUnica] of existingCTOsMap) {
-              if (!result.idsInExcel.has(idCto)) {
-                // ID existe no Supabase mas não no Excel → deletar
-                idsToDelete.push(idCto);
+            if (!stagingMode) {
+              for (const [idCto] of existingCTOsMap) {
+                if (!result.idsInExcel.has(idCto)) {
+                  idsToDelete.push(idCto);
+                }
               }
             }
-            
+
             console.log('📊 [Background] ===== ANÁLISE DE MUDANÇAS CONCLUÍDA =====');
             console.log(`📊 [Background] Total de linhas no Excel: ${result.totalRows}`);
             console.log(`📊 [Background] CTOs válidas: ${result.validRows}`);
@@ -8239,9 +8228,9 @@ app.post('/api/upload-base', (req, res, next) => {
             console.log(`📊 [Background] CTOs deletadas (Cenário 1): ${idsToDelete.length}`);
             console.log(`📊 [Background] CTOs não alteradas: ${result.ctosUnchanged}`);
             if (stagingMode) {
-              console.log(`📊 [Background] Modo staging: writes em dataset ${writeDatasetId} (active intacto)`);
+              console.log(`📊 [Background] Modo staging: insert completo em ${writeDatasetId} (active intacto)`);
             }
-            
+
             // POLÍGONOS NÃO SÃO TRATADOS AQUI
             // Polígonos são tratados apenas no botão "Criar Nova Mancha de Cobertura"
             // O usuário deve recalcular os polígonos manualmente após atualizar a base
