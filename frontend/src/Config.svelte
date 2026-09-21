@@ -36,6 +36,7 @@
   let tabulacoesList = [
     'Aprovado Com Portas',
     'Aprovado Com Alívio de Rede/Cleanup',
+    'Aprovado / Sem Estrutura Atendimento Externo',
     'Aprovado Prédio Não Cabeado',
     'Aprovado - Endereço não Localizado',
     'Fora da Área de Cobertura'
@@ -1983,7 +1984,9 @@
                   coveragePollInterval = null;
                   calculatingCoverage = false;
                   coverageSuccess = true;
-                  coverageMessage = '✅ Área de cobertura criada com sucesso!';
+                  coverageMessage = (uploadProgress.message && String(uploadProgress.message).trim())
+                    ? uploadProgress.message
+                    : '✅ Área de cobertura criada com sucesso!';
                   
                   // Forçar atualização do componente
                   forceUpdate++;
@@ -2403,7 +2406,11 @@
                     
                     // Usar totalCTOsLoaded atualizado pelo loadBaseLastModified, ou fallback
                     const totalCTOs = totalCTOsLoaded || progressData.totalCTOs || progressData.importedRows || 0;
-                    uploadMessage = `✅ Base de dados Atualizada com sucesso!<br>                  (${formatNumber(totalCTOs)} CTOs)`;
+                    if (progressData.pendingSwap) {
+                      uploadMessage = `✅ Base staging pronta (${formatNumber(totalCTOs)} CTOs).<br>A ferramenta continua na base anterior.<br><strong>Crie a mancha de cobertura</strong> para publicar a nova base.`;
+                    } else {
+                      uploadMessage = `✅ Base de dados Atualizada com sucesso!<br>                  (${formatNumber(totalCTOs)} CTOs)`;
+                    }
                     if (onReloadCTOs) {
                       try {
                         await onReloadCTOs();
