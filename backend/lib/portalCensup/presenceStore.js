@@ -13,7 +13,7 @@ const ONLINE_TTL_MS = 120_000;
 const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), 'data');
 const STORE_PATH = path.join(DATA_DIR, 'portal-censup-sync-presence.json');
 
-/** @type {Map<string, { usuario: string, lastSeen: number, onlineSince: number, source: string }>} */
+/** @type {Map<string, { usuario: string, lastSeen: number, onlineSince: number, source: string, badgeColor: number }>} */
 const memory = new Map();
 /** Último usuário que recebeu chamado automático da esteira */
 let lastEsteiraAssignee = null;
@@ -21,6 +21,11 @@ let lastLoadAt = 0;
 
 function normalizeUsuario(usuario) {
   return String(usuario || '').trim();
+}
+
+function normalizeBadgeColor(value) {
+  const n = Number(value);
+  return n >= 1 && n <= 5 ? n : 1;
 }
 
 function normalizePersonKey(value) {
@@ -51,7 +56,8 @@ function loadFromDisk() {
         usuario,
         lastSeen,
         onlineSince,
-        source: String(entry?.source || 'extension-sync')
+        source: String(entry?.source || 'extension-sync'),
+        badgeColor: normalizeBadgeColor(entry?.badgeColor)
       });
     }
     lastEsteiraAssignee = normalizeUsuario(parsed?.lastEsteiraAssignee) || null;
@@ -70,7 +76,8 @@ function saveToDisk() {
         usuario: entry.usuario,
         lastSeen: entry.lastSeen,
         onlineSince: entry.onlineSince,
-        source: entry.source
+        source: entry.source,
+        badgeColor: normalizeBadgeColor(entry.badgeColor)
       };
     }
     fs.writeFileSync(
@@ -102,19 +109,24 @@ function refreshFromDiskIfStale() {
 // Carga inicial
 loadFromDisk();
 
-export function touchCensupSyncPresence(usuario, { source = 'extension-sync' } = {}) {
+export function touchCensupSyncPresence(usuario, { source = 'extension-sync', badgeColor } = {}) {
   refreshFromDiskIfStale();
   const nome = normalizeUsuario(usuario);
   if (!nome) return null;
   const key = nome.toLowerCase();
   const prev = memory.get(key);
   const now = Date.now();
+  const color =
+    badgeColor != null && badgeColor !== ''
+      ? normalizeBadgeColor(badgeColor)
+      : normalizeBadgeColor(prev?.badgeColor);
   const entry = {
     usuario: nome,
     lastSeen: now,
     // Mantém a ordem de chegada enquanto a sessão online não expira
     onlineSince: prev?.onlineSince || now,
-    source: String(source || 'extension-sync')
+    source: String(source || 'extension-sync'),
+    badgeColor: color
   };
   memory.set(key, entry);
   saveToDisk();
@@ -150,7 +162,8 @@ export function listCensupSyncOnline({ ttlMs = ONLINE_TTL_MS } = {}) {
       usuario: entry.usuario,
       lastSeen: new Date(entry.lastSeen).toISOString(),
       onlineSince: entry.onlineSince || entry.lastSeen,
-      source: entry.source
+      source: entry.source,
+      badgeColor: normalizeBadgeColor(entry.badgeColor)
     });
   }
   if (changed) saveToDisk();
