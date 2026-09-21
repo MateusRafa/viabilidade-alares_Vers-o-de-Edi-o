@@ -2408,6 +2408,104 @@
       .toLowerCase();
   }
 
+  /** Nome de CTO normalizado (MDU ↔ rua). */
+  function normalizeCtoNameKeyFront(name) {
+    return String(name || '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .toUpperCase();
+  }
+
+  function compactCtoNameKeyFront(name) {
+    return normalizeCtoNameKeyFront(name).replace(/[^A-Z0-9]/g, '');
+  }
+
+  function splitNomesCtoFieldFront(value) {
+    if (value == null || value === '') return [];
+    if (Array.isArray(value)) {
+      return value.map((v) => String(v || '').trim()).filter(Boolean);
+    }
+    return String(value)
+      .split(/[,;|/]+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }
+
+  /**
+   * Índice dos equipamentos internos dos MDUs já carregados —
+   * evita desenhar/criar rota para a mesma CTO como se fosse de rua.
+   * Só por nome/id — CTO com nome diferente perto do MDU continua na rua.
+   */
+  function buildMduInternalEquipmentIndex(prediosList) {
+    const nameKeys = new Set();
+    const compactKeys = new Set();
+    const ids = new Set();
+
+    for (const p of prediosList || []) {
+      if (!p || !p.is_condominio) continue;
+      const nomesRaw = p.nomes_cto ?? p.condominio_data?.nomes_cto ?? null;
+      const nomes = splitNomesCtoFieldFront(nomesRaw);
+      const internas = Array.isArray(p.ctos_internas)
+        ? p.ctos_internas
+        : Array.isArray(p.condominio_data?.ctos_internas)
+          ? p.condominio_data.ctos_internas
+          : [];
+
+      for (const nome of nomes) {
+        const k = normalizeCtoNameKeyFront(nome);
+        if (k) nameKeys.add(k);
+        const c = compactCtoNameKeyFront(nome);
+        if (c) compactKeys.add(c);
+      }
+      for (const interna of internas) {
+        const k = normalizeCtoNameKeyFront(interna?.nome);
+        if (k) nameKeys.add(k);
+        const c = compactCtoNameKeyFront(interna?.nome);
+        if (c) compactKeys.add(c);
+        const id = interna?.id != null && interna.id !== '' ? String(interna.id) : '';
+        if (id) ids.add(id);
+      }
+    }
+
+    return { nameKeys, compactKeys, ids };
+  }
+
+  function isStreetCtoInternalToMdu(cto, index) {
+    if (!cto || cto.is_condominio || !index) return false;
+    const id =
+      cto.id_cto != null && cto.id_cto !== ''
+        ? String(cto.id_cto)
+        : cto.id != null
+          ? String(cto.id)
+          : '';
+    if (id && index.ids.has(id)) return true;
+
+    const nome = cto.nome || cto.cto || '';
+    const key = normalizeCtoNameKeyFront(nome);
+    if (key && index.nameKeys.has(key)) return true;
+    const compact = compactCtoNameKeyFront(nome);
+    if (compact && index.compactKeys.has(compact)) return true;
+    return false;
+  }
+
+  function filterStreetCtosAgainstMdu(streetCtos, prediosList) {
+    const index = buildMduInternalEquipmentIndex(prediosList);
+    if (!index.nameKeys.size && !index.compactKeys.size && !index.ids.size) {
+      return streetCtos || [];
+    }
+    const before = (streetCtos || []).length;
+    const filtered = (streetCtos || []).filter((cto) => !isStreetCtoInternalToMdu(cto, index));
+    const removed = before - filtered.length;
+    if (removed > 0) {
+      console.log(
+        `🏢 [Frontend] Ocultando ${removed} CTO(s) de rua que já estão como equipamento interno de MDU`
+      );
+    }
+    return filtered;
+  }
+
   function isMotivoAnaliseComplemento(motivo) {
     const m = normalizeMotivoTabulacao(motivo);
     return m.includes('analise de complemento') || m.includes('analise complemento');
@@ -4682,7 +4780,9 @@
         // ============================================
         // ETAPA 3: Filtrar CTOs que NÃO estão em prédios
         // ============================================
-        const ctosNormais = validCTOs.filter(cto => !cto.is_condominio || cto.is_condominio === false);
+        let ctosNormais = validCTOs.filter(cto => !cto.is_condominio || cto.is_condominio === false);
+        // Evitar duplicata: equipamento já listado dentro do MDU não vira marcador/rota de rua
+        ctosNormais = filterStreetCtosAgainstMdu(ctosNormais, predios);
         
         if (ctosNormais.length === 0) {
           console.log(`ℹ️ [Frontend] Todas as CTOs encontradas dentro de 250m são de prédios`);
@@ -4828,9 +4928,11 @@
               
               console.log(`📦 [Frontend] API retornou ${searchData.ctos.length} CTO(s) no raio LINEAR de ${raioEncontrado}m`);
               
-              // Filtrar apenas CTOs normais (não prédios)
-              const allCTOsNormais = searchData.ctos
-                .filter(cto => !cto.is_condominio || cto.is_condominio === false);
+              // Filtrar apenas CTOs normais (não prédios) e não internas de MDU
+              const allCTOsNormais = filterStreetCtosAgainstMdu(
+                searchData.ctos.filter(cto => !cto.is_condominio || cto.is_condominio === false),
+                predios
+              );
               
               console.log(`📦 [Frontend] Após filtrar prédios: ${allCTOsNormais.length} CTO(s) normal(is)`);
               
@@ -5063,20 +5165,36 @@
       console.log(`   - CTOs normais dentro de 250m: ${ctosNormaisLimitadas.length}`);
       console.log(`   - CTO mais próxima fora do limite: ${nearestCTOOutsideLimit ? nearestCTOOutsideLimit.nome : 'nenhuma'}`);
       
-      const todasCTOs = [...predios, ...ctosNormaisLimitadas];
+      const ctosRuaFiltradas = filterStreetCtosAgainstMdu(ctosNormaisLimitadas, predios);
+      const nearestFiltrada =
+        nearestCTOOutsideLimit &&
+        !isStreetCtoInternalToMdu(
+          nearestCTOOutsideLimit,
+          buildMduInternalEquipmentIndex(predios)
+        )
+          ? nearestCTOOutsideLimit
+          : null;
+      if (nearestCTOOutsideLimit && !nearestFiltrada) {
+        console.log(
+          `🏢 [Frontend] CTO fora do limite "${nearestCTOOutsideLimit.nome}" é interna de MDU — ignorando`
+        );
+        nearestCTOOutsideLimit = null;
+      }
+
+      const todasCTOs = [...predios, ...ctosRuaFiltradas];
       
       // Se não encontrou nenhuma CTO dentro de 250m, adicionar a mais próxima (fora do limite)
       // IMPORTANTE: Adicionar mesmo se houver prédios (a busca detalhada sempre acontece)
-      if (ctosNormaisLimitadas.length === 0 && nearestCTOOutsideLimit) {
-        todasCTOs.push(nearestCTOOutsideLimit);
-        console.log(`✅ [Frontend] CTO mais próxima adicionada ao array: ${nearestCTOOutsideLimit.nome}`);
+      if (ctosRuaFiltradas.length === 0 && nearestFiltrada) {
+        todasCTOs.push(nearestFiltrada);
+        console.log(`✅ [Frontend] CTO mais próxima adicionada ao array: ${nearestFiltrada.nome}`);
         console.log(`   📋 Detalhes da CTO:`, {
-          nome: nearestCTOOutsideLimit.nome,
-          distancia_real: nearestCTOOutsideLimit.distancia_real,
-          distancia_metros: nearestCTOOutsideLimit.distancia_metros,
-          is_out_of_limit: nearestCTOOutsideLimit.is_out_of_limit
+          nome: nearestFiltrada.nome,
+          distancia_real: nearestFiltrada.distancia_real,
+          distancia_metros: nearestFiltrada.distancia_metros,
+          is_out_of_limit: nearestFiltrada.is_out_of_limit
         });
-      } else if (ctosNormaisLimitadas.length > 0) {
+      } else if (ctosRuaFiltradas.length > 0) {
         // Limpar referência se encontrou CTOs dentro do limite
         console.log(`ℹ️ [Frontend] CTOs encontradas dentro do limite, não usando nearestCTOOutsideLimit`);
         nearestCTOOutsideLimit = null;
