@@ -956,6 +956,20 @@ function normalizeCtoNameKey(name) {
     .toUpperCase();
 }
 
+/** Chave compacta (só A-Z0-9) para tolerar hífen/ponto/espaço entre planilha MDU e base ctos. */
+function compactCtoNameKey(name) {
+  return normalizeCtoNameKey(name).replace(/[^A-Z0-9]/g, '');
+}
+
+/** True se o nome da CTO de rua bate com algum nome interno MDU (exato ou compacto). */
+function ctoNameMatchesMduInternal(ctoName, mduNameKeys, mduCompactKeys) {
+  const key = normalizeCtoNameKey(ctoName);
+  if (key && mduNameKeys.has(key)) return true;
+  const compact = compactCtoNameKey(ctoName);
+  if (compact && mduCompactKeys.has(compact)) return true;
+  return false;
+}
+
 /** "CTO A, CTO B" → lista de nomes. */
 function splitNomesCtoField(value) {
   if (value == null || value === '') return [];
@@ -973,7 +987,11 @@ function buildCtosInternasFromNomes(nomesCtoRaw, situacaoCto, ctoByName) {
   const nomes = splitNomesCtoField(nomesCtoRaw);
   return nomes.map((nome) => {
     const key = normalizeCtoNameKey(nome);
-    const matched = key && ctoByName instanceof Map ? ctoByName.get(key) : null;
+    const compact = compactCtoNameKey(nome);
+    const matched =
+      ctoByName instanceof Map
+        ? ctoByName.get(key) || (compact ? ctoByName.get(compact) : null)
+        : null;
     if (matched) {
       const ports = normalizeCtoPortFields(matched.portas, matched.ocupado, matched.livre);
       return {
@@ -1131,8 +1149,11 @@ app.get('/api/ctos/nearby', async (req, res) => {
         }
 
         // Base MDU nova: filtrar CTOs de rua cujo NOME aparece em nomes_cto do condomínio
+        // (só por nome/compacto — nomes diferentes próximos ao pin continuam como CTO de rua)
+        let mduCompactNames = new Set();
         try {
-          const radiusDegreesMdu = 500 / 111000;
+          const mduCollectMeters = Math.max(radiusMeters + 150, 600);
+          const radiusDegreesMdu = mduCollectMeters / 111000;
           const { data: mduRows, error: mduErr } = await supabase
             .from('condominios_mdu')
             .select('nomes_cto, latitude, longitude')
@@ -1146,13 +1167,17 @@ app.get('/api/ctos/nearby', async (req, res) => {
 
           if (!mduErr && mduRows?.length) {
             for (const row of mduRows) {
-              for (const nome of splitNomesCtoField(row.nomes_cto)) {
+              const nomes = splitNomesCtoField(row.nomes_cto);
+              if (!nomes.length) continue;
+              for (const nome of nomes) {
                 const key = normalizeCtoNameKey(nome);
                 if (key) mduCtoNames.add(key);
+                const compact = compactCtoNameKey(nome);
+                if (compact) mduCompactNames.add(compact);
               }
             }
             console.log(
-              `🏢 [API] MDU: ${mduRows.length} condomínios próximos, ${mduCtoNames.size} nomes de CTO interna para filtrar da rua`
+              `🏢 [API] MDU: ${mduRows.length} condomínios próximos, ${mduCtoNames.size} nomes / ${mduCompactNames.size} compactos de CTO interna para filtrar da rua`
             );
           }
         } catch (mduCheckErr) {
@@ -1182,9 +1207,11 @@ app.get('/api/ctos/nearby', async (req, res) => {
           
           if (distance > radiusMeters) continue;
 
-          // Filtro por NOME (base MDU): CTO interna não aparece como CTO de rua
-          const ctoNameKey = normalizeCtoNameKey(row.cto);
-          if (mduCtoNames.size > 0 && ctoNameKey && mduCtoNames.has(ctoNameKey)) {
+          // Filtro MDU: CTO interna não aparece como CTO de rua (somente se o nome bater)
+          if (
+            (mduCtoNames.size > 0 || mduCompactNames.size > 0) &&
+            ctoNameMatchesMduInternal(row.cto, mduCtoNames, mduCompactNames)
+          ) {
             console.log(`🏢 [API] CTO "${row.cto}" é interna MDU (match por nome), filtrando da rua...`);
             continue;
           }
@@ -3059,6 +3086,8 @@ app.get('/api/condominios/nearby', async (req, res) => {
             for (const ctoRow of ctoRows) {
               const key = normalizeCtoNameKey(ctoRow.cto);
               if (key && !ctoByName.has(key)) ctoByName.set(key, ctoRow);
+              const compact = compactCtoNameKey(ctoRow.cto);
+              if (compact && !ctoByName.has(compact)) ctoByName.set(compact, ctoRow);
             }
           }
         } catch (enrichErr) {
