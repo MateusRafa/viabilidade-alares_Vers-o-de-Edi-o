@@ -66,6 +66,15 @@
   let showMduUploadModal = false;
   let mduUploadStep = 'idle'; // idle | running | done | error
   let mduUploadFileName = '';
+  // Modal de progresso (mesmo padrão do MDU) para base CTOs / delete / mancha
+  let showBaseOpModal = false;
+  let baseOpStep = 'idle'; // idle | running | done | error
+  let baseOpKind = ''; // upload | delete | coverage
+  let baseOpTitle = '';
+  let baseOpMessage = '';
+  let baseOpPercent = 0;
+  let baseOpFileName = '';
+  let baseOpHint = '';
   let baseLastModified = null;
   let coverageLastModified = null; // Data da última atualização da mancha de cobertura
   let uploadPollInterval = null; // Intervalo de polling para verificar status
@@ -81,6 +90,42 @@
       clearTimeout(uploadHardStopTimeoutId);
       uploadHardStopTimeoutId = null;
     }
+  }
+
+  function openBaseOpModal({ kind, title, message, fileName = '', hint = '', percent = 0 } = {}) {
+    baseOpKind = kind || '';
+    baseOpTitle = title || 'Processando…';
+    baseOpMessage = message || 'Aguarde…';
+    baseOpFileName = fileName || '';
+    baseOpHint = hint || '';
+    baseOpPercent = Math.max(0, Math.min(100, Number(percent) || 0));
+    baseOpStep = 'running';
+    showBaseOpModal = true;
+  }
+
+  function updateBaseOpProgress({ message, percent, step } = {}) {
+    if (!showBaseOpModal) return;
+    if (message != null) baseOpMessage = message;
+    if (percent != null) baseOpPercent = Math.max(0, Math.min(100, Number(percent) || 0));
+    if (step) baseOpStep = step;
+  }
+
+  function finishBaseOpModal({ success, message, percent = 100 } = {}) {
+    baseOpStep = success ? 'done' : 'error';
+    baseOpMessage = message || (success ? 'Concluído com sucesso.' : 'Ocorreu um erro.');
+    baseOpPercent = success ? Math.max(baseOpPercent, percent) : baseOpPercent;
+  }
+
+  function closeBaseOpModal() {
+    if (baseOpStep === 'running') return;
+    showBaseOpModal = false;
+    baseOpStep = 'idle';
+    baseOpKind = '';
+    baseOpTitle = '';
+    baseOpMessage = '';
+    baseOpPercent = 0;
+    baseOpFileName = '';
+    baseOpHint = '';
   }
   let showDeleteBaseModal = false; // Modal de confirmação para deletar base
   let deletingBase = false; // Flag para indicar que está deletando base
@@ -232,6 +277,12 @@
       // Se o alvo diminuiu (não deveria acontecer, mas por segurança), ajustar
       displayedPercent = Math.round(targetPercent);
     }
+  }
+
+  // Espelhar progresso do upload no modal (padrão MDU)
+  $: if (showBaseOpModal && baseOpKind === 'upload' && baseOpStep === 'running') {
+    baseOpPercent = Math.max(0, Math.min(100, Math.round(displayedPercent || 0)));
+    if (uploadProgress?.message) baseOpMessage = uploadProgress.message;
   }
   
   // Função para calcular percentual total real do processo de upload
@@ -1373,11 +1424,19 @@
     deletingBase = true;
     uploadMessage = '';
     uploadSuccess = false;
+    openBaseOpModal({
+      kind: 'delete',
+      title: 'Deletar base atual',
+      message: 'Removendo CTOs e mancha de cobertura…',
+      hint: 'Não feche esta janela até concluir.',
+      percent: 8
+    });
 
     try {
       const apiUrl = getApiUrl('/api/base/delete');
       console.log('🗑️ [Delete] Deletando base de dados...');
       console.log('🔗 [Delete] URL:', apiUrl);
+      updateBaseOpProgress({ message: 'Conectando ao servidor…', percent: 20 });
 
       const response = await fetch(apiUrl, {
         method: 'DELETE',
@@ -1389,6 +1448,7 @@
       });
 
       console.log('📥 [Delete] Resposta recebida:', response.status, response.statusText);
+      updateBaseOpProgress({ message: 'Processando exclusão no banco…', percent: 55 });
 
       if (!response.ok) {
         const errorText = await response.text();
@@ -1397,7 +1457,8 @@
         try {
           const errorData = JSON.parse(errorText);
           throw new Error(errorData.error || `Erro ao deletar base (${response.status})`);
-        } catch {
+        } catch (parseErr) {
+          if (parseErr.message && parseErr.message.startsWith('Erro ao deletar')) throw parseErr;
           throw new Error(`Erro ao deletar base (${response.status}): ${errorText.substring(0, 200)}`);
         }
       }
@@ -1410,6 +1471,7 @@
         uploadMessage = data.message || 'Base de dados deletada com sucesso!';
         baseLastModified = null;
         baseDataExists = false;
+        updateBaseOpProgress({ message: 'Atualizando a ferramenta…', percent: 85 });
         
         // Limpar localStorage
         try {
@@ -1427,9 +1489,15 @@
             console.error('Erro ao recarregar base de dados:', err);
           }
         }
+        finishBaseOpModal({
+          success: true,
+          message: uploadMessage,
+          percent: 100
+        });
       } else {
         uploadSuccess = false;
         uploadMessage = data.error || 'Erro ao deletar base de dados';
+        finishBaseOpModal({ success: false, message: uploadMessage });
       }
     } catch (err) {
       uploadSuccess = false;
@@ -1441,6 +1509,7 @@
       }
       
       console.error('❌ [Delete] Erro ao deletar base:', err);
+      finishBaseOpModal({ success: false, message: uploadMessage });
     } finally {
       deletingBase = false;
     }
@@ -1918,6 +1987,13 @@
     calculatingCoverage = true;
     coverageMessage = 'Iniciando cálculo da mancha de cobertura...';
     coverageSuccess = false;
+    openBaseOpModal({
+      kind: 'coverage',
+      title: 'Criar mancha de cobertura',
+      message: 'Iniciando cálculo da mancha…',
+      hint: 'A ferramenta continua na base anterior até a publicação (swap). Não feche esta janela.',
+      percent: 2
+    });
     
     // Limpar qualquer polling anterior
     if (coveragePollInterval) {
@@ -1956,6 +2032,7 @@
       
       if (data.success) {
         coverageMessage = 'Cálculo iniciado! Aguardando processamento...';
+        updateBaseOpProgress({ message: coverageMessage, percent: 5 });
         
         // Iniciar polling do progresso
         coveragePollInterval = setInterval(async () => {
@@ -1979,6 +2056,11 @@
                 };
                 
                 coverageMessage = uploadProgress.message || 'Calculando área de cobertura...';
+                const calcPct = Math.max(0, Math.min(100, Number(uploadProgress.calculationPercent) || 0));
+                updateBaseOpProgress({
+                  message: coverageMessage,
+                  percent: Math.max(5, calcPct)
+                });
                 
                 // Verificar se cálculo foi concluído
                 if (uploadProgress.stage === 'completed') {
@@ -1990,6 +2072,7 @@
                   coverageMessage = (uploadProgress.message && String(uploadProgress.message).trim())
                     ? uploadProgress.message
                     : '✅ Área de cobertura criada com sucesso!';
+                  finishBaseOpModal({ success: true, message: coverageMessage, percent: 100 });
                   
                   // Forçar atualização do componente
                   forceUpdate++;
@@ -2012,12 +2095,17 @@
                   calculatingCoverage = false;
                   coverageSuccess = false;
                   coverageMessage = `❌ Erro: ${uploadProgress.message || 'Erro ao calcular área de cobertura'}`;
+                  finishBaseOpModal({ success: false, message: coverageMessage });
                   
                   // Forçar atualização do componente
                   forceUpdate++;
                 } else if (uploadProgress.stage === 'calculating') {
                   // Ainda calculando, atualizar mensagem
                   coverageMessage = uploadProgress.message || `Calculando área de cobertura... ${uploadProgress.calculationPercent || 0}%`;
+                  updateBaseOpProgress({
+                    message: coverageMessage,
+                    percent: Math.max(5, calcPct)
+                  });
                 }
               }
             }
@@ -2033,6 +2121,7 @@
       calculatingCoverage = false;
       coverageSuccess = false;
       coverageMessage = `❌ Erro ao criar mancha de cobertura: ${err.message}`;
+      finishBaseOpModal({ success: false, message: coverageMessage });
       
       if (coveragePollInterval) {
         clearInterval(coveragePollInterval);
@@ -2158,6 +2247,14 @@
     lastUploadPercent = 0; // Resetar progresso quando inicia novo upload
     displayedPercent = 0; // Resetar progresso animado
     targetPercent = 0; // Resetar alvo
+    openBaseOpModal({
+      kind: 'upload',
+      title: 'Carregar nova base de dados',
+      message: 'Enviando arquivo…',
+      fileName: file.name || '',
+      hint: 'A ferramenta continua na base anterior durante o upload (staging). Não feche esta janela.',
+      percent: 1
+    });
     if (animationFrameId) {
       cancelAnimationFrame(animationFrameId);
       animationFrameId = null;
@@ -2349,6 +2446,7 @@
             displayedPercent = 0;
             targetPercent = 0;
             lastUploadPercent = 0;
+            finishBaseOpModal({ success: false, message: uploadMessage });
           }, 7200000);
           
           // Iniciar polling do progresso (mais frequente para atualização suave)
@@ -2414,6 +2512,13 @@
                     } else {
                       uploadMessage = `✅ Base de dados Atualizada com sucesso!<br>                  (${formatNumber(totalCTOs)} CTOs)`;
                     }
+                    finishBaseOpModal({
+                      success: true,
+                      message: progressData.pendingSwap
+                        ? `Base staging pronta (${formatNumber(totalCTOs)} CTOs). Crie a mancha de cobertura para publicar.`
+                        : `Base atualizada com sucesso (${formatNumber(totalCTOs)} CTOs).`,
+                      percent: 100
+                    });
                     if (onReloadCTOs) {
                       try {
                         await onReloadCTOs();
@@ -2439,6 +2544,7 @@
                     displayedPercent = 0;
                     targetPercent = 0;
                     lastUploadPercent = 0;
+                    finishBaseOpModal({ success: false, message: uploadMessage });
                   }
                 }
               }
@@ -2480,6 +2586,11 @@
           // Usar totalCTOsLoaded atualizado pelo loadBaseLastModified
           const totalCTOs = totalCTOsLoaded || 0;
           uploadMessage = `✅ Base de dados Atualizada com sucesso!<br>                  (${formatNumber(totalCTOs)} CTOs)`;
+          finishBaseOpModal({
+            success: true,
+            message: `Base atualizada com sucesso (${formatNumber(totalCTOs)} CTOs).`,
+            percent: 100
+          });
 
           event.target.value = '';
           uploadingBase = false;
@@ -2488,6 +2599,7 @@
         uploadSuccess = false;
         uploadMessage = data.error || 'Erro ao atualizar base de dados';
         uploadingBase = false;
+        finishBaseOpModal({ success: false, message: uploadMessage });
       }
     } catch (err) {
       // Limpar polling se houver erro
@@ -2516,6 +2628,7 @@
       console.error('❌ [Upload] Erro ao fazer upload da base:', err);
       console.error('❌ [Upload] Tipo do erro:', err.name);
       console.error('❌ [Upload] Mensagem:', err.message);
+      finishBaseOpModal({ success: false, message: uploadMessage });
     }
   }
 </script>
@@ -2935,6 +3048,78 @@
           </div>
         {/if}
 
+        {#if showBaseOpModal}
+          <div
+            class="modal-overlay confirm-overlay cluster-switch-overlay"
+            role="presentation"
+          >
+            <div
+              class="modal-content cluster-switch-modal"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="base-op-title"
+              tabindex="-1"
+              on:click|stopPropagation
+              on:keydown={(e) => e.key === 'Escape' && baseOpStep !== 'running' && closeBaseOpModal()}
+            >
+              <div class="modal-header">
+                <h2 id="base-op-title">{baseOpTitle || 'Processando…'}</h2>
+                {#if baseOpStep !== 'running'}
+                  <button
+                    type="button"
+                    class="modal-close"
+                    on:click={closeBaseOpModal}
+                    aria-label="Fechar"
+                  >×</button>
+                {/if}
+              </div>
+
+              <div class="modal-body">
+                {#if baseOpFileName}
+                  <p class="cluster-switch-hint" style="margin: 0 0 0.75rem 0;">
+                    Arquivo: <strong>{baseOpFileName}</strong>
+                  </p>
+                {/if}
+
+                {#if baseOpStep === 'running'}
+                  <p class="cluster-switch-status">{baseOpMessage || 'Processando…'}</p>
+                  <div
+                    class="cluster-progress-track"
+                    role="progressbar"
+                    aria-valuemin="0"
+                    aria-valuemax="100"
+                    aria-valuenow={Math.round(baseOpPercent)}
+                  >
+                    <div class="cluster-progress-fill" style={`width: ${Math.max(baseOpPercent, 3)}%`}></div>
+                  </div>
+                  <p class="cluster-progress-label">{Math.round(baseOpPercent)}%</p>
+                  {#if baseOpHint}
+                    <p class="cluster-switch-hint">{baseOpHint}</p>
+                  {/if}
+                {:else if baseOpStep === 'done'}
+                  <p class="cluster-switch-status success-text">{baseOpMessage}</p>
+                  <div class="cluster-progress-track" aria-hidden="true">
+                    <div class="cluster-progress-fill" style="width: 100%"></div>
+                  </div>
+                  <p class="cluster-progress-label">100%</p>
+                {:else}
+                  <p class="cluster-switch-status error-text">{baseOpMessage}</p>
+                {/if}
+
+                <div class="modal-actions">
+                  {#if baseOpStep === 'running'}
+                    <button type="button" class="btn-cancel" disabled title="Aguarde a conclusão">
+                      Processando…
+                    </button>
+                  {:else}
+                    <button type="button" class="btn-add-confirm" on:click={closeBaseOpModal}>Fechar</button>
+                  {/if}
+                </div>
+              </div>
+            </div>
+          </div>
+        {/if}
+
         {#if showClusterInfo}
           <div
             class="info-modal-overlay"
@@ -3057,22 +3242,7 @@
             </button>
           </div>
           
-          {#if calculatingCoverage}
-            <div class="progress-container" style="margin-top: 1rem;">
-              <div class="progress-bar-wrapper">
-                <div class="progress-label">
-                  Calculando área de cobertura<span class="loading-dots">
-                    <span class="dot">.</span><span class="dot">.</span><span class="dot">.</span>
-                  </span> {Math.round(uploadProgress.calculationPercent || 0)}%
-                </div>
-                <div class="progress-bar">
-                  <div class="progress-fill" style="width: {uploadProgress.calculationPercent || 0}%;"></div>
-                </div>
-              </div>
-            </div>
-          {/if}
-          
-          {#if coverageMessage && !calculatingCoverage}
+          {#if coverageMessage && !calculatingCoverage && !showBaseOpModal}
             <div class="upload-message" class:success={coverageSuccess} class:error={!coverageSuccess} style="margin-top: 1rem;">
               {coverageMessage}
             </div>
@@ -3114,39 +3284,7 @@
             </p>
           {/if}
           
-          {#if uploadingBase}
-            <div class="progress-container" style="margin-top: 1rem;">
-              <div class="progress-bar-wrapper">
-                <div class="progress-label">
-                  {#if uploadProgress?.message}
-                    {uploadProgress.message}
-                  {:else}
-                    Carregando<span class="loading-dots">
-                      <span class="dot">.</span><span class="dot">.</span><span class="dot">.</span>
-                    </span>
-                  {/if}
-                  {' '}{Math.round(displayedPercent)}%
-                </div>
-                <div class="progress-bar">
-                  <div class="progress-fill" style="width: {displayedPercent}%;"></div>
-                </div>
-                {#if uploadProgress?.processedRows > 0 && uploadProgress?.totalRows > 0}
-                  <p style="margin: 0.35rem 0 0; font-size: 0.8rem; opacity: 0.85;">
-                    {uploadProgress.processedRows} / {uploadProgress.totalRows} linhas
-                    {#if uploadProgress.stage}
-                      · estágio: {uploadProgress.stage}
-                    {/if}
-                  </p>
-                {:else if uploadProgress?.stage}
-                  <p style="margin: 0.35rem 0 0; font-size: 0.8rem; opacity: 0.85;">
-                    estágio: {uploadProgress.stage}
-                  </p>
-                {/if}
-              </div>
-            </div>
-          {/if}
-
-          {#if uploadMessage && !uploadingBase}
+          {#if uploadMessage && !uploadingBase && !showBaseOpModal}
             <div class="upload-message" class:success={uploadSuccess} class:error={!uploadSuccess}>
               {@html uploadMessage}
             </div>
