@@ -715,8 +715,8 @@
       const typeRect = mapType.getBoundingClientRect();
       if (!paneRect.width || !typeRect.width) return 0;
       const leftOccupied = Math.max(0, typeRect.right - paneRect.left);
-      const SEARCH_W = 280;
-      const GAP = 6;
+      const SEARCH_W = 200;
+      const GAP = 8;
       const RIGHT_MARGIN = 10;
       return Math.ceil(leftOccupied + GAP + SEARCH_W + RIGHT_MARGIN);
     } catch {
@@ -2746,9 +2746,9 @@
     top: 10px;
     right: 10px;
     z-index: 25;
-    width: 280px;
+    width: 200px;
     /* Reserva espaço do grupo Mapa/Satélite à esquerda — evita salto/sobreposição */
-    max-width: calc(100% - 168px);
+    max-width: calc(100% - 160px);
     display: flex;
     flex-direction: column;
     gap: 0.35rem;
