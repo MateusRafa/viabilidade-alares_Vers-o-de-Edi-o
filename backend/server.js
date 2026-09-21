@@ -33,6 +33,19 @@ import { registerRelatoriosB2bRoutes } from './relatoriosB2bRoutes.js';
 import { registerPortalCensupRoutes } from './portalCensupRoutes.js';
 import { bootstrapAgendaBotIfEnabled } from './lib/portalCensup/agendaBot/index.js';
 import { replaceMduBaseFromExcel } from './lib/condominiosMdu/uploadAndGeocode.js';
+import {
+  isDatasetStagingEnabled,
+  ensureActiveDataset,
+  getActiveDatasetId,
+  createStagingDataset,
+  getStagingDataset,
+  markDatasetFailed,
+  swapActiveDataset,
+  resolveCoverageTargetDataset,
+  applyDatasetFilter,
+  cloneCtosBetweenDatasets,
+  resolvePgUrlForActiveWrite
+} from './lib/ctoCoverageDatasets.js';
 
 /** Cliente cluster-aware: respeita modo admin (primary/replica). */
 function createClusterAwareSupabase() {
@@ -129,20 +142,24 @@ app.use((req, res, next) => {
   next();
 });
 
-// Função auxiliar para deletar todos os polígonos de cobertura (dual-write se cluster on)
-async function deleteAllCoveragePolygons() {
+// Função auxiliar para deletar polígonos de um dataset (ou todos, legado)
+async function deleteAllCoveragePolygons(datasetId = null) {
   try {
     if (!isDbAvailable()) {
       console.warn('⚠️ [Polygons] Supabase não disponível - não é possível deletar polígonos');
       return { success: false, error: 'Supabase não disponível' };
     }
 
-    console.log('🗑️ [Polygons] Deletando todos os polígonos de cobertura...');
+    console.log(
+      datasetId
+        ? `🗑️ [Polygons] Deletando polígonos do dataset ${datasetId}...`
+        : '🗑️ [Polygons] Deletando todos os polígonos de cobertura...'
+    );
 
     const results = await dualWrite(async (client, label) => {
-      const { count: countBefore } = await client
-        .from('coverage_polygons')
-        .select('*', { count: 'exact', head: true });
+      let countQuery = client.from('coverage_polygons').select('*', { count: 'exact', head: true });
+      countQuery = applyDatasetFilter(countQuery, datasetId);
+      const { count: countBefore } = await countQuery;
 
       console.log(`📊 [Polygons][${label}] antes: ${countBefore || 0}`);
 
@@ -150,10 +167,13 @@ async function deleteAllCoveragePolygons() {
         return { deletedCount: 0 };
       }
 
-      const { error: deleteError, count: deleteCount } = await client
+      let deleteQuery = client
         .from('coverage_polygons')
         .delete()
         .gte('created_at', '1970-01-01T00:00:00Z');
+      deleteQuery = applyDatasetFilter(deleteQuery, datasetId);
+
+      const { error: deleteError, count: deleteCount } = await deleteQuery;
 
       if (deleteError) throw deleteError;
 
@@ -1016,13 +1036,18 @@ app.get('/api/ctos/nearby', async (req, res) => {
         const lngMax = lng + radiusDegrees;
         
         // Buscar TODAS as CTOs dentro da bounding box (incluindo não ativas)
-        const { data, error } = await supabase
+        const activeDatasetId = (await isDatasetStagingEnabled(supabase))
+          ? await getActiveDatasetId(supabase)
+          : null;
+        let nearbyQuery = supabase
           .from('ctos')
           .select('*')
           .gte('latitude', latMin)
           .lte('latitude', latMax)
           .gte('longitude', lngMin)
           .lte('longitude', lngMax);
+        nearbyQuery = applyDatasetFilter(nearbyQuery, activeDatasetId);
+        const { data, error } = await nearbyQuery;
           // Removido filtro de status - agora retorna CTOs ativas e não ativas
         
         if (error) {
@@ -1284,10 +1309,18 @@ app.post('/api/coverage/calculate', async (req, res) => {
         error: 'Supabase não disponível' 
       });
     }
+
+    // Staging + swap: se há staging com CTOs, calcula nele e publica no fim
+    const coverageTarget = await resolveCoverageTargetDataset(supabase);
+    const coverageDatasetId = coverageTarget.datasetId || null;
+    const shouldSwapAfterCoverage = !!coverageTarget.shouldSwap;
+    console.log(
+      `🗺️ [API] Target mancha: mode=${coverageTarget.mode} dataset=${coverageDatasetId || 'legacy'} swap=${shouldSwapAfterCoverage}`
+    );
     
-    // Deletar polígonos antigos primeiro
-    console.log('🗑️ [API] Deletando polígonos de cobertura antigos...');
-    const polygonDeleteResult = await deleteAllCoveragePolygons();
+    // Deletar polígonos antigos do dataset alvo (não apaga a mancha active se estamos em staging)
+    console.log('🗑️ [API] Deletando polígonos de cobertura do dataset alvo...');
+    const polygonDeleteResult = await deleteAllCoveragePolygons(coverageDatasetId);
     if (polygonDeleteResult.success) {
       console.log(`✅ [API] Polígonos deletados: ${polygonDeleteResult.deletedCount || 0} polígono(s)`);
     }
@@ -1311,7 +1344,7 @@ app.post('/api/coverage/calculate', async (req, res) => {
     
     // Contar total de CTOs válidas (com latitude/longitude válidas)
     // IMPORTANTE: Usar os mesmos filtros da busca para garantir contagem precisa
-    const { count: totalCTOs, error: countError } = await supabase
+    let countQuery = supabase
       .from('ctos')
       .select('id', { count: 'exact', head: true })
       .not('latitude', 'is', null)
@@ -1320,13 +1353,15 @@ app.post('/api/coverage/calculate', async (req, res) => {
       .lte('latitude', 90)
       .gte('longitude', -180)
       .lte('longitude', 180);
+    countQuery = applyDatasetFilter(countQuery, coverageDatasetId);
+    const { count: totalCTOs, error: countError } = await countQuery;
     
     if (countError) {
       console.error('❌ [API] Erro ao contar CTOs válidas:', countError);
       // Tentar contar sem filtros como fallback
-      const { count: totalAll } = await supabase
-        .from('ctos')
-        .select('id', { count: 'exact', head: true });
+      let fallbackCount = supabase.from('ctos').select('id', { count: 'exact', head: true });
+      fallbackCount = applyDatasetFilter(fallbackCount, coverageDatasetId);
+      const { count: totalAll } = await fallbackCount;
       console.warn(`⚠️ [API] Usando contagem total sem filtros: ${totalAll || 0}`);
     }
     
@@ -1344,13 +1379,17 @@ app.post('/api/coverage/calculate', async (req, res) => {
       stage: 'calculating',
       uploadPercent: 100, // Upload já está completo
       calculationPercent: 0,
-      message: 'Iniciando cálculo da mancha de cobertura...',
+      message: shouldSwapAfterCoverage
+        ? 'Calculando mancha no staging (ferramenta continua na base anterior)...'
+        : 'Iniciando cálculo da mancha de cobertura...',
       totalRows: 0,
       processedRows: 0,
       importedRows: 0,
       calculationId: calculationId,
       totalCTOs: totalCTOs || 0,
-      processedCTOs: 0
+      processedCTOs: 0,
+      stagingDatasetId: shouldSwapAfterCoverage ? coverageDatasetId : null,
+      pendingSwap: shouldSwapAfterCoverage
     };
     
     // Retornar resposta imediata e processar em background
@@ -1526,6 +1565,8 @@ app.post('/api/coverage/calculate', async (req, res) => {
             .lte('longitude', 180)
             .order('id', { ascending: true })
             .limit(batchSize);
+
+          query = applyDatasetFilter(query, coverageDatasetId);
           
           // Se não é o primeiro lote, buscar apenas IDs maiores que o último processado
           if (lastId > 0) {
@@ -1735,19 +1776,23 @@ app.post('/api/coverage/calculate', async (req, res) => {
         }
         
         // Obter próxima versão
-        const { data: maxVersionData } = await supabase
+        let versionQuery = supabase
           .from('coverage_polygons')
           .select('version')
           .order('version', { ascending: false })
           .limit(1);
+        versionQuery = applyDatasetFilter(versionQuery, coverageDatasetId);
+        const { data: maxVersionData } = await versionQuery;
         
         const nextVersion = (maxVersionData && maxVersionData[0]?.version) ? maxVersionData[0].version + 1 : 1;
         
-        // Desativar versões antigas
-        await supabase
+        // Desativar versões antigas APENAS no dataset alvo (staging não mexe na mancha active)
+        let deactivateQuery = supabase
           .from('coverage_polygons')
           .update({ is_active: false })
           .eq('is_active', true);
+        deactivateQuery = applyDatasetFilter(deactivateQuery, coverageDatasetId);
+        await deactivateQuery;
         
         // Salvar polígono final no Supabase usando função RPC que converte GeoJSON para PostGIS
         console.log(`💾 [API] Salvando polígono no Supabase...`);
@@ -1755,6 +1800,7 @@ app.post('/api/coverage/calculate', async (req, res) => {
         console.log(`   - Total CTOs: ${processedCTOs}`);
         console.log(`   - Área: ${areaKm2.toFixed(2)} km²`);
         console.log(`   - Versão: ${nextVersion}`);
+        if (coverageDatasetId) console.log(`   - dataset_id: ${coverageDatasetId}`);
         
         let insertData = null;
         let polygonId = null;
@@ -1819,7 +1865,8 @@ app.post('/api/coverage/calculate', async (req, res) => {
                   area_km2: areaKm2,
                   simplification_tolerance: simplificationTolerance,
                   is_active: true,
-                  version: nextVersion
+                  version: nextVersion,
+                  ...(coverageDatasetId ? { dataset_id: coverageDatasetId } : {})
                 })
                 .select();
               
@@ -1916,9 +1963,40 @@ app.post('/api/coverage/calculate', async (req, res) => {
         }
         
         const processingTime = ((Date.now() - startTime) / 1000).toFixed(2);
+
+        // Garantir dataset_id no polígono (RPC legada pode não gravar a coluna)
+        if (coverageDatasetId && polygonId) {
+          const { error: dsPatchErr } = await supabase
+            .from('coverage_polygons')
+            .update({ dataset_id: coverageDatasetId, is_active: true })
+            .eq('id', polygonId);
+          if (dsPatchErr) {
+            console.warn('⚠️ [API] Falha ao setar dataset_id no polígono:', dsPatchErr.message);
+          }
+        }
+
+        // Publicar staging → active (CTOs + mancha juntas)
+        if (shouldSwapAfterCoverage && coverageDatasetId) {
+          uploadProgress.message = 'Publicando nova base (swap staging → active)...';
+          try {
+            await swapActiveDataset(supabase, coverageDatasetId);
+            uploadProgress.pendingSwap = false;
+            uploadProgress.message = 'Área de cobertura publicada! Nova base ativa para todos.';
+            console.log(`🔀 [API] Swap concluído: ${coverageDatasetId}`);
+          } catch (swapErr) {
+            console.error('❌ [API] Swap falhou após mancha:', swapErr.message);
+            uploadProgress.stage = 'error';
+            uploadProgress.message =
+              'Mancha calculada no staging, mas publicação falhou: ' + swapErr.message;
+            throw swapErr;
+          }
+        }
+
         uploadProgress.stage = 'completed';
         uploadProgress.calculationPercent = 100;
-        uploadProgress.message = 'Área de cobertura criada com sucesso!';
+        if (!shouldSwapAfterCoverage) {
+          uploadProgress.message = 'Área de cobertura criada com sucesso!';
+        }
         
         console.log(`✅ [API] ===== POLÍGONOS CALCULADOS COM SUCESSO (POSTGIS)! =====`);
         console.log(`   - Polygon ID: ${polygonId || 'N/A'}`);
@@ -2403,11 +2481,16 @@ app.get('/api/ctos/search', async (req, res) => {
         // Usar nomeEscapado para garantir que caracteres especiais como \ funcionem corretamente
         
         // ETAPA 1: Busca exata (case-insensitive)
-        let { data, error } = await supabase
+        const activeDatasetId = (await isDatasetStagingEnabled(supabase))
+          ? await getActiveDatasetId(supabase)
+          : null;
+        let exactQuery = supabase
           .from('ctos')
           .select('*')
           .ilike('cto', nomeEscapado) // Busca exata (sem % no início e fim)
           .limit(100);
+        exactQuery = applyDatasetFilter(exactQuery, activeDatasetId);
+        let { data, error } = await exactQuery;
         
         if (error) {
           console.error('❌ [API] Erro ao buscar CTOs (exata):', error);
@@ -2425,11 +2508,13 @@ app.get('/api/ctos/search', async (req, res) => {
           const nomeEscapadoComBoundaries = `${nomeEscapado}(\\s|$|\\\\)`;
           
           // Tentar busca parcial, mas filtrar resultados para garantir que não pegue substrings indesejadas
-          const { data: partialData, error: partialError } = await supabase
+          let partialQuery = supabase
             .from('ctos')
             .select('*')
             .ilike('cto', `%${nomeEscapado}%`)
             .limit(200); // Buscar mais para filtrar depois
+          partialQuery = applyDatasetFilter(partialQuery, activeDatasetId);
+          const { data: partialData, error: partialError } = await partialQuery;
           
           if (partialError) {
             console.error('❌ [API] Erro ao buscar CTOs (parcial):', partialError);
@@ -3666,10 +3751,15 @@ app.get('/api/base-last-modified', async (req, res) => {
     const dbClient = getPrimaryClient() || supabasePrimary || (isSupabaseAvailable() ? supabase : null);
 
     if (dbClient) {
+      const activeDatasetId = (await isDatasetStagingEnabled(dbClient))
+        ? await getActiveDatasetId(dbClient)
+        : null;
       // Primeiro verificar se existe dados na tabela ctos
-      const { count, error: countError } = await dbClient
+      let countQuery = dbClient
         .from('ctos')
         .select('*', { count: 'exact', head: true });
+      countQuery = applyDatasetFilter(countQuery, activeDatasetId);
+      const { count, error: countError } = await countQuery;
 
       if (countError) {
         console.warn('⚠️ [API] Erro ao contar CTOs do Supabase:', countError.message);
@@ -3698,11 +3788,13 @@ app.get('/api/base-last-modified', async (req, res) => {
         // Se ainda não tem lastModified mas tem dados, usar data atual como fallback
         if (!lastModified && hasData) {
           // Buscar última CTO inserida para usar sua data de criação
-          const { data: lastCto, error: ctoError } = await dbClient
+          let lastCtoQuery = dbClient
             .from('ctos')
             .select('created_at')
             .order('created_at', { ascending: false })
             .limit(1);
+          lastCtoQuery = applyDatasetFilter(lastCtoQuery, activeDatasetId);
+          const { data: lastCto, error: ctoError } = await lastCtoQuery;
           
           if (!ctoError && lastCto && lastCto.length > 0 && lastCto[0].created_at) {
             lastModified = lastCto[0].created_at;
@@ -6735,7 +6827,7 @@ function generateChaveUnica(cto) {
  * @returns {Promise<Map<string, string|null>>} - Map<id_cto, chave_unica>
  * @throws {Error} - Se houver erro ao carregar do Supabase
  */
-async function loadExistingCTOs(supabaseClient, progressCallback = null) {
+async function loadExistingCTOs(supabaseClient, progressCallback = null, datasetId = null) {
   const existingCTOs = new Map(); // Map<id_cto, chave_unica>
   let lastId = null;
   let hasMore = true;
@@ -6743,6 +6835,7 @@ async function loadExistingCTOs(supabaseClient, progressCallback = null) {
   const startTime = Date.now();
   
   console.log('📥 [Upload] Carregando CTOs existentes do Supabase...');
+  if (datasetId) console.log(`📥 [Upload] Filtro dataset_id=${datasetId}`);
   console.log('📥 [Upload] Usando paginação baseada em cursor (id_cto) para evitar timeout...');
   
   try {
@@ -6750,15 +6843,17 @@ async function loadExistingCTOs(supabaseClient, progressCallback = null) {
       batchNumber++;
       
       // Buscar lote de 1000 CTOs (limite do Supabase)
-      const query = supabaseClient
+      let query = supabaseClient
         .from('ctos')
         .select('id_cto, chave_unica')
         .order('id_cto', { ascending: true })
         .limit(1000);
+
+      query = applyDatasetFilter(query, datasetId);
       
       // Se já temos um lastId, buscar apenas IDs maiores
       if (lastId) {
-        query.gt('id_cto', lastId);
+        query = query.gt('id_cto', lastId);
       }
       
       const { data, error } = await query;
@@ -6888,7 +6983,7 @@ async function dualWriteUpload(fallbackClient, fn) {
   return values;
 }
 
-async function deleteCTOsInBatches(supabaseClient, idsToDelete, progressCallback = null) {
+async function deleteCTOsInBatches(supabaseClient, idsToDelete, progressCallback = null, datasetId = null) {
   if (!idsToDelete || idsToDelete.length === 0) {
     console.log('ℹ️ [Upload] Nenhuma CTO para deletar (Cenário 1)');
     return { deleted: 0 };
@@ -6896,6 +6991,7 @@ async function deleteCTOsInBatches(supabaseClient, idsToDelete, progressCallback
   
   console.log(`🗑️ [Upload] ===== DELETANDO CTOs QUE SAÍRAM DA BASE (Cenário 1) =====`);
   console.log(`🗑️ [Upload] Total de CTOs para deletar: ${idsToDelete.length}`);
+  if (datasetId) console.log(`🗑️ [Upload] dataset_id=${datasetId}`);
   
   const DELETE_BATCH_SIZE = 1000; // Limite do Supabase para operações .in()
   let totalDeleted = 0;
@@ -6909,11 +7005,12 @@ async function deleteCTOsInBatches(supabaseClient, idsToDelete, progressCallback
       
       // Deletar lote em primary (+ replica se cluster on)
       await dualWriteUpload(supabaseClient, async (client, label) => {
-        const { error, count } = await client
+        let q = client
           .from('ctos')
           .delete()
-          .in('id_cto', batch)
-          .select('id_cto', { count: 'exact', head: true });
+          .in('id_cto', batch);
+        q = applyDatasetFilter(q, datasetId);
+        const { error, count } = await q.select('id_cto', { count: 'exact', head: true });
 
         if (error) {
           throw new Error(`[${label}] ${error.message}`);
@@ -6972,7 +7069,7 @@ async function deleteCTOsInBatches(supabaseClient, idsToDelete, progressCallback
  * @returns {Promise<Object>} - { updated: number, errors: number } - Quantidade de CTOs atualizadas e erros
  * @throws {Error} - Se houver erro ao atualizar
  */
-async function updateCTOsInBatches(supabaseClient, ctosToUpdate, progressCallback = null) {
+async function updateCTOsInBatches(supabaseClient, ctosToUpdate, progressCallback = null, datasetId = null) {
   if (!ctosToUpdate || ctosToUpdate.length === 0) {
     console.log('ℹ️ [Upload] Nenhuma CTO para atualizar (Cenário 3)');
     return { updated: 0, errors: 0 };
@@ -6980,6 +7077,7 @@ async function updateCTOsInBatches(supabaseClient, ctosToUpdate, progressCallbac
   
   console.log(`🔄 [Upload] ===== ATUALIZANDO CTOs QUE MUDARAM (Cenário 3) =====`);
   console.log(`🔄 [Upload] Total de CTOs para atualizar: ${ctosToUpdate.length}`);
+  if (datasetId) console.log(`🔄 [Upload] dataset_id=${datasetId}`);
   
   const UPDATE_BATCH_SIZE = 1000;
   const MAX_RETRIES = 3;
@@ -7012,10 +7110,12 @@ async function updateCTOsInBatches(supabaseClient, ctosToUpdate, progressCallbac
   const updateSingleCTO = async (cto, retryCount = 0) => {
     try {
       await dualWriteUpload(supabaseClient, async (client, label) => {
-        const { error } = await client
+        let q = client
           .from('ctos')
           .update(buildUpdateRecord(cto))
           .eq('id_cto', cto.id_cto);
+        q = applyDatasetFilter(q, datasetId);
+        const { error } = await q;
         if (error) throw new Error(`[${label}] ${error.message}`);
       });
       return { ok: true };
@@ -7139,7 +7239,7 @@ async function updateCTOsInBatches(supabaseClient, ctosToUpdate, progressCallbac
  * @returns {Promise<Object>} - { inserted: number } - Quantidade de CTOs inseridas
  * @throws {Error} - Se houver erro ao inserir
  */
-async function insertCTOsInBatches(supabaseClient, ctosToInsert, progressCallback = null) {
+async function insertCTOsInBatches(supabaseClient, ctosToInsert, progressCallback = null, datasetId = null) {
   if (!ctosToInsert || ctosToInsert.length === 0) {
     console.log('ℹ️ [Upload] Nenhuma CTO nova para inserir (Cenário 2)');
     return { inserted: 0 };
@@ -7147,6 +7247,7 @@ async function insertCTOsInBatches(supabaseClient, ctosToInsert, progressCallbac
   
   console.log(`➕ [Upload] ===== INSERINDO CTOs NOVAS (Cenário 2) =====`);
   console.log(`➕ [Upload] Total de CTOs novas para inserir: ${ctosToInsert.length}`);
+  if (datasetId) console.log(`➕ [Upload] dataset_id=${datasetId}`);
   
   // Reduzir tamanho do lote para evitar timeout do Supabase/Cloudflare
   // 1000 é mais seguro que 2500 para evitar erros 500
@@ -7165,6 +7266,7 @@ async function insertCTOsInBatches(supabaseClient, ctosToInsert, progressCallbac
           row.chave_unica = generateChaveUnica(row);
         }
         delete row.id;
+        if (datasetId) row.dataset_id = datasetId;
         return row;
       });
 
@@ -8038,8 +8140,42 @@ app.post('/api/upload-base', (req, res, next) => {
             uploadProgress.message = 'Carregando CTOs existentes para comparação inteligente...';
             console.log('📥 [Background] ===== INICIANDO ATUALIZAÇÃO INTELIGENTE =====');
             console.log('📥 [Background] Carregando CTOs existentes do Supabase para comparação...');
+
+            // Staging + swap: grava em dataset staging; leituras seguem no active
+            let writeDatasetId = null;
+            let stagingMode = false;
+            if (await isDatasetStagingEnabled(supabase)) {
+              const activeId = await ensureActiveDataset(supabase);
+              const staging = await createStagingDataset(supabase, {
+                label: fileName || `upload-${Date.now()}`,
+                meta: { fileName, fileSize }
+              });
+              writeDatasetId = staging.id;
+              stagingMode = true;
+              uploadProgress.stagingDatasetId = writeDatasetId;
+              uploadProgress.pendingSwap = true;
+              uploadProgress.message =
+                'Preparando base staging (a ferramenta continua liberada para uso)...';
+              console.log(
+                `🆕 [Background] Staging ${writeDatasetId} (active=${activeId}) — clonando CTOs...`
+              );
+              try {
+                await cloneCtosBetweenDatasets(supabase, activeId, writeDatasetId, {
+                  pgUrl: resolvePgUrlForActiveWrite(),
+                  onProgress: (p) => {
+                    if (p?.cloned != null) {
+                      uploadProgress.message = `Preparando staging... ${p.cloned} CTO(s) clonada(s)`;
+                    }
+                  }
+                });
+              } catch (cloneErr) {
+                await markDatasetFailed(supabase, writeDatasetId, cloneErr.message);
+                throw new Error(`Falha ao preparar staging: ${cloneErr.message}`);
+              }
+              uploadProgress.message = 'Staging pronto. Comparando com o Excel...';
+            }
             
-            // Carregar CTOs existentes (IDs e chaves_unicas)
+            // Carregar CTOs existentes (IDs e chaves_unicas) — no staging se ativo
             // Callback para atualizar progresso durante carregamento (mantém em 5% - validação já completa)
             const loadProgressCallback = (progress) => {
               // Manter em 5% durante carregamento (validação já completou 5%)
@@ -8047,7 +8183,11 @@ app.post('/api/upload-base', (req, res, next) => {
               uploadProgress.message = `Carregando CTOs existentes... ${progress.loaded} CTO(s)`;
             };
             
-            const existingCTOsMap = await loadExistingCTOs(supabase, loadProgressCallback);
+            const existingCTOsMap = await loadExistingCTOs(
+              supabase,
+              loadProgressCallback,
+              writeDatasetId
+            );
             console.log(`✅ [Background] CTOs existentes carregadas: ${existingCTOsMap.size}`);
             
             // Atualizar progresso após carregamento completo (ainda em 5%, próximo passo é processar Excel)
@@ -8098,6 +8238,9 @@ app.post('/api/upload-base', (req, res, next) => {
             console.log(`📊 [Background] CTOs atualizadas (Cenário 3): ${result.ctosToUpdate.length}`);
             console.log(`📊 [Background] CTOs deletadas (Cenário 1): ${idsToDelete.length}`);
             console.log(`📊 [Background] CTOs não alteradas: ${result.ctosUnchanged}`);
+            if (stagingMode) {
+              console.log(`📊 [Background] Modo staging: writes em dataset ${writeDatasetId} (active intacto)`);
+            }
             
             // POLÍGONOS NÃO SÃO TRATADOS AQUI
             // Polígonos são tratados apenas no botão "Criar Nova Mancha de Cobertura"
@@ -8125,7 +8268,12 @@ app.post('/api/upload-base', (req, res, next) => {
                 uploadProgress.message = `Deletando ${idsToDelete.length} CTO(s) que saíram da base...`;
               };
               
-              deleteResult = await deleteCTOsInBatches(supabase, idsToDelete, deleteProgressCallback);
+              deleteResult = await deleteCTOsInBatches(
+                supabase,
+                idsToDelete,
+                deleteProgressCallback,
+                writeDatasetId
+              );
               uploadProgress.uploadPercent = 85; // Fim do estágio de deleção
               uploadProgress.processedRows = idsToDelete.length; // Garantir que está completo
             }
@@ -8147,7 +8295,12 @@ app.post('/api/upload-base', (req, res, next) => {
                 uploadProgress.message = `Inserindo ${result.ctosToInsert.length} CTO(s) nova(s)...`;
               };
               
-              insertResult = await insertCTOsInBatches(supabase, result.ctosToInsert, insertProgressCallback);
+              insertResult = await insertCTOsInBatches(
+                supabase,
+                result.ctosToInsert,
+                insertProgressCallback,
+                writeDatasetId
+              );
               uploadProgress.uploadPercent = 90; // Fim do estágio de inserção
               uploadProgress.processedRows = result.ctosToInsert.length; // Garantir que está completo
             }
@@ -8169,7 +8322,12 @@ app.post('/api/upload-base', (req, res, next) => {
                 uploadProgress.message = `Atualizando ${result.ctosToUpdate.length} CTO(s) que mudaram...`;
               };
               
-              updateResult = await updateCTOsInBatches(supabase, result.ctosToUpdate, updateProgressCallback);
+              updateResult = await updateCTOsInBatches(
+                supabase,
+                result.ctosToUpdate,
+                updateProgressCallback,
+                writeDatasetId
+              );
               uploadProgress.uploadPercent = 95; // Fim do estágio de atualização
               uploadProgress.processedRows = result.ctosToUpdate.length; // Garantir que está completo
             }
@@ -8196,7 +8354,13 @@ app.post('/api/upload-base', (req, res, next) => {
             uploadProgress.totalRows = totalRows;
             uploadProgress.importedRows = importedRows;
             uploadProgress.totalCTOs = importedRows;
-            uploadProgress.message = 'Base de dados atualizada com sucesso!';
+            uploadProgress.message = stagingMode
+              ? 'Base staging atualizada! Crie a mancha de cobertura para publicar (usuários ainda usam a base anterior).'
+              : 'Base de dados atualizada com sucesso!';
+            if (stagingMode) {
+              uploadProgress.pendingSwap = true;
+              uploadProgress.stagingDatasetId = writeDatasetId;
+            }
 
             if (isClusterEnabled()) {
               try {
@@ -8714,30 +8878,10 @@ app.get('/api/users/online', async (req, res) => {
     }
     res.setHeader('Access-Control-Allow-Credentials', 'true');
     
-    // Se upload estiver em andamento, aguardar até terminar (com timeout)
-    if (uploadInProgress && uploadPromise) {
-      console.log('⏸️ [Users/Online] Upload em andamento, aguardando conclusão...');
-      const MAX_WAIT_TIME = 5 * 60 * 1000; // 5 minutos máximo de espera
-      const startWait = Date.now();
-      
-      try {
-        // Aguardar upload terminar (com timeout)
-        await Promise.race([
-          uploadPromise,
-          new Promise((_, reject) => 
-            setTimeout(() => reject(new Error('Timeout aguardando upload')), MAX_WAIT_TIME)
-          )
-        ]);
-        console.log(`✅ [Users/Online] Upload concluído, processando requisição (aguardou ${Date.now() - startWait}ms)`);
-      } catch (waitErr) {
-        if (waitErr.message === 'Timeout aguardando upload') {
-          console.warn(`⚠️ [Users/Online] Timeout aguardando upload (${MAX_WAIT_TIME}ms), retornando dados atuais`);
-          // Continuar mesmo se timeout (retornar dados atuais)
-        } else {
-          console.warn(`⚠️ [Users/Online] Erro ao aguardar upload: ${waitErr.message}, retornando dados atuais`);
-          // Continuar mesmo se erro (retornar dados atuais)
-        }
-      }
+    // Staging + swap: upload não bloqueia mais leituras nem /users/online
+    // (mantém apenas log se ainda houver upload longo em andamento)
+    if (uploadInProgress) {
+      console.log('ℹ️ [Users/Online] Upload/staging em andamento — respondendo sem aguardar');
     }
     
     const now = Date.now();
