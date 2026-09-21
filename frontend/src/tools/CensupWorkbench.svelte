@@ -705,32 +705,6 @@
     }
   }
 
-  /** Largura mínima do mapa: encosto do box Endereço no botão Satélite. */
-  function measureMapOverlayContactMinWidth() {
-    try {
-      const pane = document.querySelector('.wb-map-pane');
-      const mapType = document.querySelector('.wb-map-type');
-      if (!pane || !mapType) return 0;
-      const paneRect = pane.getBoundingClientRect();
-      const typeRect = mapType.getBoundingClientRect();
-      if (!paneRect.width || !typeRect.width) return 0;
-      const leftOccupied = Math.max(0, typeRect.right - paneRect.left);
-      const SEARCH_W = 200;
-      const GAP = 8;
-      const RIGHT_MARGIN = 10;
-      return Math.ceil(leftOccupied + GAP + SEARCH_W + RIGHT_MARGIN);
-    } catch {
-      return 0;
-    }
-  }
-
-  function reportMapMinWidthToParent() {
-    const w = measureMapOverlayContactMinWidth();
-    if (w >= 300) {
-      postToParent('MAP_MIN_WIDTH', { width: w });
-    }
-  }
-
   function authHeaders() {
     return {
       'Content-Type': 'application/json',
@@ -1627,42 +1601,10 @@
       postToParent('HELLO');
     }
     requestMapResize(200);
-
-    // Reporta largura mínima (encosto overlays) e observa mudanças de layout
-    const reportTwice = () => {
-      reportMapMinWidthToParent();
-      setTimeout(reportMapMinWidthToParent, 300);
-    };
-    reportTwice();
-    let mapMinRo = null;
-    try {
-      const pane = document.querySelector('.wb-map-pane');
-      if (pane && typeof ResizeObserver !== 'undefined') {
-        mapMinRo = new ResizeObserver(() => reportMapMinWidthToParent());
-        mapMinRo.observe(pane);
-      }
-    } catch {
-      /* ignore */
-    }
-
-    return () => {
-      window.removeEventListener('message', onMessage);
-      document.removeEventListener('keydown', onEquipCopyKeydown);
-      document.removeEventListener('click', handleEquipDocumentClick);
-      try {
-        mapMinRo?.disconnect();
-      } catch {
-        /* ignore */
-      }
-    };
   });
 
   function onMapReadyFromViabilidade() {
     postToParent('MAP_READY');
-    // Mede encosto Endereço↔Satélite para a extensão limitar o resize
-    setTimeout(reportMapMinWidthToParent, 80);
-    setTimeout(reportMapMinWidthToParent, 400);
-    setTimeout(reportMapMinWidthToParent, 1200);
     // Agenda → coords: a busca de CTOs roda no mapa; sincroniza o box depois
     setTimeout(() => syncForaLimiteFromRef(), 600);
     setTimeout(() => syncForaLimiteFromRef(), 1800);
@@ -2728,7 +2670,7 @@
   .wb-map-pane {
     flex: 1 1 auto;
     align-self: stretch;
-    min-width: 0;
+    min-width: 440px;
     min-height: 0;
     width: auto;
     max-width: 100%;
@@ -2746,9 +2688,9 @@
     top: 10px;
     right: 10px;
     z-index: 25;
-    width: 200px;
+    width: 280px;
     /* Reserva espaço do grupo Mapa/Satélite à esquerda — evita salto/sobreposição */
-    max-width: calc(100% - 160px);
+    max-width: calc(100% - 168px);
     display: flex;
     flex-direction: column;
     gap: 0.35rem;
