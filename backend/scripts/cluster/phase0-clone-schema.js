@@ -230,9 +230,10 @@ async function main() {
       await copyUniqueConstraints(primary, replica, table);
       await copyIndexes(primary, replica, table);
 
-      // Grants típicos Supabase
+      // Grants típicos Supabase + sem RLS (service/API do backend)
       await replica.query(`GRANT ALL ON TABLE public.${quoted} TO postgres, anon, authenticated, service_role`);
       await replica.query(`GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO postgres, anon, authenticated, service_role`);
+      await replica.query(`ALTER TABLE public.${quoted} DISABLE ROW LEVEL SECURITY`);
     }
 
     const functions = await listAppFunctions(primary);
