@@ -159,7 +159,10 @@ export function registerPortalCensupRoutes(app) {
 
       const enabled = req.body?.enabled !== false;
       if (enabled) {
-        touchCensupSyncPresence(usuario, { source: req.body?.source || 'extension-sync' });
+        touchCensupSyncPresence(usuario, {
+          source: req.body?.source || 'extension-sync',
+          badgeColor: req.body?.badgeColor
+        });
       } else {
         clearCensupSyncPresence(usuario);
       }
@@ -212,7 +215,10 @@ export function registerPortalCensupRoutes(app) {
       // Mesma requisição: se a sync estiver ligada, marca o usuário online antes de atribuir
       // (evita falha por presença só em memória / outra réplica).
       if (req.body?.syncEnabled === true) {
-        touchCensupSyncPresence(usuario, { source: req.body?.source || 'extension-sync' });
+        touchCensupSyncPresence(usuario, {
+          source: req.body?.source || 'extension-sync',
+          badgeColor: req.body?.badgeColor
+        });
       }
 
       const raw = Array.isArray(req.body?.pedidos) ? req.body.pedidos : [];
