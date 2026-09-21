@@ -2670,7 +2670,7 @@
   .wb-map-pane {
     flex: 1 1 auto;
     align-self: stretch;
-    min-width: 464px;
+    min-width: 440px;
     min-height: 0;
     width: auto;
     max-width: 100%;
