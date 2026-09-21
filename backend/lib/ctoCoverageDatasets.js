@@ -120,20 +120,30 @@ export async function ensureActiveDataset(client, { label = 'bootstrap-runtime' 
 }
 
 /**
- * Cria novo staging; arquiva/falha stagings anteriores pendentes.
+ * Cria novo staging; marca stagings anteriores como failed.
+ * NÃO apaga CTOs antigas de forma síncrona (podia travar o upload em 5% no Railway).
+ * Limpeza pesada fica para GC assíncrono.
  */
 export async function createStagingDataset(client, { label = null, meta = {} } = {}) {
   await ensureActiveDataset(client);
 
   const previous = await getStagingDataset(client);
   if (previous?.id) {
+    console.log(`♻️ [Datasets] Marcando staging anterior como failed: ${previous.id}`);
     await client
       .from('data_datasets')
-      .update({ status: 'failed', meta: { ...(previous.meta || {}), replaced_at: new Date().toISOString() } })
+      .update({
+        status: 'failed',
+        meta: { ...(previous.meta || {}), replaced_at: new Date().toISOString() }
+      })
       .eq('id', previous.id);
-    // remove CTOs/polígonos do staging antigo para liberar espaço
-    await client.from('ctos').delete().eq('dataset_id', previous.id);
-    await client.from('coverage_polygons').delete().eq('dataset_id', previous.id);
+
+    // Limpeza em background (não bloqueia o upload)
+    setTimeout(() => {
+      cleanupFailedDataset(client, previous.id).catch((err) => {
+        console.warn(`⚠️ [Datasets] GC staging ${previous.id}:`, err.message);
+      });
+    }, 0);
   }
 
   const { data, error } = await client
@@ -151,6 +161,41 @@ export async function createStagingDataset(client, { label = null, meta = {} } =
   if (error) throw new Error(`createStagingDataset: ${error.message}`);
   console.log(`🆕 [Datasets] Staging criado: ${data.id}`);
   return data;
+}
+
+/** Remove CTOs/polígonos de um dataset failed (best-effort). */
+export async function cleanupFailedDataset(client, datasetId) {
+  if (!datasetId) return;
+  const pgUrl = resolvePgUrlForActiveWrite();
+  if (pgUrl) {
+    const pg = (await import('pg')).default;
+    const c = new pg.Client({ connectionString: pgUrl, ssl: { rejectUnauthorized: false } });
+    await c.connect();
+    try {
+      await c.query(`DELETE FROM public.ctos WHERE dataset_id = $1`, [datasetId]);
+      await c.query(`DELETE FROM public.coverage_polygons WHERE dataset_id = $1`, [datasetId]);
+      console.log(`🧹 [Datasets] GC PG ok: ${datasetId}`);
+      return;
+    } finally {
+      await c.end();
+    }
+  }
+
+  // Fallback API em lotes
+  for (let i = 0; i < 500; i++) {
+    const { data, error } = await client
+      .from('ctos')
+      .select('id')
+      .eq('dataset_id', datasetId)
+      .limit(1000);
+    if (error) throw error;
+    if (!data?.length) break;
+    const ids = data.map((r) => r.id);
+    const { error: delErr } = await client.from('ctos').delete().in('id', ids);
+    if (delErr) throw delErr;
+  }
+  await client.from('coverage_polygons').delete().eq('dataset_id', datasetId);
+  console.log(`🧹 [Datasets] GC API ok: ${datasetId}`);
 }
 
 export async function markDatasetFailed(client, datasetId, reason) {
