@@ -7,9 +7,8 @@
     "dev": "node --watch server.js",
     "evaluate:diagramacao": "node scripts/evaluate-diagramacao.js",
     "agenda-bot:login": "node scripts/agenda-bot-login.js",
-    "cluster:verify": "node scripts/cluster/phase0-verify.js",
-    "cluster:copy-data": "node scripts/cluster/phase0-copy-data.js",
-    "cluster:copy-rpcs": "node scripts/cluster/phase0-copy-rpcs.js",
+    "geocode:condominios-mdu": "node scripts/geocode-condominios-mdu-missing.js",
+    "datasets:migrate": "node scripts/apply-datasets-migration.js",
     "playwright:install": "npx playwright install chromium"
   },
   "dependencies": {
