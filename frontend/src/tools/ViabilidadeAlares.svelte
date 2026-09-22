@@ -659,8 +659,8 @@
   // Helper para URL da API - usando função do config.js
   // (getApiUrl já foi importado acima)
 
-  /** Headers para cluster (alternância de leitura por projetista). */
-  function clusterFetchHeaders() {
+  /** Headers opcionais de identidade do projetista nas buscas. */
+  function apiFetchHeaders() {
     const h = {};
     if (currentUser) h['X-Projetista'] = currentUser;
     return h;
@@ -1996,7 +1996,7 @@
       const testLat = -23.5505; // Coordenada de teste (São Paulo)
       const testLng = -46.6333;
       const response = await fetch(getApiUrl(`/api/ctos/nearby?lat=${testLat}&lng=${testLng}&radius=1000`), {
-        headers: clusterFetchHeaders()
+        headers: apiFetchHeaders()
       });
       if (response.ok) {
         baseDataExists = true;
@@ -3772,7 +3772,7 @@
     
     try {
       const coverageCheckResponse = await fetch(getApiUrl(`/api/coverage/check-point?lat=${lat}&lng=${lng}`), {
-        headers: clusterFetchHeaders()
+        headers: apiFetchHeaders()
       });
       if (coverageCheckResponse.ok) {
         const coverageCheckData = await coverageCheckResponse.json();
@@ -3889,7 +3889,7 @@
       console.log('📥 [ViabilidadeAlares] Carregando polígono de cobertura do backend...');
       
       const response = await fetch(getApiUrl('/api/coverage/polygon?simplified=true'), {
-        headers: clusterFetchHeaders()
+        headers: apiFetchHeaders()
       });
       
       if (!response.ok) {
@@ -4658,7 +4658,7 @@
     try {
       const lat = clientCoords.lat;
       const lng = clientCoords.lng;
-      const headers = clusterFetchHeaders();
+      const headers = apiFetchHeaders();
 
       // ============================================
       // ETAPA 1+2 em paralelo: PRÉDIOS MDU + CTOs (250m)
@@ -4888,7 +4888,7 @@
                 grupoRaios.map(async (raio) => {
                   try {
                     const searchResponse = await fetch(getApiUrl(`/api/ctos/nearby?lat=${clientCoords.lat}&lng=${clientCoords.lng}&radius=${raio}`), {
-                      headers: clusterFetchHeaders()
+                      headers: apiFetchHeaders()
                     });
                     
                     if (!searchResponse.ok) {
