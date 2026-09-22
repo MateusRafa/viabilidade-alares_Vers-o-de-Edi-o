@@ -2,8 +2,14 @@
  * Upload Excel → substitui condominios_mdu → geocodifica linhas sem lat/lng.
  */
 import XLSX from 'xlsx';
-import { dualWrite, getWriteClients } from '../supabaseCluster/dualWrite.js';
-import { buildDeleteQuery } from '../supabaseCluster/tables.js';
+import supabasePrimary, { isSupabaseAvailable } from '../../supabase.js';
+
+function getLocalClient() {
+  if (!isSupabaseAvailable() || !supabasePrimary) {
+    throw new Error('Cliente Supabase indisponível');
+  }
+  return supabasePrimary;
+}
 
 const GEOCODE_URL = 'https://maps.googleapis.com/maps/api/geocode/json';
 const INSERT_BATCH_SIZE = 200;
@@ -579,7 +585,10 @@ export function parseMduExcelBuffer(fileBuffer) {
 async function deleteAllMdu(client) {
   // Preferência: delete em massa
   try {
-    const { error } = await buildDeleteQuery(client, 'condominios_mdu')();
+    const { error } = await client
+      .from('condominios_mdu')
+      .delete({ count: 'exact' })
+      .gte('id', 0);
     if (!error) return;
     console.warn('⚠️ [MDU Upload] delete em massa falhou, tentando por lotes:', error.message);
   } catch (err) {
@@ -827,10 +836,10 @@ export async function replaceMduBaseFromExcel(fileBuffer, { onProgress } = {}) {
     withCoordinates: parsed.withCoordinates
   });
 
-  await dualWrite(async (client, label) => {
-    console.log(`🗑️ [MDU Upload][${label}] Limpando condominios_mdu...`);
-    await deleteAllMdu(client);
-  });
+  const client = getLocalClient();
+
+  console.log('🗑️ [MDU Upload] Limpando condominios_mdu...');
+  await deleteAllMdu(client);
 
   report({
     stage: 'inserting',
@@ -840,27 +849,21 @@ export async function replaceMduBaseFromExcel(fileBuffer, { onProgress } = {}) {
     processedRows: 0
   });
 
-  await dualWrite(async (client, label) => {
-    console.log(`➕ [MDU Upload][${label}] Inserindo ${parsed.records.length} registros...`);
-    await insertMduBatches(client, parsed.records, ({ inserted, total, percent }) => {
-      // Progresso de insert: 25% → 70%
-      const mapped = 25 + Math.round((percent / 100) * 45);
-      report({
-        stage: 'inserting',
-        percent: mapped,
-        message: `Inserindo ${inserted}/${total}...`,
-        processedRows: inserted,
-        totalRows: total,
-        imported: inserted
-      });
+  console.log(`➕ [MDU Upload] Inserindo ${parsed.records.length} registros...`);
+  await insertMduBatches(client, parsed.records, ({ inserted, total, percent }) => {
+    // Progresso de insert: 25% → 70%
+    const mapped = 25 + Math.round((percent / 100) * 45);
+    report({
+      stage: 'inserting',
+      percent: mapped,
+      message: `Inserindo ${inserted}/${total}...`,
+      processedRows: inserted,
+      totalRows: total,
+      imported: inserted
     });
   });
 
-  const writeClients = getWriteClients();
-  const primaryClient = writeClients[0]?.client;
-  if (!primaryClient) {
-    throw new Error('Cliente Supabase indisponível após insert');
-  }
+  const primaryClient = client;
 
   const missingRows = await fetchMissingMduCoords(primaryClient);
   const missingCount = missingRows.length;
