@@ -34,6 +34,7 @@ import {
   registrarPedidosNaEsteira,
   atribuirPedidoNaEsteira
 } from './lib/portalCensup/filaEsteira.js';
+import { getFilaEspelho, setFilaEspelho } from './lib/portalCensup/filaEspelho.js';
 
 function getUsuarioFromRequest(req) {
   const headerKeys = Object.keys(req.headers || {});
@@ -265,6 +266,44 @@ export function registerPortalCensupRoutes(app) {
       res.json({ success: true, assignments });
     } catch (err) {
       console.error('❌ [PortalCENSUP] GET fila/atribuicoes:', err);
+      sendError(res, err);
+    }
+  });
+
+  /**
+   * Espelho da fila da Agenda para o app mobile.
+   * A extensão publica o scrape; o app lê o último snapshot.
+   */
+  app.post('/api/portal-censup/fila/espelho', async (req, res) => {
+    try {
+      const usuario = getUsuarioFromRequest(req);
+      if (!usuario) {
+        return res.status(401).json({ success: false, error: 'Usuário não autenticado' });
+      }
+
+      const result = setFilaEspelho({
+        rows: Array.isArray(req.body?.rows) ? req.body.rows : [],
+        publishedBy: usuario,
+        source: req.body?.source || 'extension'
+      });
+      res.json({ success: true, ...result });
+    } catch (err) {
+      console.error('❌ [PortalCENSUP] POST fila/espelho:', err);
+      sendError(res, err);
+    }
+  });
+
+  app.get('/api/portal-censup/fila/espelho', async (req, res) => {
+    try {
+      const usuario = getUsuarioFromRequest(req);
+      if (!usuario) {
+        return res.status(401).json({ success: false, error: 'Usuário não autenticado' });
+      }
+
+      const snapshot = getFilaEspelho();
+      res.json({ success: true, ...snapshot });
+    } catch (err) {
+      console.error('❌ [PortalCENSUP] GET fila/espelho:', err);
       sendError(res, err);
     }
   });
