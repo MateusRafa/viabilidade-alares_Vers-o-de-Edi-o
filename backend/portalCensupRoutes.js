@@ -282,9 +282,13 @@ export function registerPortalCensupRoutes(app) {
       }
 
       const result = setFilaEspelho({
-        rows: Array.isArray(req.body?.rows) ? req.body.rows : [],
+        rows: Array.isArray(req.body?.rows) ? req.body.rows : undefined,
         publishedBy: usuario,
-        source: req.body?.source || 'extension'
+        source: req.body?.source || 'extension',
+        syncNextAt: req.body?.syncNextAt,
+        pollSeconds: req.body?.pollSeconds,
+        syncEnabled: req.body?.syncEnabled,
+        confirmedEmpty: req.body?.confirmedEmpty === true
       });
       res.json({ success: true, ...result });
     } catch (err) {
