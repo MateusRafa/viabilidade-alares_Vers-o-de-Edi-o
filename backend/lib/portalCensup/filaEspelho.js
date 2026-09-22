@@ -1,6 +1,7 @@
 /**
  * Espelho da fila da Agenda (scrape da extensão → app mobile).
  * Snapshot global: a Agenda é compartilhada; o último publish vence.
+ * Inclui syncNextAt/pollSeconds para o app alinhar o countdown da extensão.
  */
 import fs from 'fs';
 import path from 'path';
@@ -8,12 +9,23 @@ import path from 'path';
 const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), 'data');
 const STORE_PATH = path.join(DATA_DIR, 'portal-censup-fila-espelho.json');
 
-/** @type {{ rows: object[], updatedAt: string|null, publishedBy: string, source: string }} */
+/** @type {{
+ *  rows: object[],
+ *  updatedAt: string|null,
+ *  publishedBy: string,
+ *  source: string,
+ *  syncNextAt: string|null,
+ *  pollSeconds: number,
+ *  syncEnabled: boolean
+ * }} */
 let memory = {
   rows: [],
   updatedAt: null,
   publishedBy: '',
-  source: ''
+  source: '',
+  syncNextAt: null,
+  pollSeconds: 30,
+  syncEnabled: false
 };
 let loaded = false;
 
@@ -32,7 +44,10 @@ function loadFromDisk() {
       rows: Array.isArray(parsed?.rows) ? parsed.rows : [],
       updatedAt: parsed?.updatedAt || null,
       publishedBy: String(parsed?.publishedBy || ''),
-      source: String(parsed?.source || '')
+      source: String(parsed?.source || ''),
+      syncNextAt: parsed?.syncNextAt || null,
+      pollSeconds: Math.max(5, Number(parsed?.pollSeconds) || 30),
+      syncEnabled: parsed?.syncEnabled === true
     };
   } catch {
     /* ignore */
@@ -69,26 +84,56 @@ function slimRow(row) {
 }
 
 /**
- * Publica o snapshot atual da Agenda (vindo da extensão).
- * @param {{ rows?: object[], publishedBy?: string, source?: string }} payload
+ * Publica snapshot e/ou timing de sync da extensão.
+ * Se `rows` não vier, mantém a fila anterior e só atualiza meta de sync.
+ * `rows: []` só zera a fila com `confirmedEmpty: true` (anti-flicker).
  */
 export function setFilaEspelho(payload = {}) {
   loadFromDisk();
-  const rows = (Array.isArray(payload.rows) ? payload.rows : [])
-    .map(slimRow)
-    .filter(Boolean);
+  const hasRows = Array.isArray(payload.rows);
+  const incoming = hasRows
+    ? payload.rows.map(slimRow).filter(Boolean)
+    : null;
+
+  const replaceRows =
+    hasRows && (incoming.length > 0 || payload.confirmedEmpty === true);
+
+  const nextSync =
+    payload.syncNextAt === undefined
+      ? memory.syncNextAt
+      : payload.syncNextAt
+        ? String(payload.syncNextAt)
+        : null;
+
+  const pollSeconds =
+    payload.pollSeconds != null
+      ? Math.max(5, Number(payload.pollSeconds) || 30)
+      : memory.pollSeconds;
+
+  const syncEnabled =
+    payload.syncEnabled === undefined
+      ? memory.syncEnabled
+      : payload.syncEnabled === true;
 
   memory = {
-    rows,
-    updatedAt: new Date().toISOString(),
-    publishedBy: String(payload.publishedBy || '').trim(),
-    source: String(payload.source || 'extension').trim() || 'extension'
+    rows: replaceRows ? incoming : memory.rows,
+    updatedAt: replaceRows
+      ? new Date().toISOString()
+      : memory.updatedAt || new Date().toISOString(),
+    publishedBy: String(payload.publishedBy || memory.publishedBy || '').trim(),
+    source: String(payload.source || memory.source || 'extension').trim() || 'extension',
+    syncNextAt: nextSync,
+    pollSeconds,
+    syncEnabled
   };
   persist();
   return {
     count: memory.rows.length,
     updatedAt: memory.updatedAt,
-    publishedBy: memory.publishedBy
+    publishedBy: memory.publishedBy,
+    syncNextAt: memory.syncNextAt,
+    pollSeconds: memory.pollSeconds,
+    syncEnabled: memory.syncEnabled
   };
 }
 
@@ -99,6 +144,9 @@ export function getFilaEspelho() {
     updatedAt: memory.updatedAt,
     publishedBy: memory.publishedBy,
     source: memory.source,
-    count: memory.rows.length
+    count: memory.rows.length,
+    syncNextAt: memory.syncNextAt,
+    pollSeconds: memory.pollSeconds,
+    syncEnabled: memory.syncEnabled
   };
 }
