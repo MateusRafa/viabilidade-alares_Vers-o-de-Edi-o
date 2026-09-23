@@ -34,7 +34,7 @@
     return projetista.toLowerCase().trim() !== currentUser.toLowerCase().trim();
   });
   let tabulacoesList = [
-    'Aprovado Com Portas',
+    '(Aprovado - Portas Disponíveis)',
     'Aprovado Com Alívio de Rede/Cleanup',
     'Aprovado / Sem Estrutura Atendimento Externo',
     'Aprovado Prédio Não Cabeado',
