@@ -111,9 +111,23 @@ export async function ensureActiveDataset(client, { label = 'bootstrap-runtime' 
   });
   if (cfgErr) throw new Error(`ensureActiveDataset config: ${cfgErr.message}`);
 
-  // Backfill best-effort
-  await client.from('ctos').update({ dataset_id: activeId }).is('dataset_id', null);
-  await client.from('coverage_polygons').update({ dataset_id: activeId }).is('dataset_id', null);
+  // Backfill best-effort (não bloqueia o upload se a tabela for enorme)
+  try {
+    const backfill = client
+      .from('ctos')
+      .update({ dataset_id: activeId })
+      .is('dataset_id', null);
+    const polyBackfill = client
+      .from('coverage_polygons')
+      .update({ dataset_id: activeId })
+      .is('dataset_id', null);
+    await Promise.race([
+      Promise.all([backfill, polyBackfill]),
+      new Promise((resolve) => setTimeout(resolve, 8000))
+    ]);
+  } catch (bfErr) {
+    console.warn('⚠️ [Datasets] Backfill active (não bloqueante):', bfErr?.message || bfErr);
+  }
 
   console.log(`✅ [Datasets] Active bootstrap: ${activeId}`);
   return activeId;
