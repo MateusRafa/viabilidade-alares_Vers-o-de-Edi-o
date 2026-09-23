@@ -541,11 +541,21 @@ let uploadProgress = {
   startedBy: '',
   startedAt: null,
   source: '', // manual | sharepoint | unknown
-  fileName: ''
+  fileName: '',
+  coverageAutoStarted: false,
+  coverageFailed: false
 };
 
 function isBaseUploadBusy() {
-  return uploadInProgress === true || uploadProgress?.inProgress === true;
+  if (uploadInProgress === true || uploadProgress?.inProgress === true) return true;
+  const stage = String(uploadProgress?.stage || 'idle');
+  return (
+    stage === 'uploading' ||
+    stage === 'processing' ||
+    stage === 'updating' ||
+    stage === 'deleting' ||
+    stage === 'calculating'
+  );
 }
 
 function formatUploadLockMessage(progress = uploadProgress) {
@@ -566,11 +576,62 @@ function formatUploadLockMessage(progress = uploadProgress) {
 
 function getUploadProgressPublic() {
   const busy = isBaseUploadBusy();
+  const coverageFailed = uploadProgress?.coverageFailed === true;
   return {
     ...uploadProgress,
     inProgress: busy,
-    lockMessage: busy ? formatUploadLockMessage(uploadProgress) : ''
+    coverageFailed,
+    lockMessage: busy ? formatUploadLockMessage(uploadProgress) : '',
+    warning: coverageFailed
+      ? String(uploadProgress?.message || 'Aviso: a mancha de cobertura falhou.').trim()
+      : ''
   };
+}
+
+function getInternalServerBaseUrl() {
+  const port = Number(process.env.PORT) || 3000;
+  return `http://127.0.0.1:${port}`;
+}
+
+/** Dispara a mancha após upload (ou sob demanda interno). */
+async function startCoverageCalculationInternal({ autoAfterUpload = false } = {}) {
+  uploadProgress.coverageAutoStarted = !!autoAfterUpload;
+  uploadProgress.coverageFailed = false;
+  uploadProgress.inProgress = true;
+  uploadInProgress = true;
+  uploadProgress.stage = 'calculating';
+  uploadProgress.calculationPercent = 0;
+  uploadProgress.uploadPercent = Math.max(Number(uploadProgress.uploadPercent) || 0, 100);
+  uploadProgress.message = autoAfterUpload
+    ? 'Base atualizada. Iniciando mancha de cobertura automaticamente...'
+    : 'Iniciando cálculo da mancha de cobertura...';
+
+  try {
+    const res = await fetch(`${getInternalServerBaseUrl()}/api/coverage/calculate`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Internal-Coverage': '1',
+        'X-Usuario': String(uploadProgress.startedBy || '').trim()
+      },
+      body: JSON.stringify({ autoAfterUpload: !!autoAfterUpload })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.success === false) {
+      throw new Error(data.error || data.details || `Falha ao iniciar mancha (${res.status})`);
+    }
+    // O job da mancha continua em background e atualiza uploadProgress.
+  } catch (err) {
+    const detail = err?.message || String(err);
+    uploadProgress.stage = 'error';
+    uploadProgress.coverageFailed = true;
+    uploadProgress.inProgress = false;
+    uploadInProgress = false;
+    uploadProgress.message = autoAfterUpload
+      ? `Aviso: a base foi atualizada, mas a mancha de cobertura falhou: ${detail}`
+      : `Erro na mancha de cobertura: ${detail}`;
+    console.error('❌ [Coverage] Falha ao iniciar mancha automática:', detail);
+  }
 }
 
 // Progresso do upload da base MDU (condominios_mdu)
@@ -1395,7 +1456,12 @@ app.post('/api/coverage/calculate', async (req, res) => {
     // Verificar se há CTOs para processar
     if (!totalCTOs || totalCTOs === 0) {
       uploadProgress.stage = 'error';
-      uploadProgress.message = 'Nenhuma CTO válida encontrada para processar';
+      uploadProgress.coverageFailed = true;
+      uploadProgress.inProgress = false;
+      uploadInProgress = false;
+      uploadProgress.message = uploadProgress.coverageAutoStarted
+        ? 'Aviso: a base foi atualizada, mas a mancha falhou: nenhuma CTO válida encontrada para processar'
+        : 'Nenhuma CTO válida encontrada para processar';
       throw new Error('Nenhuma CTO válida encontrada');
     }
     
@@ -1407,7 +1473,9 @@ app.post('/api/coverage/calculate', async (req, res) => {
       calculationPercent: 0,
       message: shouldSwapAfterCoverage
         ? 'Calculando mancha no staging (ferramenta continua na base anterior)...'
-        : 'Iniciando cálculo da mancha de cobertura...',
+        : (uploadProgress.coverageAutoStarted
+          ? 'Calculando mancha de cobertura automaticamente...'
+          : 'Iniciando cálculo da mancha de cobertura...'),
       totalRows: 0,
       processedRows: 0,
       importedRows: 0,
@@ -1415,8 +1483,11 @@ app.post('/api/coverage/calculate', async (req, res) => {
       totalCTOs: totalCTOs || 0,
       processedCTOs: 0,
       stagingDatasetId: shouldSwapAfterCoverage ? coverageDatasetId : null,
-      pendingSwap: shouldSwapAfterCoverage
+      pendingSwap: shouldSwapAfterCoverage,
+      inProgress: true,
+      coverageFailed: false
     };
+    uploadInProgress = true;
     
     // Retornar resposta imediata e processar em background
     res.json({
@@ -2012,16 +2083,25 @@ app.post('/api/coverage/calculate', async (req, res) => {
           } catch (swapErr) {
             console.error('❌ [API] Swap falhou após mancha:', swapErr.message);
             uploadProgress.stage = 'error';
-            uploadProgress.message =
-              'Mancha calculada no staging, mas publicação falhou: ' + swapErr.message;
+            uploadProgress.coverageFailed = true;
+            uploadProgress.message = uploadProgress.coverageAutoStarted
+              ? `Aviso: a base foi atualizada, mas a publicação da mancha falhou: ${swapErr.message}`
+              : 'Mancha calculada no staging, mas publicação falhou: ' + swapErr.message;
             throw swapErr;
           }
         }
 
         uploadProgress.stage = 'completed';
         uploadProgress.calculationPercent = 100;
+        uploadProgress.coverageFailed = false;
+        uploadProgress.inProgress = false;
+        uploadInProgress = false;
         if (!shouldSwapAfterCoverage) {
-          uploadProgress.message = 'Área de cobertura criada com sucesso!';
+          uploadProgress.message = uploadProgress.coverageAutoStarted
+            ? 'Base e mancha de cobertura atualizadas com sucesso!'
+            : 'Área de cobertura criada com sucesso!';
+        } else if (uploadProgress.coverageAutoStarted && !uploadProgress.message) {
+          uploadProgress.message = 'Área de cobertura publicada! Nova base ativa para todos.';
         }
         
         console.log(`✅ [API] ===== POLÍGONOS CALCULADOS COM SUCESSO (POSTGIS)! =====`);
@@ -2037,12 +2117,28 @@ app.post('/api/coverage/calculate', async (req, res) => {
       } catch (err) {
         console.error('❌ [API] Erro no processamento em background:', err);
         uploadProgress.stage = 'error';
-        uploadProgress.message = `Erro: ${err.message}`;
+        uploadProgress.coverageFailed = true;
+        uploadProgress.inProgress = false;
+        uploadInProgress = false;
+        const detail = err?.message || String(err);
+        uploadProgress.message = uploadProgress.coverageAutoStarted
+          ? `Aviso: a base foi atualizada, mas a mancha de cobertura falhou: ${detail}`
+          : `Erro: ${detail}`;
       }
     })();
     
   } catch (err) {
     console.error('❌ [API] Erro na rota /api/coverage/calculate:', err);
+    uploadProgress.stage = 'error';
+    uploadProgress.coverageFailed = true;
+    uploadProgress.inProgress = false;
+    uploadInProgress = false;
+    const detail = err?.message || String(err);
+    if (!uploadProgress.message || uploadProgress.stage === 'error') {
+      uploadProgress.message = uploadProgress.coverageAutoStarted
+        ? `Aviso: a base foi atualizada, mas a mancha de cobertura falhou: ${detail}`
+        : `Erro: ${detail}`;
+    }
     
     const origin = req.headers.origin;
     if (origin) {
@@ -2054,8 +2150,9 @@ app.post('/api/coverage/calculate', async (req, res) => {
     
     res.status(500).json({ 
       success: false, 
-      error: 'Erro interno', 
-      details: err.message 
+      error: uploadProgress.message || 'Erro interno', 
+      details: err.message,
+      coverageFailed: true
     });
   }
 });
@@ -7929,20 +8026,24 @@ app.post('/api/upload-base', (req, res, next) => {
             console.log(`📊 [Background] Total de operações: ${importedRows} (${insertResult.inserted} inserções + ${updateResult.updated} atualizações + ${deleteResult.deleted} deleções)`);
             console.log('📊 [Background] ===========================================');
             
-            // Atualizar progresso final do upload
+            // Atualizar progresso do upload — em seguida inicia a mancha automaticamente
             uploadProgress.stage = 'completed';
             uploadProgress.uploadPercent = 100;
             uploadProgress.processedRows = totalRows;
             uploadProgress.totalRows = totalRows;
             uploadProgress.importedRows = importedRows;
             uploadProgress.totalCTOs = importedRows;
+            uploadProgress.coverageAutoStarted = true;
+            uploadProgress.coverageFailed = false;
             uploadProgress.message = stagingMode
-              ? 'Base staging atualizada! Crie a mancha de cobertura para publicar (usuários ainda usam a base anterior).'
-              : 'Base de dados atualizada com sucesso!';
+              ? 'Base staging pronta. Iniciando mancha de cobertura automaticamente...'
+              : 'Base atualizada. Iniciando mancha de cobertura automaticamente...';
             if (stagingMode) {
               uploadProgress.pendingSwap = true;
               uploadProgress.stagingDatasetId = writeDatasetId;
             }
+            // Sinal para o finally disparar a mancha sem liberar o lock cedo demais
+            uploadProgress._scheduleAutoCoverage = true;
 
             
             // Registrar no histórico de uploads
@@ -8126,6 +8227,7 @@ app.post('/api/upload-base', (req, res, next) => {
       } catch (err) {
         console.error('❌ [Background] Erro ao processar arquivo em background:', err);
         console.error('❌ [Background] Stack:', err.stack);
+        uploadProgress._scheduleAutoCoverage = false;
         
         // Garantir que arquivo temporário seja deletado mesmo em caso de erro
         if (!tempFileDeleted && tempFilePath) {
@@ -8137,15 +8239,37 @@ app.post('/api/upload-base', (req, res, next) => {
           }
         }
         // Não podemos retornar erro ao cliente (já respondemos), apenas logar
-      } finally {
-        // Sempre liberar flag e resolver promise quando upload terminar
-        uploadInProgress = false;
-        uploadProgress.inProgress = false;
-        if (resolveUpload) {
-          resolveUpload();
-          console.log('✅ [Upload] Flag de upload desativada - requisições /api/users/online retomadas');
+        if (uploadProgress.stage !== 'error') {
+          uploadProgress.stage = 'error';
+          uploadProgress.message = `Erro ao processar base: ${err.message || err}`;
         }
-        uploadPromise = null;
+      } finally {
+        const shouldAutoCoverage =
+          uploadProgress._scheduleAutoCoverage === true &&
+          supabase &&
+          isSupabaseAvailable();
+        delete uploadProgress._scheduleAutoCoverage;
+
+        if (shouldAutoCoverage) {
+          // Mantém lock e inicia mancha (publica staging quando concluir)
+          uploadInProgress = true;
+          uploadProgress.inProgress = true;
+          if (resolveUpload) {
+            resolveUpload();
+          }
+          uploadPromise = null;
+          console.log('🗺️ [Upload] Disparando mancha automática após upload...');
+          void startCoverageCalculationInternal({ autoAfterUpload: true });
+        } else {
+          // Sempre liberar flag e resolver promise quando upload terminar
+          uploadInProgress = false;
+          uploadProgress.inProgress = false;
+          if (resolveUpload) {
+            resolveUpload();
+            console.log('✅ [Upload] Flag de upload desativada - requisições /api/users/online retomadas');
+          }
+          uploadPromise = null;
+        }
       }
     })();
   } catch (err) {
