@@ -785,7 +785,7 @@
   
   // Lista de tabulações finais
   let tabulacoesList = [
-    'Aprovado Com Portas',
+    '(Aprovado - Portas Disponíveis)',
     'Aprovado Com Alívio de Rede/Cleanup',
     'Aprovado / Sem Estrutura Atendimento Externo',
     'Aprovado Prédio Não Cabeado',
@@ -2515,11 +2515,11 @@
    * Tabulação automática pelo estado atual do mapa (sempre relativa ao endereço).
    * 2.2 fora cobertura / além 250m → Fora da Área de Cobertura
    * 2.4 Análise de complemento + equipamentos válidos → Atendimento Externo
-   * 2.3 1 CTO ou todas vermelhas → Alívio; 2+ com ao menos 1 verde/laranja → Com Portas
+   * 2.3 1 CTO ou todas vermelhas → Alívio; 2+ com ao menos 1 verde/laranja → Portas Disponíveis
    */
   function computeTabulacaoSugeridaFromMap(motivoRaw = workbenchMotivo) {
     const TAB_FORA = 'Fora da Área de Cobertura';
-    const TAB_PORTAS = 'Aprovado Com Portas';
+    const TAB_PORTAS = '(Aprovado - Portas Disponíveis)';
     const TAB_ALIVIO = 'Aprovado Com Alívio de Rede/Cleanup';
     const TAB_EXTERNO = 'Aprovado / Sem Estrutura Atendimento Externo';
 
@@ -2582,7 +2582,7 @@
     } else if (hasGreenOrOrange) {
       tab = TAB_PORTAS;
       motivoSugestao =
-        'Há equipamento(s) verde(s) ou laranja(s) dentro de 250m — Aprovado Com Portas.';
+        'Há equipamento(s) verde(s) ou laranja(s) dentro de 250m — (Aprovado - Portas Disponíveis).';
     }
 
     return { tabulacaoFinal: tab, motivoSugestao, debugBands: bands };
