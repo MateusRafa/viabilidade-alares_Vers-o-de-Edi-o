@@ -12,23 +12,11 @@ import * as turf from '@turf/turf';
 import { union as martinezUnion } from 'martinez-polygon-clipping';
 import supabasePrimary, { testSupabaseConnection, checkTables, isSupabaseAvailable } from './supabase.js';
 import {
-  resolveReadDbForRequest,
-  dualWrite,
-  getWriteClients,
-  getPrimaryClient,
-  getReplicaClient,
-  mirrorClusterTables,
-  isClusterEnabled,
-  isClusterAvailable,
-  isActiveDbAvailable,
-  getActiveSupabaseClient,
-  getClusterStatus,
-  getClusterMode,
-  setClusterMode,
-  getClusterModeInfo,
-  initClusterMode,
-  logClusterBoot
-} from './lib/supabaseCluster/index.js';
+  getViAlaSyncClients,
+  writeViAlaToAllClients,
+  getNextVIALANumberUnified,
+  parseVIALANumber
+} from './lib/viAlaDualDb.js';
 import { registerRelatoriosB2bRoutes } from './relatoriosB2bRoutes.js';
 import { registerPortalCensupRoutes } from './portalCensupRoutes.js';
 import { bootstrapAgendaBotIfEnabled } from './lib/portalCensup/agendaBot/index.js';
@@ -47,25 +35,17 @@ import {
   resolvePgUrlForActiveWrite
 } from './lib/ctoCoverageDatasets.js';
 
-/** Cliente cluster-aware: respeita modo admin (primary/replica). */
-function createClusterAwareSupabase() {
-  return new Proxy(
-    {},
-    {
-      get(_target, prop) {
-        const client = getActiveSupabaseClient() || supabasePrimary;
-        if (!client) return undefined;
-        const value = client[prop];
-        return typeof value === 'function' ? value.bind(client) : value;
-      }
-    }
-  );
-}
-
-const supabase = createClusterAwareSupabase();
+const supabase = supabasePrimary;
 
 function isDbAvailable() {
-  return isActiveDbAvailable() || isSupabaseAvailable();
+  return isSupabaseAvailable();
+}
+
+/** Escrita no DB local deste backend (SUPABASE_URL). */
+async function writeToLocalDb(fn) {
+  if (!supabasePrimary) throw new Error('Nenhum cliente Supabase disponível');
+  const value = await fn(supabasePrimary, 'local');
+  return [{ label: 'local', value }];
 }
 
 const __filename = fileURLToPath(import.meta.url);
@@ -78,7 +58,6 @@ const PORT = process.env.PORT || 3001;
 console.log('🔧 [Config] PORT:', PORT);
 console.log('🔧 [Config] FRONTEND_URL:', process.env.FRONTEND_URL || 'Não configurado (permitindo todas as origens)');
 console.log('🔧 [Config] DATA_DIR:', process.env.DATA_DIR || './data');
-logClusterBoot();
 
 // Middleware CORS - Configuração robusta para produção
 // Permitir todas as origens por padrão - DEVE SER O PRIMEIRO MIDDLEWARE
@@ -97,7 +76,7 @@ app.use((req, res, next) => {
       res.setHeader('Access-Control-Allow-Origin', '*');
     }
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Content-Length, X-Usuario, x-usuario, X-Projetista, x-projetista');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Content-Length, X-Usuario, x-usuario, X-Projetista, x-projetista, X-Upload-Source, x-upload-source');
     res.setHeader('Access-Control-Allow-Credentials', 'true');
     res.setHeader('Access-Control-Max-Age', '86400'); // 24 horas
     res.setHeader('Access-Control-Expose-Headers', 'Content-Length, Content-Type');
@@ -120,7 +99,7 @@ app.use((req, res, next) => {
 app.use(cors({
   origin: true, // Permitir todas as origens
   credentials: true,
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Content-Length', 'X-Usuario', 'x-usuario']
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Content-Length', 'X-Usuario', 'x-usuario', 'X-Upload-Source', 'x-upload-source']
 }));
 
 // Configurar body parser com limites maiores e timeout maior
@@ -156,7 +135,7 @@ async function deleteAllCoveragePolygons(datasetId = null) {
         : '🗑️ [Polygons] Deletando todos os polígonos de cobertura...'
     );
 
-    const results = await dualWrite(async (client, label) => {
+    const results = await writeToLocalDb(async (client, label) => {
       let countQuery = client.from('coverage_polygons').select('*', { count: 'exact', head: true });
       countQuery = applyDatasetFilter(countQuery, datasetId);
       const { count: countBefore } = await countQuery;
@@ -187,18 +166,6 @@ async function deleteAllCoveragePolygons(datasetId = null) {
     console.error('❌ [Polygons] Erro ao deletar polígonos:', err);
     return { success: false, error: err.message };
   }
-}
-
-/** Escrita no backend ativo apenas (sem espelho em segundo plano). */
-async function clusterAwareWrite(fn) {
-  if (isClusterEnabled() && isClusterAvailable()) {
-    return dualWrite(fn);
-  }
-  const client = getActiveSupabaseClient() || supabasePrimary;
-  if (!client) throw new Error('Nenhum cliente Supabase disponível');
-  const label = getClusterMode() === 'replica' ? 'replica' : 'primary';
-  const value = await fn(client, label);
-  return [{ label, value }];
 }
 
 // Função auxiliar para inserir entrada/saída no Supabase
@@ -367,7 +334,6 @@ const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
 }
-initClusterMode(DATA_DIR);
 
 // Configurar multer para upload de arquivos
 // OTIMIZAÇÃO DE MEMÓRIA: Usar diskStorage em vez de memoryStorage
@@ -570,8 +536,42 @@ let uploadProgress = {
   importedRows: 0,
   calculationId: null,
   totalCTOs: 0,
-  processedCTOs: 0
+  processedCTOs: 0,
+  inProgress: false,
+  startedBy: '',
+  startedAt: null,
+  source: '', // manual | sharepoint | unknown
+  fileName: ''
 };
+
+function isBaseUploadBusy() {
+  return uploadInProgress === true || uploadProgress?.inProgress === true;
+}
+
+function formatUploadLockMessage(progress = uploadProgress) {
+  const nome = String(progress?.startedBy || 'Usuário').trim() || 'Usuário';
+  let hora = '--:--:--';
+  let data = '--/--/----';
+  const raw = progress?.startedAt;
+  if (raw) {
+    const d = new Date(raw);
+    if (!Number.isNaN(d.getTime())) {
+      const pad = (n) => String(n).padStart(2, '0');
+      hora = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+      data = `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()}`;
+    }
+  }
+  return `Atualização em Andamento - ${nome} ${hora} - ${data}`;
+}
+
+function getUploadProgressPublic() {
+  const busy = isBaseUploadBusy();
+  return {
+    ...uploadProgress,
+    inProgress: busy,
+    lockMessage: busy ? formatUploadLockMessage(uploadProgress) : ''
+  };
+}
 
 // Progresso do upload da base MDU (condominios_mdu)
 let mduUploadInProgress = false;
@@ -1022,8 +1022,6 @@ function buildCtosInternasFromNomes(nomesCtoRaw, situacaoCto, ctoByName) {
 // Esta é a solução para resolver o problema de memória - busca apenas CTOs próximas
 app.get('/api/ctos/nearby', async (req, res) => {
   try {
-    const __clusterRead = resolveReadDbForRequest(req, res);
-    const supabase = __clusterRead.db || supabasePrimary;
     // Garantir headers CORS
     const origin = req.headers.origin;
     if (origin) {
@@ -1403,6 +1401,7 @@ app.post('/api/coverage/calculate', async (req, res) => {
     
     // Inicializar progresso global
     uploadProgress = {
+      ...uploadProgress,
       stage: 'calculating',
       uploadPercent: 100, // Upload já está completo
       calculationPercent: 0,
@@ -2035,21 +2034,6 @@ app.post('/api/coverage/calculate', async (req, res) => {
         console.log(`   - Método: PostGIS (via Supabase)`);
         console.log(`✅ [API] ==========================================`);
 
-        if (isClusterEnabled()) {
-          uploadProgress.message = 'Espelhando cobertura na réplica...';
-          const mirrorResult = await mirrorClusterTables({
-            tables: ['coverage_polygons', 'coverage_calculation_progress']
-          });
-          if (!mirrorResult.success) {
-            console.error('❌ [Cluster] Mirror pós-cálculo falhou:', mirrorResult.error);
-            uploadProgress.message =
-              'Área criada no primary; sync réplica pendente: ' + (mirrorResult.error || 'erro');
-            uploadProgress.syncPending = true;
-          } else if (!mirrorResult.skipped) {
-            console.log('✅ [Cluster] Mirror pós-cálculo OK');
-            uploadProgress.message = 'Área de cobertura criada com sucesso (cluster sincronizado)!';
-          }
-        }
       } catch (err) {
         console.error('❌ [API] Erro no processamento em background:', err);
         uploadProgress.stage = 'error';
@@ -2179,8 +2163,6 @@ app.get('/api/coverage/calculate-status', async (req, res) => {
 // Rota para obter polígono de cobertura ativo
 app.get('/api/coverage/polygon', async (req, res) => {
   try {
-    const __clusterRead = resolveReadDbForRequest(req, res);
-    const supabase = __clusterRead.db || supabasePrimary;
     // Garantir headers CORS
     const origin = req.headers.origin;
     if (origin) {
@@ -2386,8 +2368,6 @@ app.post('/api/coverage/calculate-polygon-for-ctos', async (req, res) => {
 // Rota para verificar se um ponto está dentro da cobertura
 app.get('/api/coverage/check-point', async (req, res) => {
   try {
-    const __clusterRead = resolveReadDbForRequest(req, res);
-    const supabase = __clusterRead.db || supabasePrimary;
     // Garantir headers CORS
     const origin = req.headers.origin;
     if (origin) {
@@ -2479,8 +2459,6 @@ function escapeLikePattern(pattern) {
 
 app.get('/api/ctos/search', async (req, res) => {
   try {
-    const __clusterRead = resolveReadDbForRequest(req, res);
-    const supabase = __clusterRead.db || supabasePrimary;
     // Garantir headers CORS
     const origin = req.headers.origin;
     if (origin) {
@@ -2865,8 +2843,6 @@ app.post('/api/ctos/caminhos-rede-batch', async (req, res) => {
 // Rota OTIMIZADA: Buscar condomínios cadastrados (base MDU) dentro do raio
 app.get('/api/condominios/nearby', async (req, res) => {
   try {
-    const __clusterRead = resolveReadDbForRequest(req, res);
-    const supabase = __clusterRead.db || supabasePrimary;
     // Garantir headers CORS
     const origin = req.headers.origin;
     if (origin) {
@@ -3741,7 +3717,7 @@ app.get('/api/upload-progress', async (req, res) => {
     
     res.json({
       success: true,
-      ...uploadProgress
+      ...getUploadProgressPublic()
     });
   } catch (err) {
     console.error('❌ [API] Erro na rota /api/upload-progress:', err);
@@ -3777,7 +3753,7 @@ app.get('/api/base-last-modified', async (req, res) => {
     let totalCTOs = 0; // Declarar fora do bloco para estar disponível em todo o escopo
 
     // Sempre primary — mesma data da ferramenta oficial (evita Excel/réplica antigos)
-    const dbClient = getPrimaryClient() || supabasePrimary || (isSupabaseAvailable() ? supabase : null);
+    const dbClient = supabasePrimary || (isSupabaseAvailable() ? supabase : null);
 
     if (dbClient) {
       const activeDatasetId = (await isDatasetStagingEnabled(dbClient))
@@ -3934,7 +3910,7 @@ app.delete('/api/base/delete', requireAdmin, async (req, res) => {
       try {
         console.log('🗑️ [API] Deletando progresso e CTOs (cluster dual-write se ativo)...');
 
-        const writeResults = await dualWrite(async (client, label) => {
+        const writeResults = await writeToLocalDb(async (client, label) => {
           const { error: clearProgressError } = await client
             .from('coverage_calculation_progress')
             .delete()
@@ -4189,7 +4165,7 @@ async function saveProjetistasToSupabase(projetistas) {
       };
     }).filter(p => p.nome); // Remover vazios
     
-    await clusterAwareWrite(async (client) => {
+    await writeToLocalDb(async (client) => {
       const { error: deleteError } = await client
         .from('projetistas')
         .delete()
@@ -4279,26 +4255,16 @@ async function readTabulacoesFromSupabase() {
     }
 
     const clients = [];
-    const primary = getPrimaryClient() || supabasePrimary;
-    if (primary) clients.push({ client: primary, label: 'primary' });
-
-    if (isClusterEnabled()) {
-      const replica = getReplicaClient();
-      if (replica && replica !== primary) {
-        clients.push({ client: replica, label: 'replica' });
-      }
-    }
-
-    // Fallback: cliente cluster-aware (modo admin)
+    if (supabasePrimary) clients.push({ client: supabasePrimary, label: 'local' });
     if (!clients.length && supabase) {
-      clients.push({ client: supabase, label: 'active' });
+      clients.push({ client: supabase, label: 'local' });
     }
 
     if (!clients.length) {
       return null;
     }
 
-    console.log('📂 [Supabase] Carregando tabulações (primary + réplica se houver)…');
+    console.log('📂 [Supabase] Carregando tabulações…');
 
     const nomes = new Set();
     let anyOk = false;
@@ -4426,7 +4392,7 @@ async function saveTabulacoesToSupabase(tabulacoes) {
       .filter(nome => nome) // Remover vazios
       .map(nome => ({ nome }));
     
-    await clusterAwareWrite(async (client) => {
+    await writeToLocalDb(async (client) => {
       const { error: deleteError } = await client
         .from('tabulacoes')
         .delete()
@@ -4748,101 +4714,13 @@ async function readVIALABase() {
   });
 }
 
-function parseVIALANumber(viAla) {
-  if (!viAla || typeof viAla !== 'string') return 0;
-  const match = viAla.match(/VI\s*ALA[-\s]*(\d+)/i);
-  if (!match) return 0;
-  const number = parseInt(match[1], 10);
-  return Number.isFinite(number) ? number : 0;
-}
-
-/** Maior número VI ALA já usado em um cliente Supabase (primary/réplica). */
-async function getMaxVIALANumberFromClient(client, label = 'supabase') {
-  if (!client) return 0;
-
-  // NÃO chamar RPC get_next_vi_ala_number aqui — ela aloca/incrementa sequência
-  // e gerava buracos + duplicatas quando usada só para "ler o max".
-
-  // 1) Maior vi_ala textual (zero-padded ordena corretamente)
-  try {
-    const { data, error } = await client
-      .from('vi_ala')
-      .select('vi_ala')
-      .order('vi_ala', { ascending: false })
-      .limit(50);
-
-    if (!error && data?.length) {
-      let maxNumber = 0;
-      for (const row of data) {
-        maxNumber = Math.max(maxNumber, parseVIALANumber(row.vi_ala || ''));
-      }
-      if (maxNumber > 0) {
-        console.log(`✅ [Supabase/${label}] Max por vi_ala desc: ${maxNumber}`);
-        return maxNumber;
-      }
-    }
-  } catch (err) {
-    console.warn(`⚠️ [Supabase/${label}] Falha ao ordenar por vi_ala:`, err?.message || err);
-  }
-
-  // 2) Amostra recente por id
-  try {
-    const { data, error } = await client
-      .from('vi_ala')
-      .select('vi_ala')
-      .order('id', { ascending: false })
-      .limit(500);
-
-    if (!error && data?.length) {
-      let maxNumber = 0;
-      for (const row of data) {
-        maxNumber = Math.max(maxNumber, parseVIALANumber(row.vi_ala || ''));
-      }
-      console.log(`✅ [Supabase/${label}] Max por id recente: ${maxNumber} (amostra ${data.length})`);
-      return maxNumber;
-    }
-  } catch (err) {
-    console.warn(`⚠️ [Supabase/${label}] Falha ao buscar por id:`, err?.message || err);
-  }
-
-  return 0;
-}
-
-// Função para obter o próximo VI ALA do Supabase (nova versão)
+// Função para obter o próximo VI ALA do Supabase (alinha local + peer se SUPABASE_REPLICA_* existir)
 async function getNextVIALAFromSupabase() {
   try {
     if (!isDbAvailable()) {
       return null;
     }
-
-    console.log('🔍 [Supabase] Obtendo próximo VI ALA (primary + réplica se houver)…');
-
-    const clients = [];
-    const primary = getPrimaryClient() || supabasePrimary;
-    if (primary) clients.push({ client: primary, label: 'primary' });
-
-    if (isClusterEnabled()) {
-      const replica = getReplicaClient();
-      if (replica && replica !== primary) {
-        clients.push({ client: replica, label: 'replica' });
-      }
-    }
-
-    if (!clients.length) {
-      return null;
-    }
-
-    // Usa o MAIOR número entre backends — mesma sequência da ferramenta oficial
-    let maxNumber = 0;
-    for (const { client, label } of clients) {
-      const n = await getMaxVIALANumberFromClient(client, label);
-      if (n > maxNumber) maxNumber = n;
-    }
-
-    const nextNumber = maxNumber + 1;
-    const nextVIALA = `VI ALA-${String(nextNumber).padStart(7, '0')}`;
-    console.log(`✅ [Supabase] Próximo VI ALA unificado: ${nextVIALA} (max visto: ${maxNumber})`);
-    return nextVIALA;
+    return await getNextVIALANumberUnified();
   } catch (err) {
     console.error('❌ [Supabase] Erro ao obter próximo VI ALA:', err);
     return null;
@@ -4969,67 +4847,12 @@ function getMissingSupabaseColumn(errorMessage) {
   return match ? match[1] : null;
 }
 
-/**
- * Clientes onde VI ALA deve ser gravado/lido para ficar visível na ferramenta e na extensão.
- * Diferente do dualWrite genérico (só o backend ativo): aqui sempre tenta primary + réplica.
- */
 function getVIALASyncClients() {
-  const clients = [];
-  const primary = getPrimaryClient() || supabasePrimary;
-  if (primary) {
-    clients.push({ label: 'primary', client: primary });
-  }
-  if (isClusterEnabled()) {
-    const replica = getReplicaClient();
-    if (replica && replica !== primary) {
-      clients.push({ label: 'replica', client: replica });
-    }
-  }
-  if (!clients.length) {
-    const active = getActiveSupabaseClient() || (isSupabaseAvailable() ? supabase : null);
-    if (active) clients.push({ label: 'active', client: active });
-  }
-  return clients;
+  return getViAlaSyncClients();
 }
 
 async function writeVIALAToAllClients(fn) {
-  const clients = getVIALASyncClients();
-  if (!clients.length) {
-    throw new Error('Nenhum cliente Supabase disponível para VI ALA');
-  }
-
-  const settled = await Promise.allSettled(
-    clients.map(({ client, label }) => Promise.resolve(fn(client, label)))
-  );
-
-  const values = [];
-  const failures = [];
-  settled.forEach((result, i) => {
-    const label = clients[i].label;
-    if (result.status === 'fulfilled') {
-      values.push({ label, value: result.value });
-    } else {
-      failures.push({ label, error: result.reason });
-      console.error(
-        `❌ [VI ALA] write ${label}:`,
-        result.reason?.message || result.reason
-      );
-    }
-  });
-
-  // Exige pelo menos um backend gravado com sucesso
-  if (values.length === 0) {
-    const first = failures[0]?.error;
-    throw first instanceof Error ? first : new Error(first?.message || 'Falha ao gravar VI ALA');
-  }
-  if (failures.length) {
-    console.warn(
-      `⚠️ [VI ALA] Gravado parcialmente (${values.map((v) => v.label).join(', ')}); falhas: ${failures
-        .map((f) => f.label)
-        .join(', ')}`
-    );
-  }
-  return values;
+  return writeViAlaToAllClients(fn);
 }
 
 async function insertVIALAIntoSupabase(dataToSave) {
@@ -5643,265 +5466,6 @@ async function requireAdmin(req, res, next) {
     return res.status(500).json({ success: false, error: 'Erro ao verificar permissões' });
   }
 }
-
-// =============================================================================
-// Cluster Supabase — modo admin + sincronização B1→B2
-// =============================================================================
-
-app.get('/api/cluster/status', requireAdmin, async (req, res) => {
-  try {
-    res.json({
-      success: true,
-      ...getClusterStatus(),
-      modeInfo: getClusterModeInfo()
-    });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-app.get('/api/cluster/mode', requireAdmin, async (req, res) => {
-  try {
-    res.json({ success: true, ...getClusterModeInfo(), status: getClusterStatus() });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-app.put('/api/cluster/mode', requireAdmin, async (req, res) => {
-  try {
-    const { mode } = req.body || {};
-    if (!mode) {
-      return res.status(400).json({ success: false, error: 'Campo "mode" é obrigatório' });
-    }
-    if (!isClusterEnabled()) {
-      return res.status(400).json({
-        success: false,
-        error: 'Cluster desabilitado. Configure SUPABASE_CLUSTER_ENABLED=true'
-      });
-    }
-    if (!isClusterAvailable()) {
-      return res.status(400).json({
-        success: false,
-        error: 'Réplica não configurada. Configure SUPABASE_REPLICA_*'
-      });
-    }
-    const saved = setClusterMode(mode);
-    res.json({
-      success: true,
-      message: `Modo alterado para ${saved.mode}`,
-      ...getClusterModeInfo(),
-      status: getClusterStatus()
-    });
-  } catch (err) {
-    res.status(400).json({ success: false, error: err.message });
-  }
-});
-
-app.post('/api/cluster/sync', requireAdmin, async (req, res) => {
-  try {
-    if (!isClusterEnabled()) {
-      return res.status(400).json({
-        success: false,
-        error: 'Cluster desabilitado. Configure SUPABASE_CLUSTER_ENABLED=true'
-      });
-    }
-    if (!isClusterAvailable()) {
-      return res.status(400).json({
-        success: false,
-        error: 'Réplica não configurada'
-      });
-    }
-
-    const direction = req.body?.direction === 'b2_to_b1' ? 'b2_to_b1' : 'b1_to_b2';
-    console.log(
-      `🪞 [Cluster] Sync manual (${direction}) por admin (${req.body?.usuario || 'admin'})`
-    );
-    const result = await mirrorClusterTables({ direction });
-    if (!result.success) {
-      return res.status(500).json({ success: false, ...result });
-    }
-    res.json({
-      success: true,
-      message:
-        direction === 'b2_to_b1'
-          ? 'B1 atualizado com os dados do B2'
-          : 'B2 atualizado com os dados do B1',
-      direction,
-      synced: result.synced,
-      skipped: result.skipped || false
-    });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-/**
- * Troca de backend com sync + progresso em stream NDJSON.
- * Body: { targetMode: 'primary'|'replica', usuario }
- * Cancela se o cliente abortar a conexão.
- */
-app.post('/api/cluster/switch', requireAdmin, async (req, res) => {
-  const sendEvent = (payload) => {
-    if (res.writableEnded) return;
-    res.write(`${JSON.stringify(payload)}\n`);
-  };
-
-  try {
-    if (!isClusterEnabled()) {
-      return res.status(400).json({
-        success: false,
-        error: 'Cluster desabilitado. Configure SUPABASE_CLUSTER_ENABLED=true'
-      });
-    }
-    if (!isClusterAvailable()) {
-      return res.status(400).json({
-        success: false,
-        error: 'Réplica não configurada'
-      });
-    }
-
-    const targetMode = String(req.body?.targetMode || '').trim().toLowerCase();
-    if (targetMode !== 'primary' && targetMode !== 'replica') {
-      return res.status(400).json({
-        success: false,
-        error: 'targetMode inválido. Use primary ou replica'
-      });
-    }
-
-    const currentMode = getClusterMode();
-    if (currentMode === targetMode) {
-      return res.json({
-        success: true,
-        skipped: true,
-        mode: currentMode,
-        message: 'Backend já está ativo'
-      });
-    }
-
-    const direction = targetMode === 'replica' ? 'b1_to_b2' : 'b2_to_b1';
-    const sourceLabel = direction === 'b1_to_b2' ? 'B1' : 'B2';
-    const targetLabel = direction === 'b1_to_b2' ? 'B2' : 'B1';
-
-    res.status(200);
-    res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
-    res.setHeader('Cache-Control', 'no-cache, no-transform');
-    res.setHeader('X-Accel-Buffering', 'no');
-    res.setHeader('Connection', 'keep-alive');
-    if (typeof res.flushHeaders === 'function') res.flushHeaders();
-
-    const ac = new AbortController();
-    const onClose = () => {
-      // Não cancelar quando a resposta já terminou (close dispara também no sucesso)
-      if (res.writableEnded || res.writableFinished) return;
-      if (!ac.signal.aborted) {
-        console.warn('⚠️ [Cluster] Cliente encerrou conexão — cancelando switch');
-        ac.abort();
-      }
-    };
-    req.on('close', onClose);
-    req.on('aborted', onClose);
-
-    sendEvent({
-      type: 'start',
-      direction,
-      sourceLabel,
-      targetLabel,
-      targetMode,
-      message: `Preparando cópia ${sourceLabel} → ${targetLabel}…`
-    });
-
-    let lastPercent = 0;
-    let lastMessage = `Copiando ${sourceLabel} → ${targetLabel}…`;
-    const heartbeat = setInterval(() => {
-      if (res.writableEnded || ac.signal.aborted) return;
-      sendEvent({
-        type: 'progress',
-        percent: Math.max(0, Math.min(99, lastPercent)),
-        message: lastMessage || 'Sincronizando… (conexão ativa)'
-      });
-      try {
-        if (typeof res.flush === 'function') res.flush();
-      } catch {
-        // ignore
-      }
-    }, 8000);
-
-    let result;
-    try {
-      result = await mirrorClusterTables({
-        direction,
-        signal: ac.signal,
-        onProgress: (p) => {
-          lastPercent = Math.max(0, Math.min(99, Number(p.percent) || 0));
-          lastMessage = p.message || lastMessage;
-          sendEvent({
-            type: 'progress',
-            percent: lastPercent,
-            message: lastMessage,
-            table: p.table || '',
-            tableIndex: p.tableIndex || 0,
-            tableTotal: p.tableTotal || 0,
-            phase: p.phase || ''
-          });
-        }
-      });
-    } finally {
-      clearInterval(heartbeat);
-      req.off?.('close', onClose);
-      req.off?.('aborted', onClose);
-      req.removeListener('close', onClose);
-      req.removeListener('aborted', onClose);
-    }
-
-    if (result.cancelled || ac.signal.aborted) {
-      sendEvent({
-        type: 'cancelled',
-        success: false,
-        message: 'Troca cancelada. O modo anterior foi mantido.'
-      });
-      return res.end();
-    }
-
-    if (!result.success) {
-      sendEvent({
-        type: 'error',
-        success: false,
-        error: result.error || 'Falha na sincronização',
-        synced: result.synced || {}
-      });
-      return res.end();
-    }
-
-    const saved = setClusterMode(targetMode);
-    sendEvent({
-      type: 'done',
-      success: true,
-      mode: saved.mode,
-      direction,
-      synced: result.synced || {},
-      percent: 100,
-      message: `Backend ${targetLabel} ativo. Cópia ${sourceLabel} → ${targetLabel} concluída.`
-    });
-    return res.end();
-  } catch (err) {
-    if (!res.headersSent) {
-      return res.status(500).json({ success: false, error: err.message });
-    }
-    try {
-      res.write(
-        `${JSON.stringify({
-          type: 'error',
-          success: false,
-          error: err.message || 'Erro ao trocar backend'
-        })}\n`
-      );
-    } catch {
-      // ignore
-    }
-    return res.end();
-  }
-});
 
 // Rota para autenticar usuário (validar login)
 app.post('/api/auth/login', async (req, res) => {
@@ -6973,43 +6537,12 @@ async function loadExistingCTOs(supabaseClient, progressCallback = null, dataset
  * @returns {Promise<Object>} - { deleted: number } - Quantidade de CTOs deletadas
  * @throws {Error} - Se houver erro ao deletar
  */
-/** Clientes para escrita de CTOs no upload (apenas o backend ativo). */
-function getUploadWriteClients(fallbackClient) {
-  const clients = getWriteClients();
-  if (clients.length > 0) return clients;
-  if (fallbackClient) return [{ label: 'primary', client: fallbackClient }];
-  return [];
-}
-
-/**
- * Executa a operação de escrita no(s) cliente(s) de upload (backend ativo).
- */
+/** Escrita de upload CTOs no DB local. */
 async function dualWriteUpload(fallbackClient, fn) {
-  const clients = getUploadWriteClients(fallbackClient);
-  if (clients.length === 0) {
-    throw new Error('Nenhum cliente Supabase para escrita do upload');
-  }
-  if (clients.length > 1) {
-    console.log(`🪞 [Cluster] write upload → ${clients.map((c) => c.label).join(' + ')}`);
-  }
-  const settled = await Promise.allSettled(
-    clients.map(({ client, label }) => Promise.resolve(fn(client, label)))
-  );
-  const failures = [];
-  const values = [];
-  settled.forEach((result, i) => {
-    const label = clients[i].label;
-    if (result.status === 'fulfilled') values.push({ label, value: result.value });
-    else {
-      failures.push({ label, error: result.reason });
-      console.error(`❌ [Cluster] upload write ${label}:`, result.reason?.message || result.reason);
-    }
-  });
-  if (failures.length > 0) {
-    const msg = failures.map((f) => `${f.label}: ${f.error?.message || f.error}`).join(' | ');
-    throw new Error(`Cluster upload dual-write falhou: ${msg}`);
-  }
-  return values;
+  const client = fallbackClient || supabasePrimary;
+  if (!client) throw new Error('Nenhum cliente Supabase para escrita do upload');
+  const value = await fn(client, 'local');
+  return [{ label: 'local', value }];
 }
 
 async function deleteCTOsInBatches(supabaseClient, idsToDelete, progressCallback = null, datasetId = null) {
@@ -7970,8 +7503,21 @@ app.post('/api/upload-base', (req, res, next) => {
   }
   res.setHeader('Access-Control-Allow-Credentials', 'true');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Content-Length, X-Usuario, x-usuario, X-Upload-Source, x-upload-source');
   
+  // Lock global: só um upload de base CTOs por vez (extensão ou Config)
+  if (isBaseUploadBusy()) {
+    const pub = getUploadProgressPublic();
+    return res.status(409).json({
+      success: false,
+      error: pub.lockMessage || 'Já existe uma atualização de base em andamento.',
+      inProgress: true,
+      startedBy: pub.startedBy || '',
+      startedAt: pub.startedAt || null,
+      lockMessage: pub.lockMessage || ''
+    });
+  }
+
   // Configurar timeout maior para uploads grandes (2 minutos = 120 segundos)
   // Railway tem timeout de gateway de ~30s, mas precisamos tempo para receber arquivo grande
   req.setTimeout(2 * 60 * 1000); // 2 minutos para receber o arquivo
@@ -8068,8 +7614,16 @@ app.post('/api/upload-base', (req, res, next) => {
     res.setHeader('Access-Control-Allow-Credentials', 'true');
     
     // Inicializar progresso ANTES de validar (começar do zero)
+    const startedBy =
+      String(req.headers['x-usuario'] || req.headers['X-Usuario'] || '').trim() ||
+      String(req.body?.usuario || '').trim() ||
+      'Desconhecido';
+    const sourceRaw = String(req.headers['x-upload-source'] || req.query?.source || '').trim().toLowerCase();
+    const source = sourceRaw === 'sharepoint' ? 'sharepoint' : 'manual';
+    const startedAt = new Date().toISOString();
+
     uploadProgress = {
-      stage: 'idle', // Começar como 'idle' para garantir que frontend mostre 0%
+      stage: 'uploading',
       uploadPercent: 0,
       calculationPercent: 0,
       message: 'Validando colunas do arquivo...',
@@ -8078,7 +7632,12 @@ app.post('/api/upload-base', (req, res, next) => {
       importedRows: 0,
       calculationId: null,
       totalCTOs: 0,
-      processedCTOs: 0
+      processedCTOs: 0,
+      inProgress: true,
+      startedBy,
+      startedAt,
+      source,
+      fileName: fileName || ''
     };
     
     // Criar promise para controlar quando upload termina (ANTES da validação)
@@ -8088,6 +7647,7 @@ app.post('/api/upload-base', (req, res, next) => {
     });
     uploadInProgress = true;
     console.log('⏸️ [Upload] Flag de upload ativada - requisições /api/users/online serão pausadas');
+    console.log(`⏸️ [Upload] Iniciado por: ${startedBy} (${source}) em ${startedAt}`);
     
     // RESPONDER IMEDIATAMENTE para evitar timeout do Railway
     // Processar validação e processamento em background
@@ -8096,7 +7656,10 @@ app.post('/api/upload-base', (req, res, next) => {
       message: `Upload recebido! Validando e processando arquivo em background...`,
       processing: true,
       fileSize: fileSize,
-      fileName: fileName
+      fileName: fileName,
+      startedBy,
+      startedAt,
+      lockMessage: formatUploadLockMessage(uploadProgress)
     });
     
     console.log(`💾 [Upload] Arquivo salvo temporariamente em: ${tempFilePath} (${fileSize} bytes)`);
@@ -8131,6 +7694,7 @@ app.post('/api/upload-base', (req, res, next) => {
       uploadProgress.stage = 'error';
       uploadProgress.message = validationResult.error || 'Erro ao validar colunas do arquivo';
       uploadProgress.uploadPercent = 0;
+      uploadProgress.inProgress = false;
       uploadInProgress = false;
       if (resolveUpload) resolveUpload();
       
@@ -8380,58 +7944,13 @@ app.post('/api/upload-base', (req, res, next) => {
               uploadProgress.stagingDatasetId = writeDatasetId;
             }
 
-            if (isClusterEnabled()) {
-              try {
-                const writers = getWriteClients();
-                if (writers.length >= 2) {
-                  const counts = await Promise.all(
-                    writers.map(async ({ client, label }) => {
-                      const { count, error } = await client
-                        .from('ctos')
-                        .select('*', { count: 'exact', head: true });
-                      if (error) throw new Error(`[${label}] ${error.message}`);
-                      return { label, count: count ?? 0 };
-                    })
-                  );
-                  console.log(
-                    '📊 [Cluster] Contagem pós-upload:',
-                    counts.map((c) => `${c.label}=${c.count}`).join(', ')
-                  );
-                  const primaryCount = counts.find((c) => c.label === 'primary')?.count;
-                  const replicaCount = counts.find((c) => c.label === 'replica')?.count;
-                  if (primaryCount !== replicaCount) {
-                    console.warn(
-                      `⚠️ [Cluster] Divergência ctos primary=${primaryCount} replica=${replicaCount} — iniciando mirror de correção`
-                    );
-                    uploadProgress.message = 'Corrigindo sincronização da réplica...';
-                    const mirrorResult = await mirrorClusterTables({ tables: ['ctos'] });
-                    if (!mirrorResult.success) {
-                      uploadProgress.message =
-                        'Base no primary OK; sync réplica pendente: ' + (mirrorResult.error || 'erro');
-                      uploadProgress.syncPending = true;
-                    } else {
-                      uploadProgress.message =
-                        'Base de dados atualizada com sucesso (cluster sincronizado)!';
-                    }
-                  } else {
-                    uploadProgress.message =
-                      'Base de dados atualizada com sucesso (cluster sincronizado)!';
-                  }
-                }
-              } catch (clusterCheckErr) {
-                console.error('❌ [Cluster] Verificação pós-upload:', clusterCheckErr.message);
-                uploadProgress.syncPending = true;
-                uploadProgress.message =
-                  'Base no primary OK; verificação da réplica falhou: ' + clusterCheckErr.message;
-              }
-            }
             
             // Registrar no histórico de uploads
             if (importedRows > 0 || idsToDelete.length > 0 || result.ctosToUpdate.length > 0) {
               supabaseImported = true;
               
               try {
-                await clusterAwareWrite(async (client) => {
+                await writeToLocalDb(async (client) => {
                   const { error: historyError } = await client
                     .from('upload_history')
                     .insert([{
@@ -8621,6 +8140,7 @@ app.post('/api/upload-base', (req, res, next) => {
       } finally {
         // Sempre liberar flag e resolver promise quando upload terminar
         uploadInProgress = false;
+        uploadProgress.inProgress = false;
         if (resolveUpload) {
           resolveUpload();
           console.log('✅ [Upload] Flag de upload desativada - requisições /api/users/online retomadas');
@@ -8684,7 +8204,7 @@ app.post('/api/tabulacoes', async (req, res) => {
           });
         }
 
-        await clusterAwareWrite(async (client) => {
+        await writeToLocalDb(async (client) => {
           const { error } = await client.from('tabulacoes').insert([{ nome: nomeLimpo }]);
           if (error) throw error;
         });
@@ -8739,7 +8259,7 @@ app.delete('/api/tabulacoes/:nome', async (req, res) => {
           return res.status(404).json({ success: false, error: 'Tabulação não encontrada' });
         }
 
-        await clusterAwareWrite(async (client) => {
+        await writeToLocalDb(async (client) => {
           const { error } = await client
             .from('tabulacoes')
             .delete()
