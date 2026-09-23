@@ -4428,7 +4428,7 @@ async function readTabulacoesFromExcel() {
     if (!fs.existsSync(TABULACOES_FILE)) {
       // Valores padrão se o arquivo não existir
       const defaultTabulacoes = [
-        'Aprovado Com Portas',
+        '(Aprovado - Portas Disponíveis)',
         'Aprovado Com Alívio de Rede/Cleanup',
         'Aprovado / Sem Estrutura Atendimento Externo',
         'Aprovado Prédio Não Cabeado',
@@ -4465,7 +4465,7 @@ async function readTabulacoesFromExcel() {
     console.error('❌ [Excel] Erro ao ler tabulações:', err);
     // Retornar valores padrão em caso de erro
     return [
-      'Aprovado Com Portas',
+      '(Aprovado - Portas Disponíveis)',
       'Aprovado Com Alívio de Rede/Cleanup',
       'Aprovado / Sem Estrutura Atendimento Externo',
       'Aprovado Prédio Não Cabeado',
