@@ -240,7 +240,7 @@ function suggestTabulacao(coverage, learned = null, chamado = null) {
   }
 
   return {
-    tabulacaoFinal: 'Aprovado Com Portas',
+    tabulacaoFinal: '(Aprovado - Portas Disponíveis)',
     tabulacaoConfianca: 0.7,
     tabulacaoStatus: 'pendente_revisao',
     motivo:
