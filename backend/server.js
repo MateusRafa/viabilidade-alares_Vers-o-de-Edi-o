@@ -552,10 +552,23 @@ function isBaseUploadBusy() {
   return (
     stage === 'uploading' ||
     stage === 'processing' ||
+    stage === 'inserting' ||
     stage === 'updating' ||
     stage === 'deleting' ||
     stage === 'calculating'
   );
+}
+
+function withTimeout(promise, ms, label = 'Operação') {
+  let timer = null;
+  const timeoutPromise = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(`${label} excedeu ${Math.round(ms / 1000)}s`));
+    }, ms);
+  });
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
 }
 
 function formatUploadLockMessage(progress = uploadProgress) {
@@ -7804,6 +7817,8 @@ app.post('/api/upload-base', (req, res, next) => {
     
     (async () => {
       let tempFileDeleted = false;
+      /** Se a importação no Supabase concluiu, a mancha DEVE rodar mesmo se o Excel falhar depois. */
+      let scheduleAutoCoverageAfterUpload = false;
       try {
         console.log('🔍 [Background] Iniciando processamento do arquivo...');
         console.log('ℹ️ [Background] Validação será feita durante processamento em chunks (economiza memória)');
@@ -7838,20 +7853,41 @@ app.post('/api/upload-base', (req, res, next) => {
               uploadProgress.message =
                 'Criando base staging (ferramenta continua liberada)...';
               console.log('🆕 [Background] Staging habilitado — insert direto do Excel (sem clone)');
-              const activeId = await ensureActiveDataset(supabase);
-              console.log(`🆕 [Background] Active dataset: ${activeId}`);
-              const staging = await createStagingDataset(supabase, {
-                label: fileName || `upload-${Date.now()}`,
-                meta: { fileName, fileSize, strategy: 'excel-full-insert' }
-              });
-              writeDatasetId = staging.id;
-              stagingMode = true;
-              uploadProgress.stagingDatasetId = writeDatasetId;
-              uploadProgress.pendingSwap = true;
-              uploadProgress.uploadPercent = 8;
-              uploadProgress.message =
-                'Staging criado. Processando Excel (base active intacta)...';
-              console.log(`🆕 [Background] Staging pronto: ${writeDatasetId}`);
+              const stagingHeartbeat = setInterval(() => {
+                if (uploadProgress.uploadPercent < 7) {
+                  uploadProgress.uploadPercent = 7;
+                }
+                uploadProgress.message =
+                  'Criando base staging (ferramenta continua liberada)...';
+              }, 5000);
+              try {
+                const activeId = await withTimeout(
+                  ensureActiveDataset(supabase),
+                  60_000,
+                  'ensureActiveDataset'
+                );
+                console.log(`🆕 [Background] Active dataset: ${activeId}`);
+                uploadProgress.uploadPercent = 7;
+                uploadProgress.message = 'Registrando dataset staging...';
+                const staging = await withTimeout(
+                  createStagingDataset(supabase, {
+                    label: fileName || `upload-${Date.now()}`,
+                    meta: { fileName, fileSize, strategy: 'excel-full-insert' }
+                  }),
+                  90_000,
+                  'createStagingDataset'
+                );
+                writeDatasetId = staging.id;
+                stagingMode = true;
+                uploadProgress.stagingDatasetId = writeDatasetId;
+                uploadProgress.pendingSwap = true;
+                uploadProgress.uploadPercent = 8;
+                uploadProgress.message =
+                  'Staging criado. Processando Excel (base active intacta)...';
+                console.log(`🆕 [Background] Staging pronto: ${writeDatasetId}`);
+              } finally {
+                clearInterval(stagingHeartbeat);
+              }
             }
 
             // Em staging: mapa vazio → todas as linhas viram INSERT. Legado: carrega existing.
@@ -7885,9 +7921,12 @@ app.post('/api/upload-base', (req, res, next) => {
               uploadProgress.processedRows = progress.processedRows;
               uploadProgress.totalRows = progress.totalRows;
               uploadProgress.importedRows = progress.importedRows;
+              // Mesmo critério dos logs: linhas processadas / total
               if (progress.totalRows > 0) {
-                uploadProgress.uploadPercent =
-                  8 + Math.round((progress.processedRows / progress.totalRows) * 72);
+                uploadProgress.uploadPercent = Math.min(
+                  100,
+                  Math.round((progress.processedRows / progress.totalRows) * 100)
+                );
               }
               uploadProgress.message = progress.message || `Processando arquivo... ${progress.processedRows}/${progress.totalRows} linhas`;
             };
@@ -7897,7 +7936,7 @@ app.post('/api/upload-base', (req, res, next) => {
 
             uploadProgress.processedRows = totalRows;
             uploadProgress.totalRows = totalRows;
-            uploadProgress.uploadPercent = 80;
+            uploadProgress.uploadPercent = 100;
 
             uploadProgress.message = 'Identificando CTOs que saíram da base...';
             const idsToDelete = [];
@@ -7934,16 +7973,15 @@ app.post('/api/upload-base', (req, res, next) => {
             if (idsToDelete.length > 0) {
               uploadProgress.message = `Deletando ${idsToDelete.length} CTO(s) que saíram da base...`;
               uploadProgress.stage = 'deleting';
-              uploadProgress.uploadPercent = 80; // Início do estágio de deleção
+              uploadProgress.uploadPercent = 0; // Início do estágio de deleção
               uploadProgress.processedRows = 0; // Reset para novo estágio
               uploadProgress.totalRows = idsToDelete.length; // Total de CTOs a deletar
               
-              // Callback para atualizar progresso durante deleção
+              // Callback para atualizar progresso durante deleção (mesmo % dos logs)
               const deleteProgressCallback = (progress) => {
                 uploadProgress.processedRows = progress.deleted;
                 uploadProgress.totalRows = progress.total;
-                uploadProgress.uploadPercent = 80 + Math.round((progress.percent / 100) * 5); // 80% a 85%
-                // NÃO incluir percentual na mensagem - o frontend calculará e mostrará o percentual total
+                uploadProgress.uploadPercent = Math.round(Number(progress.percent) || 0);
                 uploadProgress.message = `Deletando ${idsToDelete.length} CTO(s) que saíram da base...`;
               };
               
@@ -7953,7 +7991,7 @@ app.post('/api/upload-base', (req, res, next) => {
                 deleteProgressCallback,
                 writeDatasetId
               );
-              uploadProgress.uploadPercent = 85; // Fim do estágio de deleção
+              uploadProgress.uploadPercent = 100; // Fim do estágio de deleção
               uploadProgress.processedRows = idsToDelete.length; // Garantir que está completo
             }
             
@@ -7961,16 +7999,15 @@ app.post('/api/upload-base', (req, res, next) => {
             if (result.ctosToInsert.length > 0) {
               uploadProgress.message = `Inserindo ${result.ctosToInsert.length} CTO(s) nova(s)...`;
               uploadProgress.stage = 'inserting';
-              uploadProgress.uploadPercent = 85; // Início do estágio de inserção
+              uploadProgress.uploadPercent = 0; // Início do estágio de inserção
               uploadProgress.processedRows = 0; // Reset para novo estágio
               uploadProgress.totalRows = result.ctosToInsert.length; // Total de CTOs a inserir
               
-              // Callback para atualizar progresso durante inserção
+              // Callback para atualizar progresso durante inserção (mesmo % dos logs: inserted/total)
               const insertProgressCallback = (progress) => {
                 uploadProgress.processedRows = progress.inserted;
                 uploadProgress.totalRows = progress.total;
-                uploadProgress.uploadPercent = 85 + Math.round((progress.percent / 100) * 5); // 85% a 90%
-                // NÃO incluir percentual na mensagem - o frontend calculará e mostrará o percentual total
+                uploadProgress.uploadPercent = Math.round(Number(progress.percent) || 0);
                 uploadProgress.message = `Inserindo ${result.ctosToInsert.length} CTO(s) nova(s)...`;
               };
               
@@ -7980,7 +8017,7 @@ app.post('/api/upload-base', (req, res, next) => {
                 insertProgressCallback,
                 writeDatasetId
               );
-              uploadProgress.uploadPercent = 90; // Fim do estágio de inserção
+              uploadProgress.uploadPercent = 100; // Fim do estágio de inserção
               uploadProgress.processedRows = result.ctosToInsert.length; // Garantir que está completo
             }
             
@@ -7988,16 +8025,15 @@ app.post('/api/upload-base', (req, res, next) => {
             if (result.ctosToUpdate.length > 0) {
               uploadProgress.message = `Atualizando ${result.ctosToUpdate.length} CTO(s) que mudaram...`;
               uploadProgress.stage = 'updating';
-              uploadProgress.uploadPercent = 90; // Início do estágio de atualização
+              uploadProgress.uploadPercent = 0; // Início do estágio de atualização
               uploadProgress.processedRows = 0; // Reset para novo estágio
               uploadProgress.totalRows = result.ctosToUpdate.length; // Total de CTOs a atualizar
               
-              // Callback para atualizar progresso durante atualização
+              // Callback para atualizar progresso durante atualização (mesmo % dos logs)
               const updateProgressCallback = (progress) => {
                 uploadProgress.processedRows = progress.updated;
                 uploadProgress.totalRows = progress.total;
-                uploadProgress.uploadPercent = 90 + Math.round((progress.percent / 100) * 5); // 90% a 95%
-                // NÃO incluir percentual na mensagem - o frontend calculará e mostrará o percentual total
+                uploadProgress.uploadPercent = Math.round(Number(progress.percent) || 0);
                 uploadProgress.message = `Atualizando ${result.ctosToUpdate.length} CTO(s) que mudaram...`;
               };
               
@@ -8007,7 +8043,7 @@ app.post('/api/upload-base', (req, res, next) => {
                 updateProgressCallback,
                 writeDatasetId
               );
-              uploadProgress.uploadPercent = 95; // Fim do estágio de atualização
+              uploadProgress.uploadPercent = 100; // Fim do estágio de atualização
               uploadProgress.processedRows = result.ctosToUpdate.length; // Garantir que está completo
             }
             
@@ -8026,8 +8062,9 @@ app.post('/api/upload-base', (req, res, next) => {
             console.log(`📊 [Background] Total de operações: ${importedRows} (${insertResult.inserted} inserções + ${updateResult.updated} atualizações + ${deleteResult.deleted} deleções)`);
             console.log('📊 [Background] ===========================================');
             
-            // Atualizar progresso do upload — em seguida inicia a mancha automaticamente
-            uploadProgress.stage = 'completed';
+            // Upload da base no Supabase concluído — NÃO marcar completed ainda
+            // (completed só após mancha/swap). Mantém progresso vivo e agenda mancha.
+            uploadProgress.stage = 'processing';
             uploadProgress.uploadPercent = 100;
             uploadProgress.processedRows = totalRows;
             uploadProgress.totalRows = totalRows;
@@ -8035,6 +8072,7 @@ app.post('/api/upload-base', (req, res, next) => {
             uploadProgress.totalCTOs = importedRows;
             uploadProgress.coverageAutoStarted = true;
             uploadProgress.coverageFailed = false;
+            uploadProgress.inProgress = true;
             uploadProgress.message = stagingMode
               ? 'Base staging pronta. Iniciando mancha de cobertura automaticamente...'
               : 'Base atualizada. Iniciando mancha de cobertura automaticamente...';
@@ -8042,7 +8080,8 @@ app.post('/api/upload-base', (req, res, next) => {
               uploadProgress.pendingSwap = true;
               uploadProgress.stagingDatasetId = writeDatasetId;
             }
-            // Sinal para o finally disparar a mancha sem liberar o lock cedo demais
+            // Sinal para o finally disparar a mancha (não cancelar se Excel falhar depois)
+            scheduleAutoCoverageAfterUpload = true;
             uploadProgress._scheduleAutoCoverage = true;
 
             
@@ -8227,7 +8266,14 @@ app.post('/api/upload-base', (req, res, next) => {
       } catch (err) {
         console.error('❌ [Background] Erro ao processar arquivo em background:', err);
         console.error('❌ [Background] Stack:', err.stack);
-        uploadProgress._scheduleAutoCoverage = false;
+        // Se a base já entrou no Supabase, NÃO cancele a mancha automática
+        if (!scheduleAutoCoverageAfterUpload) {
+          uploadProgress._scheduleAutoCoverage = false;
+        } else {
+          console.warn(
+            '⚠️ [Background] Erro após importação Supabase — mantendo agendamento da mancha automática'
+          );
+        }
         
         // Garantir que arquivo temporário seja deletado mesmo em caso de erro
         if (!tempFileDeleted && tempFilePath) {
@@ -8239,13 +8285,18 @@ app.post('/api/upload-base', (req, res, next) => {
           }
         }
         // Não podemos retornar erro ao cliente (já respondemos), apenas logar
-        if (uploadProgress.stage !== 'error') {
+        // Se a mancha vai rodar, não sobrescrever com stage error
+        if (!scheduleAutoCoverageAfterUpload && uploadProgress.stage !== 'error') {
           uploadProgress.stage = 'error';
           uploadProgress.message = `Erro ao processar base: ${err.message || err}`;
+        } else if (scheduleAutoCoverageAfterUpload) {
+          uploadProgress.message =
+            uploadProgress.message ||
+            'Base importada. Iniciando mancha (arquivo Excel teve falha secundária)...';
         }
       } finally {
         const shouldAutoCoverage =
-          uploadProgress._scheduleAutoCoverage === true &&
+          (scheduleAutoCoverageAfterUpload || uploadProgress._scheduleAutoCoverage === true) &&
           supabase &&
           isSupabaseAvailable();
         delete uploadProgress._scheduleAutoCoverage;
@@ -8254,6 +8305,10 @@ app.post('/api/upload-base', (req, res, next) => {
           // Mantém lock e inicia mancha (publica staging quando concluir)
           uploadInProgress = true;
           uploadProgress.inProgress = true;
+          uploadProgress.stage = 'calculating';
+          uploadProgress.calculationPercent = 0;
+          uploadProgress.message =
+            'Base atualizada. Iniciando mancha de cobertura automaticamente...';
           if (resolveUpload) {
             resolveUpload();
           }
