@@ -58,6 +58,10 @@
   let uploadingBase = false;
   let uploadMessage = '';
   let uploadSuccess = false;
+  /** Lock global: outro usuário (ou esta sessão) atualizando a base CTOs */
+  let baseUploadRemoteBusy = false;
+  let baseUploadLockMessage = '';
+  let baseUploadGlobalPollInterval = null;
   let uploadingMduBase = false;
   let mduUploadMessage = '';
   let mduUploadSuccess = false;
@@ -89,6 +93,72 @@
     if (uploadHardStopTimeoutId) {
       clearTimeout(uploadHardStopTimeoutId);
       uploadHardStopTimeoutId = null;
+    }
+  }
+
+  function applyRemoteBaseUploadProgress(data) {
+    if (!data || typeof data !== 'object') return;
+    const busy = data.inProgress === true;
+    baseUploadRemoteBusy = busy;
+    baseUploadLockMessage = busy
+      ? String(data.lockMessage || '').trim() ||
+        `Atualização em Andamento - ${data.startedBy || 'Usuário'}`
+      : '';
+
+    // Espelhar progresso global (outro usuário ou próprio upload via extensão)
+    if (busy) {
+      uploadProgress = {
+        ...uploadProgress,
+        stage: data.stage || uploadProgress.stage,
+        uploadPercent: data.uploadPercent ?? uploadProgress.uploadPercent,
+        calculationPercent: data.calculationPercent ?? uploadProgress.calculationPercent,
+        message: data.message || uploadProgress.message,
+        totalRows: data.totalRows ?? uploadProgress.totalRows,
+        processedRows: data.processedRows ?? uploadProgress.processedRows,
+        importedRows: data.importedRows ?? uploadProgress.importedRows,
+        totalCTOs: data.totalCTOs ?? uploadProgress.totalCTOs,
+        processedCTOs: data.processedCTOs ?? uploadProgress.processedCTOs,
+        startedBy: data.startedBy || '',
+        startedAt: data.startedAt || null,
+        fileName: data.fileName || uploadProgress.fileName || ''
+      };
+      const pct = calculateTotalUploadPercent(uploadProgress);
+      targetPercent = Math.max(targetPercent, pct);
+      if (!uploadingBase && !showBaseOpModal) {
+        openBaseOpModal({
+          kind: 'upload',
+          title: 'Atualização da base em andamento',
+          message: uploadProgress.message || baseUploadLockMessage,
+          fileName: data.fileName || '',
+          hint: baseUploadLockMessage,
+          percent: Math.max(1, pct)
+        });
+      } else if (showBaseOpModal && baseOpKind === 'upload' && baseOpStep === 'running') {
+        baseOpMessage = uploadProgress.message || baseOpMessage;
+        if (baseUploadLockMessage) baseOpHint = baseUploadLockMessage;
+        baseOpPercent = Math.max(baseOpPercent, pct);
+        if (data.fileName) baseOpFileName = data.fileName;
+      }
+    } else if (!uploadingBase && showBaseOpModal && baseOpKind === 'upload' && baseOpStep === 'running') {
+      // Remoto terminou
+      const ok = data.stage === 'completed';
+      finishBaseOpModal({
+        success: ok,
+        message: data.message || (ok ? 'Base atualizada com sucesso.' : 'Atualização finalizada.'),
+        percent: ok ? 100 : baseOpPercent
+      });
+    }
+  }
+
+  async function pollGlobalBaseUploadProgress() {
+    try {
+      const progressRes = await fetch(getApiUrl('/api/upload-progress'));
+      if (!progressRes.ok) return;
+      const data = await progressRes.json();
+      if (!data?.success && data?.success !== undefined) return;
+      applyRemoteBaseUploadProgress(data);
+    } catch {
+      /* ignore poll errors */
     }
   }
 
@@ -559,11 +629,22 @@
       });
     }
     
+    // Polling global do lock/progresso da base CTOs (extensão + Config)
+    pollGlobalBaseUploadProgress().catch(() => {});
+    baseUploadGlobalPollInterval = setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      pollGlobalBaseUploadProgress().catch(() => {});
+    }, 2500);
+
     // Limpar intervalos quando componente for destruído
     return () => {
       if (onlineUsersInterval) {
         clearInterval(onlineUsersInterval);
         onlineUsersInterval = null;
+      }
+      if (baseUploadGlobalPollInterval) {
+        clearInterval(baseUploadGlobalPollInterval);
+        baseUploadGlobalPollInterval = null;
       }
       if (uploadPollInterval) {
         clearInterval(uploadPollInterval);
@@ -2024,6 +2105,15 @@
     const file = event.target.files[0];
     if (!file) return;
 
+    // Evitar segundo upload se já houver lock global
+    await pollGlobalBaseUploadProgress();
+    if (baseUploadRemoteBusy || uploadingBase) {
+      uploadMessage = baseUploadLockMessage || 'Já existe uma atualização de base em andamento.';
+      uploadSuccess = false;
+      event.target.value = '';
+      return;
+    }
+
     uploadMessage = '';
     uploadSuccess = false;
     uploadingBase = true;
@@ -2102,7 +2192,11 @@
       try {
         const fetchOptions = {
           method: 'POST',
-          body: formData
+          body: formData,
+          headers: {
+            'X-Usuario': currentUser || '',
+            'X-Upload-Source': 'manual'
+          }
         };
         console.log('📤 [Upload] Opções do fetch:', { method: fetchOptions.method, hasBody: !!fetchOptions.body });
         response = await fetch(apiUrl, fetchOptions);
@@ -2127,7 +2221,17 @@
         const errorText = await response.text();
         console.error('❌ [Upload] Erro HTTP:', response.status, errorText.substring(0, 200));
         
-        if (response.status === 502) {
+        if (response.status === 409) {
+          try {
+            const errorData = JSON.parse(errorText);
+            baseUploadRemoteBusy = true;
+            baseUploadLockMessage = errorData.lockMessage || errorData.error || baseUploadLockMessage;
+            throw new Error(baseUploadLockMessage || 'Já existe uma atualização de base em andamento.');
+          } catch (e) {
+            if (e instanceof Error && /atualização/i.test(e.message)) throw e;
+            throw new Error(errorText || 'Já existe uma atualização de base em andamento.');
+          }
+        } else if (response.status === 502) {
           throw new Error('Servidor não está respondendo (502 Bad Gateway). Verifique se o backend está online.');
         } else if (response.status === 504) {
           throw new Error('Timeout do servidor. O arquivo pode ser muito grande. Tente novamente.');
@@ -2137,7 +2241,10 @@
             const errorData = JSON.parse(errorText);
             // Usar a mensagem de erro do servidor diretamente (já vem formatada)
             throw new Error(errorData.error || `Erro do servidor (${response.status})`);
-          } catch {
+          } catch (e) {
+            if (e instanceof Error && e.message && !e.message.startsWith('Erro do servidor') && e.message !== errorText) {
+              throw e;
+            }
             throw new Error(`Erro do servidor (${response.status}): ${errorText.substring(0, 200) || response.statusText}`);
           }
         }
@@ -2777,18 +2884,51 @@
         <h3>Base de Dados</h3>
         <div class="upload-section">
           <div class="upload-button-container">
-            <label for="baseFileInput" class="upload-label">
-              <span>Carregar Nova Base de Dados</span>
+            <label
+              for="baseFileInput"
+              class="upload-label"
+              class:upload-label-disabled={uploadingBase || uploadingMduBase || baseUploadRemoteBusy}
+              title={baseUploadRemoteBusy ? baseUploadLockMessage : 'Carregar nova base de dados CTOs'}
+            >
+              <span>
+                {#if uploadingBase || baseUploadRemoteBusy}
+                  Atualização em andamento…
+                {:else}
+                  Carregar Nova Base de Dados
+                {/if}
+              </span>
               <input 
                 type="file" 
                 id="baseFileInput"
                 accept=".xlsx,.xls"
                 on:change={(e) => handleBaseUpload(e)}
-                disabled={uploadingBase || uploadingMduBase}
+                disabled={uploadingBase || uploadingMduBase || baseUploadRemoteBusy}
                 style="display: none;"
               />
             </label>
           </div>
+
+          {#if baseUploadRemoteBusy || uploadingBase}
+            <div class="base-upload-lock-banner" role="status" aria-live="polite">
+              <strong>{baseUploadLockMessage || 'Atualização em Andamento'}</strong>
+              {#if uploadProgress?.message}
+                <span class="base-upload-lock-detail">{uploadProgress.message}</span>
+              {/if}
+              <div
+                class="cluster-progress-track"
+                role="progressbar"
+                aria-valuemin="0"
+                aria-valuemax="100"
+                aria-valuenow={Math.round(displayedPercent || baseOpPercent || 0)}
+              >
+                <div
+                  class="cluster-progress-fill"
+                  style={`width: ${Math.max(displayedPercent || baseOpPercent || 3, 3)}%`}
+                ></div>
+              </div>
+              <p class="cluster-progress-label">{Math.round(displayedPercent || baseOpPercent || 0)}%</p>
+            </div>
+          {/if}
 
           <div class="upload-button-container" style="margin-top: 0.75rem;">
             <label
@@ -4217,6 +4357,27 @@
     opacity: 0.6;
     cursor: not-allowed;
     pointer-events: none;
+  }
+
+  .base-upload-lock-banner {
+    margin-top: 0.85rem;
+    padding: 0.85rem 1rem;
+    border-radius: 10px;
+    border: 1px solid rgba(123, 104, 238, 0.35);
+    background: rgba(123, 104, 238, 0.08);
+    display: flex;
+    flex-direction: column;
+    gap: 0.45rem;
+  }
+
+  .base-upload-lock-banner strong {
+    color: #4c3fb8;
+    font-size: 0.9rem;
+  }
+
+  .base-upload-lock-detail {
+    font-size: 0.82rem;
+    color: #555;
   }
 
   .upload-hint {
