@@ -516,7 +516,8 @@
 
   // Mapeamento de cores específicas para cada tabulação
   const tabulacaoColors = {
-    'Aprovado Com Portas': '#10B981', // Verde
+    '(Aprovado - Portas Disponíveis)': '#10B981', // Verde
+    'Aprovado Com Portas': '#10B981', // legado
     'Aprovado Com Alívio de Rede/Cleanup': '#3B82F6', // Azul
     'Aprovado Prédio Não Cabeado': '#8B5CF6', // Roxo claro
     'Aprovado - Endereço não Localizado': '#F59E0B', // Laranja
