@@ -3394,7 +3394,10 @@
         onSettingsHover(preloadSettingsData);
       }
       await initializeTool();
-      startBaseReadyPolling();
+      // No workbench da extensão o pop fica só no painel (evita duplicar no iframe)
+      if (!workbenchMode) {
+        startBaseReadyPolling();
+      }
     } catch (err) {
       console.error('Erro ao inicializar ferramenta:', err);
       error = 'Erro ao inicializar ferramenta: ' + err.message;
