@@ -1195,33 +1195,32 @@
     openBaseOpModal({
       kind: 'delete',
       title: 'Deletar base atual',
-      message: 'Removendo CTOs e mancha de cobertura…',
+      message: 'Iniciando exclusão…',
       hint: 'Não feche esta janela até concluir.',
-      percent: 8
+      percent: 0
     });
+
+    const authHeaders = {
+      'Content-Type': 'application/json',
+      'X-Usuario': currentUser || ''
+    };
 
     try {
       const apiUrl = getApiUrl('/api/base/delete');
       console.log('🗑️ [Delete] Deletando base de dados...');
       console.log('🔗 [Delete] URL:', apiUrl);
-      updateBaseOpProgress({ message: 'Conectando ao servidor…', percent: 20 });
 
       const response = await fetch(apiUrl, {
         method: 'DELETE',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Usuario': currentUser || '', // Enviar usuário no header para autorização
-        },
-        body: JSON.stringify({ usuario: currentUser || '' }), // Também no body para compatibilidade
+        headers: authHeaders,
+        body: JSON.stringify({ usuario: currentUser || '' })
       });
 
       console.log('📥 [Delete] Resposta recebida:', response.status, response.statusText);
-      updateBaseOpProgress({ message: 'Processando exclusão no banco…', percent: 55 });
 
       if (!response.ok) {
         const errorText = await response.text();
         console.error('❌ [Delete] Erro HTTP:', response.status, errorText);
-        
         try {
           const errorData = JSON.parse(errorText);
           throw new Error(errorData.error || `Erro ao deletar base (${response.status})`);
@@ -1231,51 +1230,107 @@
         }
       }
 
-      const data = await response.json();
-      console.log('✅ [Delete] Dados recebidos:', data);
+      const startData = await response.json();
+      if (!startData?.success && !startData?.started) {
+        throw new Error(startData?.error || 'Não foi possível iniciar a exclusão');
+      }
 
-      if (data.success) {
-        uploadSuccess = true;
-        uploadMessage = data.message || 'Base de dados deletada com sucesso!';
-        baseLastModified = null;
-        baseDataExists = false;
-        updateBaseOpProgress({ message: 'Atualizando a ferramenta…', percent: 85 });
-        
-        // Limpar localStorage
+      updateBaseOpProgress({
+        message: startData.message || 'Exclusão em andamento…',
+        percent: 0
+      });
+
+      // Poll até o job em background zerar a base (sem timeout do request longo)
+      const progressUrl = getApiUrl('/api/base/delete-progress');
+      let finished = false;
+      let lastMsg = '';
+      const pollStarted = Date.now();
+      const maxWaitMs = 45 * 60 * 1000; // 45 min — bases grandes em lotes
+
+      while (!finished) {
+        if (Date.now() - pollStarted > maxWaitMs) {
+          throw new Error('A exclusão demorou demais. Verifique o backend e tente novamente.');
+        }
+        await new Promise((r) => setTimeout(r, 1000));
+
+        let progress = null;
         try {
-          localStorage.removeItem('baseLastModified');
-        } catch (err) {
-          console.error('Erro ao limpar localStorage:', err);
-        }
-        
-        // Recarregar os dados das CTOs (vai retornar vazio agora)
-        if (onReloadCTOs) {
-          try {
-            await onReloadCTOs();
-            console.log('✅ Base de dados recarregada após deleção');
-          } catch (err) {
-            console.error('Erro ao recarregar base de dados:', err);
+          const progressRes = await fetch(progressUrl, {
+            method: 'GET',
+            headers: authHeaders,
+            cache: 'no-store'
+          });
+          if (progressRes.ok) {
+            progress = await progressRes.json().catch(() => null);
           }
+        } catch {
+          // Mantém o modal; tenta de novo no próximo ciclo
+          continue;
         }
-        finishBaseOpModal({
-          success: true,
-          message: uploadMessage,
-          percent: 100
+
+        if (!progress) continue;
+
+        const pct = Math.max(0, Math.min(100, Number(progress.percent) || 0));
+        const msg = String(progress.message || '').trim();
+        if (msg && msg !== lastMsg) lastMsg = msg;
+        updateBaseOpProgress({
+          message: msg || 'Removendo base…',
+          percent: pct
         });
-      } else {
-        uploadSuccess = false;
-        uploadMessage = data.error || 'Erro ao deletar base de dados';
-        finishBaseOpModal({ success: false, message: uploadMessage });
+
+        if (progress.inProgress === true) continue;
+
+        if (progress.stage === 'completed') {
+          finished = true;
+          uploadSuccess = true;
+          uploadMessage =
+            progress.message ||
+            startData.message ||
+            'Base de dados deletada com sucesso!';
+          baseLastModified = null;
+          baseDataExists = false;
+
+          try {
+            localStorage.removeItem('baseLastModified');
+          } catch (err) {
+            console.error('Erro ao limpar localStorage:', err);
+          }
+
+          if (onReloadCTOs) {
+            try {
+              await onReloadCTOs();
+              console.log('✅ Base de dados recarregada após deleção');
+            } catch (err) {
+              console.error('Erro ao recarregar base de dados:', err);
+            }
+          }
+
+          finishBaseOpModal({
+            success: true,
+            message: uploadMessage,
+            percent: 100
+          });
+          break;
+        }
+
+        if (progress.stage === 'error') {
+          throw new Error(progress.error || progress.message || 'Erro ao deletar base');
+        }
+
+        // idle sem inProgress logo após start: aguarda o job atualizar
+        if (progress.stage === 'idle' && Date.now() - pollStarted < 5000) {
+          continue;
+        }
       }
     } catch (err) {
       uploadSuccess = false;
-      
+
       if (err.name === 'TypeError' && err.message.includes('Failed to fetch')) {
         uploadMessage = 'Não foi possível conectar ao servidor. Verifique se o backend está online.';
       } else {
         uploadMessage = `Erro ao deletar base: ${err.message}`;
       }
-      
+
       console.error('❌ [Delete] Erro ao deletar base:', err);
       finishBaseOpModal({ success: false, message: uploadMessage });
     } finally {
@@ -2754,7 +2809,7 @@
                     aria-valuemax="100"
                     aria-valuenow={Math.round(baseOpPercent)}
                   >
-                    <div class="cluster-progress-fill" style={`width: ${Math.max(baseOpPercent, 3)}%`}></div>
+                    <div class="cluster-progress-fill" style={`width: ${baseOpPercent > 0 ? Math.max(baseOpPercent, 3) : 0}%`}></div>
                   </div>
                   <p class="cluster-progress-label">{Math.round(baseOpPercent)}%</p>
                   {#if baseOpHint}
