@@ -118,7 +118,7 @@ export async function fetchTabulacoesList() {
   if (!response.ok || !data.success) {
     // Fallback mínimo — a lista real vem do Supabase/API (igual ao oficial)
     return [
-      '(Aprovado - Portas Disponíveis)',
+      'Aprovado - Portas Disponíveis',
       'Aprovado Com Alívio de Rede/Cleanup',
       'Aprovado / Sem Estrutura Atendimento Externo',
       'Aprovado Prédio Não Cabeado',
