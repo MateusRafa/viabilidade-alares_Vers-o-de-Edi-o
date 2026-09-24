@@ -4001,150 +4001,275 @@ app.get('/api/base-last-modified', async (req, res) => {
   }
 });
 
-// Rota para deletar todos os dados da base de dados CTO (apenas Admin)
-app.delete('/api/base/delete', requireAdmin, async (req, res) => {
+// Progresso da exclusão completa da base (job em background — evita timeout HTTP)
+let deleteBaseProgress = {
+  inProgress: false,
+  stage: 'idle', // idle | starting | polygons | ctos | cleanup | completed | error
+  percent: 0,
+  message: '',
+  deletedCount: 0,
+  totalCount: 0,
+  startedAt: null,
+  error: ''
+};
+
+function setDeleteBaseProgress(partial = {}) {
+  deleteBaseProgress = {
+    ...deleteBaseProgress,
+    ...partial
+  };
+}
+
+function getDeleteBaseProgressPublic() {
+  return { ...deleteBaseProgress };
+}
+
+/**
+ * Apaga CTOs em lotes até a tabela ficar vazia (todas as datasets).
+ * Evita timeout do PostgREST em DELETE único em bases grandes.
+ */
+async function deleteAllCtosBatched(client, label, { batchSize = 500, onProgress = null } = {}) {
+  const { count: initialCount, error: countErr } = await client
+    .from('ctos')
+    .select('*', { count: 'exact', head: true });
+  if (countErr) throw new Error(`[${label}] contagem CTOs: ${countErr.message}`);
+
+  const total = Number(initialCount) || 0;
+  if (total === 0) {
+    if (onProgress) onProgress({ deleted: 0, total: 0, remaining: 0 });
+    return { deleted: 0, total: 0 };
+  }
+
+  let deleted = 0;
+  let guard = 0;
+  const maxLoops = Math.ceil(total / batchSize) + 50;
+
+  while (guard < maxLoops) {
+    guard += 1;
+    const { data: batch, error: selErr } = await client
+      .from('ctos')
+      .select('id')
+      .limit(batchSize);
+    if (selErr) throw new Error(`[${label}] select lote CTOs: ${selErr.message}`);
+    if (!batch || batch.length === 0) break;
+
+    const ids = batch.map((r) => r.id).filter((id) => id != null);
+    const { error: delErr } = await client.from('ctos').delete().in('id', ids);
+    if (delErr) throw new Error(`[${label}] delete lote CTOs: ${delErr.message}`);
+
+    deleted += ids.length;
+    const { count: remaining } = await client
+      .from('ctos')
+      .select('*', { count: 'exact', head: true });
+    if (onProgress) {
+      onProgress({
+        deleted,
+        total,
+        remaining: Number(remaining) || 0
+      });
+    }
+    if (!remaining || remaining === 0) break;
+    await new Promise((r) => setTimeout(r, 40));
+  }
+
+  const { count: left } = await client.from('ctos').select('*', { count: 'exact', head: true });
+  if (left && left > 0) {
+    throw new Error(`[${label}] ainda restam ${left} CTO(s) após exclusão em lotes`);
+  }
+  return { deleted, total };
+}
+
+/**
+ * Apaga polígonos de cobertura em lotes até zerar.
+ */
+async function deleteAllPolygonsBatched(client, label, { batchSize = 200, onProgress = null } = {}) {
+  const { count: initialCount, error: countErr } = await client
+    .from('coverage_polygons')
+    .select('*', { count: 'exact', head: true });
+  if (countErr) {
+    // Tabela ausente / sem permissão — não bloqueia deleção da base
+    console.warn(`⚠️ [Delete][${label}] polígonos: ${countErr.message}`);
+    return { deleted: 0, total: 0 };
+  }
+
+  const total = Number(initialCount) || 0;
+  if (total === 0) {
+    if (onProgress) onProgress({ deleted: 0, total: 0, remaining: 0 });
+    return { deleted: 0, total: 0 };
+  }
+
+  let deleted = 0;
+  let guard = 0;
+  const maxLoops = Math.ceil(total / batchSize) + 50;
+
+  while (guard < maxLoops) {
+    guard += 1;
+    const { data: batch, error: selErr } = await client
+      .from('coverage_polygons')
+      .select('id')
+      .limit(batchSize);
+    if (selErr) throw new Error(`[${label}] select lote polígonos: ${selErr.message}`);
+    if (!batch || batch.length === 0) break;
+
+    const ids = batch.map((r) => r.id).filter((id) => id != null);
+    const { error: delErr } = await client.from('coverage_polygons').delete().in('id', ids);
+    if (delErr) throw new Error(`[${label}] delete lote polígonos: ${delErr.message}`);
+
+    deleted += ids.length;
+    const { count: remaining } = await client
+      .from('coverage_polygons')
+      .select('*', { count: 'exact', head: true });
+    if (onProgress) {
+      onProgress({
+        deleted,
+        total,
+        remaining: Number(remaining) || 0
+      });
+    }
+    if (!remaining || remaining === 0) break;
+    await new Promise((r) => setTimeout(r, 40));
+  }
+
+  return { deleted, total };
+}
+
+async function runDeleteBaseJob() {
+  const startedAt = new Date().toISOString();
+  setDeleteBaseProgress({
+    inProgress: true,
+    stage: 'starting',
+    percent: 0,
+    message: 'Iniciando exclusão da base…',
+    deletedCount: 0,
+    totalCount: 0,
+    startedAt,
+    error: ''
+  });
+
   try {
-    // Garantir headers CORS
-    const origin = req.headers.origin;
-    if (origin) {
-      res.setHeader('Access-Control-Allow-Origin', origin);
-    } else {
-      res.setHeader('Access-Control-Allow-Origin', '*');
+    if (!supabase || !isSupabaseAvailable()) {
+      throw new Error('Supabase não disponível');
     }
-    res.setHeader('Access-Control-Allow-Credentials', 'true');
 
-    console.log('🗑️ [API] ===== INICIANDO DELEÇÃO DE BASE DE DADOS =====');
+    setDeleteBaseProgress({
+      stage: 'polygons',
+      percent: 2,
+      message: 'Removendo mancha de cobertura…'
+    });
 
-    let deletedFromSupabase = false;
-    let deletedCount = 0;
+    await writeToLocalDb(async (client, label) => {
+      await deleteAllPolygonsBatched(client, label, {
+        onProgress: ({ deleted, total }) => {
+          const localPct = total > 0 ? Math.round((deleted / total) * 12) : 12;
+          setDeleteBaseProgress({
+            stage: 'polygons',
+            percent: Math.min(14, 2 + localPct),
+            message: `Removendo mancha… ${deleted}/${total || 0}`
+          });
+        }
+      });
 
-    // Deletar polígonos de cobertura primeiro
-    console.log('🗑️ [API] Deletando polígonos de cobertura...');
-    const polygonDeleteResult = await deleteAllCoveragePolygons();
-    if (polygonDeleteResult.success) {
-      console.log(`✅ [API] Polígonos deletados: ${polygonDeleteResult.deletedCount || 0} polígono(s)`);
-    } else {
-      console.warn(`⚠️ [API] Aviso ao deletar polígonos: ${polygonDeleteResult.error}`);
-      // Continuar mesmo se falhar - não é crítico
-    }
-    
-    // Limpar progresso + CTOs nos write clients (dual-write se cluster on)
-    if (supabase && isSupabaseAvailable()) {
       try {
-        console.log('🗑️ [API] Deletando progresso e CTOs (cluster dual-write se ativo)...');
-
-        const writeResults = await writeToLocalDb(async (client, label) => {
-          const { error: clearProgressError } = await client
-            .from('coverage_calculation_progress')
-            .delete()
-            .neq('calculation_id', '');
-          if (clearProgressError) {
-            console.warn(`⚠️ [API][${label}] progresso: ${clearProgressError.message}`);
-          }
-
-          const { count: countBefore } = await client
-            .from('ctos')
-            .select('*', { count: 'exact', head: true });
-
-          console.log(`📊 [API][${label}] CTOs antes: ${countBefore || 0}`);
-          if (!countBefore || countBefore === 0) {
-            return { deletedCount: 0 };
-          }
-
-          let deleted = 0;
-          try {
-            const { error, count } = await client
-              .from('ctos')
-              .delete()
-              .gte('created_at', '1970-01-01T00:00:00Z');
-            if (error) throw error;
-            deleted = count || countBefore;
-          } catch (e1) {
-            console.warn(`⚠️ [API][${label}] delete método 1: ${e1.message}`);
-            let hasMore = true;
-            while (hasMore) {
-              const { data: batch, error: batchError } = await client
-                .from('ctos')
-                .select('id')
-                .limit(1000);
-              if (batchError) throw batchError;
-              if (!batch || batch.length === 0) break;
-              const { error: delErr } = await client.from('ctos').delete().in('id', batch.map((r) => r.id));
-              if (delErr) throw delErr;
-              deleted += batch.length;
-              if (batch.length < 1000) hasMore = false;
-            }
-          }
-
-          console.log(`✅ [API][${label}] CTOs deletadas: ${deleted}`);
-          return { deletedCount: deleted };
-        });
-
-        deletedCount = writeResults[0]?.value?.deletedCount || 0;
-        deletedFromSupabase = true;
-      } catch (supabaseErr) {
-        console.error('❌ [API] ===== ERRO NA DELEÇÃO SUPABASE =====');
-        console.error('❌ [API] Erro ao deletar do Supabase:', supabaseErr.message);
-        console.error('❌ [API] Tipo do erro:', supabaseErr.name);
-        console.error('❌ [API] Stack:', supabaseErr.stack);
-        if (supabaseErr.details) {
-          console.error('❌ [API] Detalhes:', supabaseErr.details);
-        }
-        if (supabaseErr.hint) {
-          console.error('❌ [API] Dica:', supabaseErr.hint);
-        }
-        // Continuar para tentar deletar arquivos locais (fallback)
+        await client.from('coverage_calculation_progress').delete().neq('calculation_id', '');
+      } catch (e) {
+        console.warn(`⚠️ [Delete][${label}] progresso mancha: ${e.message}`);
       }
-    } else {
-      console.log('⚠️ [API] Supabase não disponível, pulando deleção do Supabase');
-    }
+      return true;
+    });
 
-    // Deletar arquivos locais também (se existirem)
+    setDeleteBaseProgress({
+      stage: 'ctos',
+      percent: 15,
+      message: 'Contando CTOs…'
+    });
+
+    let deletedCount = 0;
+    let totalCount = 0;
+
+    await writeToLocalDb(async (client, label) => {
+      const result = await deleteAllCtosBatched(client, label, {
+        batchSize: 500,
+        onProgress: ({ deleted, total, remaining }) => {
+          deletedCount = deleted;
+          totalCount = total;
+          const ratio = total > 0 ? deleted / total : 1;
+          const percent = Math.min(92, 15 + Math.round(ratio * 77));
+          setDeleteBaseProgress({
+            stage: 'ctos',
+            percent,
+            deletedCount: deleted,
+            totalCount: total,
+            message: `Removendo CTOs… ${deleted}/${total} (restam ${remaining})`
+          });
+        }
+      });
+      deletedCount = result.deleted;
+      totalCount = result.total;
+      return result;
+    });
+
+    setDeleteBaseProgress({
+      stage: 'cleanup',
+      percent: 94,
+      message: 'Limpando arquivos locais…',
+      deletedCount,
+      totalCount
+    });
+
     try {
       const allFiles = await fsPromises.readdir(DATA_DIR);
-      const allBaseAtualFiles = allFiles.filter(file => 
-        file.startsWith('base_atual_') && file.endsWith('.xlsx')
+      const allBaseAtualFiles = allFiles.filter(
+        (file) => file.startsWith('base_atual_') && file.endsWith('.xlsx')
       );
-      
-      if (allBaseAtualFiles.length > 0) {
-        console.log(`🗑️ [API] Deletando ${allBaseAtualFiles.length} arquivo(s) local(is)...`);
-        
-        for (const file of allBaseAtualFiles) {
-          const filePath = path.join(DATA_DIR, file);
-          try {
-            await fsPromises.unlink(filePath);
-            console.log(`✅ [API] Arquivo local removido: ${file}`);
-          } catch (err) {
-            console.error(`❌ [API] Erro ao remover arquivo local ${file}:`, err.message);
-          }
+      for (const file of allBaseAtualFiles) {
+        try {
+          await fsPromises.unlink(path.join(DATA_DIR, file));
+        } catch (err) {
+          console.warn(`⚠️ [Delete] arquivo local ${file}:`, err.message);
         }
-      } else {
-        console.log('ℹ️ [API] Nenhum arquivo local encontrado para deletar');
       }
     } catch (fileErr) {
-      console.warn('⚠️ [API] Erro ao deletar arquivos locais (não crítico):', fileErr.message);
+      console.warn('⚠️ [Delete] limpeza local:', fileErr.message);
     }
 
-    console.log(`✅ [API] ===== DELEÇÃO CONCLUÍDA =====`);
-    
-    if (deletedFromSupabase) {
-      res.json({
-        success: true,
-        message: `Base de dados deletada com sucesso! ${deletedCount > 0 ? `${deletedCount} CTOs removidas.` : 'Tabela já estava vazia.'}`,
-        deletedCount
+    try {
+      await writeToLocalDb(async (client) => {
+        await client.from('upload_history').delete().gte('uploaded_at', '1970-01-01T00:00:00Z');
+        return true;
       });
-    } else {
-      res.json({
-        success: true,
-        message: 'Tentativa de deleção realizada. Verifique os logs para detalhes.',
-        deletedCount: 0
-      });
+    } catch (histErr) {
+      console.warn('⚠️ [Delete] upload_history:', histErr.message);
     }
+
+    setDeleteBaseProgress({
+      inProgress: false,
+      stage: 'completed',
+      percent: 100,
+      deletedCount,
+      totalCount,
+      message:
+        totalCount > 0
+          ? `Base deletada com sucesso! ${deletedCount} CTO(s) removida(s).`
+          : 'Base já estava vazia.',
+      error: ''
+    });
+    console.log(`✅ [Delete] Concluído: ${deletedCount}/${totalCount} CTOs`);
   } catch (err) {
-    console.error('❌ [API] Erro ao deletar base de dados:', err);
-    console.error('❌ [API] Stack:', err.stack);
-    
-    // Garantir headers CORS mesmo em erro
+    console.error('❌ [Delete] Job falhou:', err);
+    setDeleteBaseProgress({
+      inProgress: false,
+      stage: 'error',
+      percent: Math.min(Number(deleteBaseProgress.percent) || 0, 99),
+      message: `Erro ao deletar base: ${err.message || err}`,
+      error: String(err.message || err)
+    });
+  }
+}
+
+// Rota para deletar todos os dados da base de dados CTO (apenas Admin)
+// Responde na hora e processa em background (lotes) — evita timeout parcial.
+app.delete('/api/base/delete', requireAdmin, async (req, res) => {
+  try {
     const origin = req.headers.origin;
     if (origin) {
       res.setHeader('Access-Control-Allow-Origin', origin);
@@ -4152,11 +4277,76 @@ app.delete('/api/base/delete', requireAdmin, async (req, res) => {
       res.setHeader('Access-Control-Allow-Origin', '*');
     }
     res.setHeader('Access-Control-Allow-Credentials', 'true');
-    
+
+    if (deleteBaseProgress.inProgress) {
+      return res.status(409).json({
+        success: false,
+        inProgress: true,
+        error: 'Já existe uma exclusão de base em andamento.',
+        ...getDeleteBaseProgressPublic()
+      });
+    }
+
+    if (isBaseUploadBusy()) {
+      return res.status(409).json({
+        success: false,
+        error: 'Não é possível deletar a base enquanto houver atualização/mancha em andamento.'
+      });
+    }
+
+    console.log('🗑️ [API] ===== INICIANDO DELEÇÃO DE BASE (BACKGROUND) =====');
+    setDeleteBaseProgress({
+      inProgress: true,
+      stage: 'starting',
+      percent: 0,
+      message: 'Exclusão iniciada…',
+      deletedCount: 0,
+      totalCount: 0,
+      startedAt: new Date().toISOString(),
+      error: ''
+    });
+
+    res.json({
+      success: true,
+      started: true,
+      message: 'Exclusão iniciada. Acompanhe o progresso.'
+    });
+
+    void runDeleteBaseJob();
+  } catch (err) {
+    console.error('❌ [API] Erro ao iniciar deleção:', err);
+    const origin = req.headers.origin;
+    if (origin) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+    } else {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+    }
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    setDeleteBaseProgress({
+      inProgress: false,
+      stage: 'error',
+      message: err.message || 'Erro ao iniciar exclusão',
+      error: String(err.message || err)
+    });
     res.status(500).json({
       success: false,
       error: `Erro ao deletar base de dados: ${err.message || 'Erro desconhecido'}`
     });
+  }
+});
+
+app.get('/api/base/delete-progress', requireAdmin, async (req, res) => {
+  try {
+    const origin = req.headers.origin;
+    if (origin) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+    } else {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+    }
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    res.json({ success: true, ...getDeleteBaseProgressPublic() });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
