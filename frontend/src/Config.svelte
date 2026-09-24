@@ -62,6 +62,9 @@
   let baseUploadRemoteBusy = false;
   let baseUploadLockMessage = '';
   let baseUploadGlobalPollInterval = null;
+  let showBaseReadyReloadModal = false;
+  /** undefined = ainda não capturou baseline da sessão */
+  let sessionBaseReadyAt = undefined;
   let uploadingMduBase = false;
   let mduUploadMessage = '';
   let mduUploadSuccess = false;
@@ -107,6 +110,17 @@
 
     const coverageFailed = data.coverageFailed === true || data.stage === 'error';
     const warningText = String(data.warning || (coverageFailed ? data.message : '') || '').trim();
+
+    if (sessionBaseReadyAt === undefined) {
+      sessionBaseReadyAt =
+        data.baseReadyAt != null ? String(data.baseReadyAt).trim() : '';
+    } else if (!busy) {
+      const readyAt = data.baseReadyAt != null ? String(data.baseReadyAt).trim() : '';
+      if (readyAt && readyAt !== sessionBaseReadyAt) {
+        sessionBaseReadyAt = readyAt;
+        showBaseReadyReloadModal = true;
+      }
+    }
 
     // Espelhar progresso global (outro usuário ou próprio upload via extensão)
     if (busy || coverageFailed || data.stage === 'completed') {
@@ -210,6 +224,15 @@
     baseOpFileName = '';
     baseOpHint = '';
   }
+
+  function forceReloadForNewBase() {
+    try {
+      window.location.reload();
+    } catch {
+      window.location.href = String(window.location.href || '');
+    }
+  }
+
   let showDeleteBaseModal = false; // Modal de confirmação para deletar base
   let deletingBase = false; // Flag para indicar que está deletando base
   let showChangeRoleModal = false; // Modal para alterar tipo de usuário
@@ -3319,6 +3342,27 @@
 {/if}
 
 
+{#if showBaseReadyReloadModal}
+  <div
+    class="base-ready-reload-overlay"
+    role="alertdialog"
+    aria-modal="true"
+    aria-labelledby="config-base-ready-title"
+    tabindex="-1"
+  >
+    <div class="base-ready-reload-box" role="document">
+      <h3 id="config-base-ready-title">Base atualizada com sucesso</h3>
+      <p>
+        A base de CTOs e a mancha de cobertura foram publicadas. Atualize a página para
+        trabalhar com a nova base de dados.
+      </p>
+      <button type="button" class="base-ready-reload-btn" on:click={forceReloadForNewBase}>
+        Atualizar página
+      </button>
+    </div>
+  </div>
+{/if}
+
 <style>
   /* Tela de Configurações - Fullscreen */
   .settings-screen {
@@ -4455,6 +4499,60 @@
     box-shadow: 
       0 0 0 3px rgba(244, 67, 54, 0.2),
       0 4px 6px rgba(244, 67, 54, 0.3);
+  }
+
+  .base-ready-reload-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 2147483000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1.25rem;
+    background: rgba(15, 23, 42, 0.72);
+    box-sizing: border-box;
+  }
+
+  .base-ready-reload-box {
+    width: min(420px, 100%);
+    background: #fff;
+    border-radius: 12px;
+    padding: 1.5rem 1.35rem 1.25rem;
+    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.28);
+    text-align: center;
+  }
+
+  .base-ready-reload-box h3 {
+    margin: 0 0 0.75rem;
+    font-size: 1.15rem;
+    font-weight: 700;
+    color: #0f172a;
+  }
+
+  .base-ready-reload-box p {
+    margin: 0 0 1.25rem;
+    font-size: 0.95rem;
+    line-height: 1.45;
+    color: #334155;
+  }
+
+  .base-ready-reload-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 180px;
+    padding: 0.75rem 1.25rem;
+    border: none;
+    border-radius: 8px;
+    background: linear-gradient(135deg, #7b68ee 0%, #6495ed 100%);
+    color: #fff;
+    font-size: 1rem;
+    font-weight: 700;
+    cursor: pointer;
+  }
+
+  .base-ready-reload-btn:hover {
+    filter: brightness(1.05);
   }
 </style>
 
