@@ -142,11 +142,28 @@
         coverageAutoStarted: !!data.coverageAutoStarted
       };
       const pct = calculateTotalUploadPercent(uploadProgress);
-      targetPercent = Math.max(targetPercent, pct);
-      // Remoto: avança displayedPercent junto (senão o modal fica em 0%)
-      if (!uploadingBase && pct > displayedPercent) {
+      const stage = String(uploadProgress.stage || '');
+
+      // Novo estágio (ex.: inserting → calculating): reinicia a barra (padrão extensão)
+      if (stage && stage !== progressStageTracked) {
+        progressStageTracked = stage;
+        lastUploadPercent = 0;
         displayedPercent = pct;
+        targetPercent = pct;
+        baseOpPercent = pct;
+      } else {
+        // Dentro do mesmo estágio: só sobe
+        const capped = Math.max(pct, lastUploadPercent || 0);
+        lastUploadPercent = capped;
+        targetPercent = capped;
+        if (!uploadingBase) {
+          displayedPercent = capped;
+          if (showBaseOpModal && baseOpKind === 'upload' && baseOpStep === 'running') {
+            baseOpPercent = capped;
+          }
+        }
       }
+
       if (busy && !uploadingBase && !showBaseOpModal) {
         openBaseOpModal({
           kind: 'upload',
@@ -159,7 +176,6 @@
       } else if (showBaseOpModal && baseOpKind === 'upload' && baseOpStep === 'running') {
         baseOpMessage = uploadProgress.message || baseOpMessage;
         if (baseUploadLockMessage) baseOpHint = baseUploadLockMessage;
-        baseOpPercent = Math.max(baseOpPercent, pct);
         if (data.fileName) baseOpFileName = data.fileName;
       }
     }
@@ -377,12 +393,9 @@
     if (uploadingBase) {
       baseOpPercent = Math.max(0, Math.min(100, Math.round(displayedPercent || 0)));
     } else {
-      // Remoto: % = mesma regra da extensão (processedRows/totalRows ou mancha)
+      // Remoto: % do estágio atual (pode baixar ao entrar na mancha)
       const remotePct = calculateTotalUploadPercent(uploadProgress);
-      baseOpPercent = Math.max(
-        0,
-        Math.min(100, Math.round(Math.max(remotePct, displayedPercent || 0)))
-      );
+      baseOpPercent = Math.max(0, Math.min(100, Math.round(remotePct)));
     }
     if (uploadProgress?.message) baseOpMessage = uploadProgress.message;
   }
