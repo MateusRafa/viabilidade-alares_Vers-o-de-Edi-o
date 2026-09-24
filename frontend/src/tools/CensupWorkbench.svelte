@@ -35,6 +35,8 @@
 
   let usuario = '';
   let chamadoId = '';
+  /** Layout compacto para o app mobile (`layout=mobile`). */
+  let layoutMobile = false;
   /** Seed da Agenda (extensão) — usado para criar no Portal só ao finalizar. */
   let workbenchSeed = null;
   let chamado = null;
@@ -702,6 +704,36 @@
       window.parent?.postMessage({ source: MSG_SOURCE, type, ...payload }, '*');
     } catch {
       // ignore
+    }
+  }
+
+  /** Largura mínima do mapa: box Endereço inteiro (com Gerar Relatório) + Satélite. */
+  function measureMapOverlayContactMinWidth() {
+    try {
+      const pane = document.querySelector('.wb-map-pane');
+      const mapType = document.querySelector('.wb-map-type');
+      const search = document.querySelector('.wb-map-search-box');
+      if (!pane || !mapType) return 0;
+      const paneRect = pane.getBoundingClientRect();
+      const typeRect = mapType.getBoundingClientRect();
+      if (!paneRect.width || !typeRect.width) return 0;
+      const leftOccupied = Math.max(0, typeRect.right - paneRect.left);
+      // Preferir largura real do box (não cortar Gerar Relatório)
+      const searchW = search
+        ? Math.max(260, Math.ceil(search.scrollWidth || search.getBoundingClientRect().width || 0))
+        : 260;
+      const GAP = 8;
+      const RIGHT_MARGIN = 10;
+      return Math.ceil(leftOccupied + GAP + searchW + RIGHT_MARGIN);
+    } catch {
+      return 0;
+    }
+  }
+
+  function reportMapMinWidthToParent() {
+    const w = measureMapOverlayContactMinWidth();
+    if (w >= 300) {
+      postToParent('MAP_MIN_WIDTH', { width: w });
     }
   }
 
@@ -1582,6 +1614,14 @@
     if (qMapType === 'satellite' || qMapType === 'roadmap') {
       applyPreferredMapType(qMapType);
     }
+    const qLayout = String(params.get('layout') || params.get('mobile') || '').toLowerCase();
+    layoutMobile = qLayout === 'mobile' || qLayout === '1' || qLayout === 'true';
+    try {
+      document.documentElement.classList.toggle('wb-layout-mobile', layoutMobile);
+      document.body?.classList.toggle('wb-layout-mobile', layoutMobile);
+    } catch {
+      /* ignore */
+    }
     const qUser = params.get('usuario') || '';
     const qId = params.get('chamadoId') || params.get('id') || '';
     let qSeed = null;
@@ -1601,10 +1641,15 @@
       postToParent('HELLO');
     }
     requestMapResize(200);
+    setTimeout(reportMapMinWidthToParent, 200);
+    setTimeout(reportMapMinWidthToParent, 800);
   });
 
   function onMapReadyFromViabilidade() {
     postToParent('MAP_READY');
+    setTimeout(reportMapMinWidthToParent, 80);
+    setTimeout(reportMapMinWidthToParent, 400);
+    setTimeout(reportMapMinWidthToParent, 1200);
     // Agenda → coords: a busca de CTOs roda no mapa; sincroniza o box depois
     setTimeout(() => syncForaLimiteFromRef(), 600);
     setTimeout(() => syncForaLimiteFromRef(), 1800);
@@ -1670,7 +1715,7 @@
   });
 </script>
 
-<div class="workbench" class:theme-dark={isDarkUi}>
+<div class="workbench" class:theme-dark={isDarkUi} class:layout-mobile={layoutMobile}>
   {#if error}
     <p class="wb-error" role="alert">{error}</p>
   {/if}
@@ -2670,7 +2715,7 @@
   .wb-map-pane {
     flex: 1 1 auto;
     align-self: stretch;
-    min-width: 440px;
+    min-width: 0;
     min-height: 0;
     width: auto;
     max-width: 100%;
@@ -2688,9 +2733,10 @@
     top: 10px;
     right: 10px;
     z-index: 25;
-    width: 280px;
-    /* Reserva espaço do grupo Mapa/Satélite à esquerda — evita salto/sobreposição */
-    max-width: calc(100% - 168px);
+    width: 260px;
+    min-width: 260px;
+    /* Não encolher abaixo do texto dos botões (Gerar Relatório) */
+    max-width: none;
     display: flex;
     flex-direction: column;
     gap: 0.35rem;
@@ -2702,7 +2748,7 @@
     box-sizing: border-box;
     pointer-events: auto;
     max-height: calc(100% - 20px);
-    overflow-x: hidden;
+    overflow-x: visible;
     overflow-y: auto;
   }
 
@@ -2822,14 +2868,15 @@
   }
 
   .wb-map-btn {
-    flex: 1 1 0;
+    flex: 1 1 auto;
     border: none;
     border-radius: 6px;
-    padding: 0.4rem 0.45rem;
+    padding: 0.4rem 0.5rem;
     font-size: 0.7rem;
     font-weight: 700;
     cursor: pointer;
     line-height: 1.2;
+    white-space: nowrap;
   }
 
   .wb-map-btn:disabled {
@@ -2937,5 +2984,98 @@
     padding: 1rem;
     text-align: center;
     font-size: 0.8rem;
+  }
+
+  /* ——— Layout mobile (app Capacitor / ?layout=mobile) ——— */
+  .workbench.layout-mobile {
+    background: #f4f6fb;
+  }
+
+  .workbench.layout-mobile .wb-error {
+    padding: 0.4rem 0.65rem;
+    font-size: 0.72rem;
+    line-height: 1.3;
+  }
+
+  .workbench.layout-mobile .wb-body {
+    padding: 0.25rem;
+    gap: 0.3rem;
+    background: #f4f6fb;
+  }
+
+  .workbench.layout-mobile .wb-equip-pane {
+    border-radius: 8px;
+  }
+
+  .workbench.layout-mobile .wb-form-toolbar {
+    padding: 0.35rem 0.5rem;
+    min-height: 2rem;
+  }
+
+  .workbench.layout-mobile .wb-form-toolbar-title {
+    font-size: 0.72rem;
+  }
+
+  .workbench.layout-mobile .wb-pane-toggle {
+    width: 1.75rem;
+    height: 1.75rem;
+    font-size: 0.85rem;
+  }
+
+  .workbench.layout-mobile .wb-split-handle {
+    flex-basis: 10px;
+  }
+
+  .workbench.layout-mobile .wb-map-search-box {
+    top: auto;
+    right: 8px;
+    left: 8px;
+    bottom: 8px;
+    width: auto;
+    min-width: 0;
+    max-width: none;
+    padding: 0.45rem 0.5rem;
+    border-radius: 12px;
+    box-shadow: 0 8px 24px rgba(15, 23, 42, 0.18);
+  }
+
+  .workbench.layout-mobile .wb-map-search-label {
+    font-size: 0.65rem;
+  }
+
+  .workbench.layout-mobile .wb-map-search-input {
+    font-size: 0.8rem;
+    min-height: 2.15rem;
+    padding: 0.45rem 0.55rem;
+    border-radius: 8px;
+  }
+
+  .workbench.layout-mobile .wb-map-search-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.4rem;
+  }
+
+  .workbench.layout-mobile .wb-map-btn {
+    min-height: 2.25rem;
+    font-size: 0.72rem;
+    padding: 0.45rem 0.35rem;
+    border-radius: 8px;
+  }
+
+  .workbench.layout-mobile .wb-fora-limite-box {
+    padding: 0.4rem 0.45rem;
+  }
+
+  .workbench.layout-mobile .wb-fora-limite-title {
+    font-size: 0.7rem;
+  }
+
+  .workbench.layout-mobile .wb-fora-limite-text {
+    font-size: 0.68rem;
+  }
+
+  .workbench.layout-mobile .wb-map-host :global(.viabilidade-content.workbench-mode .map-container) {
+    border-radius: 8px !important;
   }
 </style>
