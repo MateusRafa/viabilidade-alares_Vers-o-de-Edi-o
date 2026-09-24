@@ -585,9 +585,24 @@ function formatUploadLockMessage(progress = uploadProgress) {
   if (raw) {
     const d = new Date(raw);
     if (!Number.isNaN(d.getTime())) {
-      const pad = (n) => String(n).padStart(2, '0');
-      hora = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
-      data = `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()}`;
+      // Railway/Node costuma estar em UTC — formatar no fuso do Brasil
+      const tz = 'America/Sao_Paulo';
+      const horaFmt = new Intl.DateTimeFormat('pt-BR', {
+        timeZone: tz,
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false
+      }).format(d);
+      const dataFmt = new Intl.DateTimeFormat('pt-BR', {
+        timeZone: tz,
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric'
+      }).format(d);
+      // pt-BR pode devolver "21:51:47" ou com separadores especiais
+      hora = String(horaFmt || '').replace(/\u202f/g, ' ').trim();
+      data = String(dataFmt || '').trim();
     }
   }
   return `Atualização em Andamento - ${nome} ${hora} - ${data}`;
