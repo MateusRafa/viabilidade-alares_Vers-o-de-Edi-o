@@ -4428,7 +4428,7 @@ async function readTabulacoesFromExcel() {
     if (!fs.existsSync(TABULACOES_FILE)) {
       // Valores padrão se o arquivo não existir
       const defaultTabulacoes = [
-        '(Aprovado - Portas Disponíveis)',
+        'Aprovado - Portas Disponíveis',
         'Aprovado Com Alívio de Rede/Cleanup',
         'Aprovado / Sem Estrutura Atendimento Externo',
         'Aprovado Prédio Não Cabeado',
@@ -4465,7 +4465,7 @@ async function readTabulacoesFromExcel() {
     console.error('❌ [Excel] Erro ao ler tabulações:', err);
     // Retornar valores padrão em caso de erro
     return [
-      '(Aprovado - Portas Disponíveis)',
+      'Aprovado - Portas Disponíveis',
       'Aprovado Com Alívio de Rede/Cleanup',
       'Aprovado / Sem Estrutura Atendimento Externo',
       'Aprovado Prédio Não Cabeado',
@@ -4476,15 +4476,30 @@ async function readTabulacoesFromExcel() {
 }
 
 // Função para ler tabulações (tenta Supabase primeiro, fallback para Excel)
+const TAB_PORTAS_DISPONIVEIS = 'Aprovado - Portas Disponíveis';
+const TAB_PORTAS_DISPONIVEIS_LEGADO = '(Aprovado - Portas Disponíveis)';
+
+function normalizeTabulacoesList(list) {
+  const nomes = new Set();
+  for (const nome of list || []) {
+    let n = String(nome || '').trim();
+    if (n === TAB_PORTAS_DISPONIVEIS_LEGADO) n = TAB_PORTAS_DISPONIVEIS;
+    if (n) nomes.add(n);
+  }
+  return Array.from(nomes).sort((a, b) =>
+    a.localeCompare(b, 'pt-BR', { sensitivity: 'base' })
+  );
+}
+
 async function readTabulacoes() {
   // Tentar Supabase primeiro
   const supabaseData = await readTabulacoesFromSupabase();
   if (supabaseData !== null) {
-    return supabaseData;
+    return normalizeTabulacoesList(supabaseData);
   }
   
   // Fallback para Excel
-  return await readTabulacoesFromExcel();
+  return normalizeTabulacoesList(await readTabulacoesFromExcel());
 }
 
 // Função para salvar tabulações no Supabase (nova versão)
@@ -4497,9 +4512,7 @@ async function saveTabulacoesToSupabase(tabulacoes) {
     console.log('💾 [Supabase] Salvando tabulações no Supabase...');
     
     // Normalizar dados
-    const dataToSave = tabulacoes
-      .map(nome => (nome || '').trim())
-      .filter(nome => nome) // Remover vazios
+    const dataToSave = normalizeTabulacoesList(tabulacoes)
       .map(nome => ({ nome }));
     
     await writeToLocalDb(async (client) => {
@@ -8369,13 +8382,17 @@ app.post('/api/tabulacoes', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Nome da tabulação é obrigatório' });
     }
     
-    const nomeLimpo = nome.trim();
+    const nomeLimpoRaw = nome.trim();
+    const nomeLimpo =
+      nomeLimpoRaw === TAB_PORTAS_DISPONIVEIS_LEGADO
+        ? TAB_PORTAS_DISPONIVEIS
+        : nomeLimpoRaw;
     
     // Tentar adicionar no Supabase primeiro (dual-write no cluster)
     if (isDbAvailable() || isSupabaseAvailable()) {
       try {
-        const existentes = await readTabulacoesFromSupabase();
-        if (existentes && existentes.some((n) => n.toLowerCase() === nomeLimpo.toLowerCase())) {
+        const existentes = normalizeTabulacoesList(await readTabulacoesFromSupabase() || []);
+        if (existentes.some((n) => n.toLowerCase() === nomeLimpo.toLowerCase())) {
           return res.json({
             success: true,
             tabulacoes: existentes,
@@ -8427,23 +8444,37 @@ app.delete('/api/tabulacoes/:nome', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Nome da tabulação é obrigatório' });
     }
     
-    const nomeLimpo = nome.trim();
+    const nomeLimpoRaw = nome.trim();
+    const nomeLimpo =
+      nomeLimpoRaw === TAB_PORTAS_DISPONIVEIS_LEGADO
+        ? TAB_PORTAS_DISPONIVEIS
+        : nomeLimpoRaw;
+    const nomesParaApagar = new Set([nomeLimpoRaw, nomeLimpo]);
+    if (nomeLimpo === TAB_PORTAS_DISPONIVEIS) {
+      nomesParaApagar.add(TAB_PORTAS_DISPONIVEIS_LEGADO);
+    }
     
     // Tentar deletar no Supabase primeiro (dual-write no cluster)
     if (isDbAvailable() || isSupabaseAvailable()) {
       try {
         const existentes = await readTabulacoesFromSupabase();
-        const found = existentes && existentes.some((n) => n.toLowerCase() === nomeLimpo.toLowerCase());
+        const found =
+          existentes &&
+          existentes.some((n) =>
+            [...nomesParaApagar].some((alvo) => n.toLowerCase() === alvo.toLowerCase())
+          );
         if (!found) {
           return res.status(404).json({ success: false, error: 'Tabulação não encontrada' });
         }
 
         await writeToLocalDb(async (client) => {
-          const { error } = await client
-            .from('tabulacoes')
-            .delete()
-            .ilike('nome', nomeLimpo);
-          if (error) throw error;
+          for (const alvo of nomesParaApagar) {
+            const { error } = await client
+              .from('tabulacoes')
+              .delete()
+              .ilike('nome', alvo);
+            if (error) throw error;
+          }
         });
 
         console.log(`✅ [Supabase] Tabulação '${nomeLimpo}' deletada do Supabase`);
