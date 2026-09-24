@@ -543,8 +543,14 @@ let uploadProgress = {
   source: '', // manual | sharepoint | unknown
   fileName: '',
   coverageAutoStarted: false,
-  coverageFailed: false
+  coverageFailed: false,
+  /** ISO — muda a cada publicação bem-sucedida; clientes forçam reload */
+  baseReadyAt: null
 };
+
+function markBaseReadyPublished() {
+  uploadProgress.baseReadyAt = new Date().toISOString();
+}
 
 function isBaseUploadBusy() {
   if (uploadInProgress === true || uploadProgress?.inProgress === true) return true;
@@ -2109,6 +2115,7 @@ app.post('/api/coverage/calculate', async (req, res) => {
         uploadProgress.coverageFailed = false;
         uploadProgress.inProgress = false;
         uploadInProgress = false;
+        markBaseReadyPublished();
         if (!shouldSwapAfterCoverage) {
           uploadProgress.message = uploadProgress.coverageAutoStarted
             ? 'Base e mancha de cobertura atualizadas com sucesso!'
@@ -3958,7 +3965,13 @@ app.get('/api/base-last-modified', async (req, res) => {
 
     // Sempre retornar lastModified quando há dados
     console.log(`✅ [API] Retornando: hasData=${hasData}, lastModified=${lastModified}, totalCTOs=${totalCTOs}`);
-    res.json({ success: true, lastModified, hasData: true, total_ctos: totalCTOs });
+    res.json({
+      success: true,
+      lastModified,
+      hasData: true,
+      total_ctos: totalCTOs,
+      baseReadyAt: uploadProgress.baseReadyAt || null
+    });
   } catch (err) {
     console.error('❌ [API] Erro ao obter lastModified:', err);
     console.error('❌ [API] Stack:', err.stack);
