@@ -801,6 +801,12 @@
   let showInfoForaCobertura = false;
   let showInfoForaLimite = false;
 
+  /** Pop bloqueante: base CTOs/mancha publicada — só some com reload */
+  let showBaseReadyReloadModal = false;
+  /** undefined = ainda não capturou baseline da sessão */
+  let sessionBaseReadyAt = undefined;
+  let baseReadyPollInterval = null;
+
   // Estado de loading (apenas para esta ferramenta)
   let isLoading = false;
   let loadingMessage = '';
@@ -2676,6 +2682,55 @@
     }
   }
 
+  function forceReloadForNewBase() {
+    try {
+      window.location.reload();
+    } catch {
+      window.location.href = String(window.location.href || '');
+    }
+  }
+
+  function applyBaseReadyToken(token, { inProgress = false } = {}) {
+    const readyAt = token != null ? String(token).trim() : '';
+    if (sessionBaseReadyAt === null || sessionBaseReadyAt === undefined) {
+      // Baseline da sessão (pode ser '' se o servidor ainda não publicou nesta vida)
+      sessionBaseReadyAt = readyAt;
+      return;
+    }
+    if (inProgress) return;
+    if (readyAt && readyAt !== sessionBaseReadyAt) {
+      sessionBaseReadyAt = readyAt;
+      showBaseReadyReloadModal = true;
+    }
+  }
+
+  async function pollBaseReadySignal() {
+    if (typeof document !== 'undefined' && document.hidden) return;
+    try {
+      const res = await fetch(getApiUrl('/api/upload-progress'), { cache: 'no-store' });
+      if (!res.ok) return;
+      const data = await res.json().catch(() => ({}));
+      applyBaseReadyToken(data?.baseReadyAt, { inProgress: data?.inProgress === true });
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function startBaseReadyPolling() {
+    stopBaseReadyPolling();
+    pollBaseReadySignal().catch(() => {});
+    baseReadyPollInterval = setInterval(() => {
+      pollBaseReadySignal().catch(() => {});
+    }, 3000);
+  }
+
+  function stopBaseReadyPolling() {
+    if (baseReadyPollInterval) {
+      clearInterval(baseReadyPollInterval);
+      baseReadyPollInterval = null;
+    }
+  }
+
   // Funções de redimensionamento
   function startResizeSidebar(e) {
     e.preventDefault();
@@ -3339,6 +3394,7 @@
         onSettingsHover(preloadSettingsData);
       }
       await initializeTool();
+      startBaseReadyPolling();
     } catch (err) {
       console.error('Erro ao inicializar ferramenta:', err);
       error = 'Erro ao inicializar ferramenta: ' + err.message;
@@ -3364,6 +3420,7 @@
       clearTimeout(workbenchPreviewTimer);
       workbenchPreviewTimer = null;
     }
+    stopBaseReadyPolling();
     unbindWorkbenchMapControls();
     cleanup();
   });
@@ -10781,6 +10838,27 @@
     />
 {/if}
 
+{#if showBaseReadyReloadModal}
+  <div
+    class="base-ready-reload-overlay"
+    role="alertdialog"
+    aria-modal="true"
+    aria-labelledby="base-ready-reload-title"
+    tabindex="-1"
+  >
+    <div class="base-ready-reload-box" role="document">
+      <h3 id="base-ready-reload-title">Base atualizada com sucesso</h3>
+      <p>
+        A base de CTOs e a mancha de cobertura foram publicadas. Atualize a página para
+        trabalhar com a nova base de dados.
+      </p>
+      <button type="button" class="base-ready-reload-btn" on:click={forceReloadForNewBase}>
+        Atualizar página
+      </button>
+    </div>
+  </div>
+{/if}
+
 <style>
   :global(body) {
     margin: 0;
@@ -13119,5 +13197,74 @@
 
   .btn-add-confirm:active {
     transform: translateY(0);
+  }
+
+  .base-ready-reload-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 2147483000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1.25rem;
+    background: rgba(15, 23, 42, 0.72);
+    box-sizing: border-box;
+  }
+
+  .base-ready-reload-box {
+    width: min(420px, 100%);
+    background: #fff;
+    border-radius: 12px;
+    padding: 1.5rem 1.35rem 1.25rem;
+    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.28);
+    text-align: center;
+  }
+
+  .base-ready-reload-box h3 {
+    margin: 0 0 0.75rem;
+    font-size: 1.15rem;
+    font-weight: 700;
+    color: #0f172a;
+  }
+
+  .base-ready-reload-box p {
+    margin: 0 0 1.25rem;
+    font-size: 0.95rem;
+    line-height: 1.45;
+    color: #334155;
+  }
+
+  .base-ready-reload-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 180px;
+    padding: 0.75rem 1.25rem;
+    border: none;
+    border-radius: 8px;
+    background: linear-gradient(135deg, #7b68ee 0%, #6495ed 100%);
+    color: #fff;
+    font-size: 1rem;
+    font-weight: 700;
+    cursor: pointer;
+  }
+
+  .base-ready-reload-btn:hover {
+    filter: brightness(1.05);
+  }
+
+  .viabilidade-content.theme-dark ~ .base-ready-reload-overlay .base-ready-reload-box,
+  :global(.theme-dark) .base-ready-reload-box {
+    background: #1e293b;
+  }
+
+  .viabilidade-content.theme-dark ~ .base-ready-reload-overlay .base-ready-reload-box h3,
+  :global(.theme-dark) .base-ready-reload-box h3 {
+    color: #f1f5f9;
+  }
+
+  .viabilidade-content.theme-dark ~ .base-ready-reload-overlay .base-ready-reload-box p,
+  :global(.theme-dark) .base-ready-reload-box p {
+    color: #cbd5e1;
   }
 </style>
