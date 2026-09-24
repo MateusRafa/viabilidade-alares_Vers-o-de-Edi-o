@@ -8198,7 +8198,7 @@ app.post('/api/upload-base', (req, res, next) => {
                 uploadProgress.processedRows = progress.deleted;
                 uploadProgress.totalRows = progress.total;
                 uploadProgress.uploadPercent = Math.round(Number(progress.percent) || 0);
-                uploadProgress.message = `Deletando ${idsToDelete.length} CTO(s) que saíram da base...`;
+                uploadProgress.message = `Deletando CTO(s)... ${progress.deleted}/${progress.total} (${Math.round(Number(progress.percent) || 0)}%)`;
               };
               
               deleteResult = await deleteCTOsInBatches(
@@ -8224,7 +8224,7 @@ app.post('/api/upload-base', (req, res, next) => {
                 uploadProgress.processedRows = progress.inserted;
                 uploadProgress.totalRows = progress.total;
                 uploadProgress.uploadPercent = Math.round(Number(progress.percent) || 0);
-                uploadProgress.message = `Inserindo ${result.ctosToInsert.length} CTO(s) nova(s)...`;
+                uploadProgress.message = `Inserindo CTO(s) nova(s)... ${progress.inserted}/${progress.total} (${Math.round(Number(progress.percent) || 0)}%)`;
               };
               
               insertResult = await insertCTOsInBatches(
@@ -8250,7 +8250,7 @@ app.post('/api/upload-base', (req, res, next) => {
                 uploadProgress.processedRows = progress.updated;
                 uploadProgress.totalRows = progress.total;
                 uploadProgress.uploadPercent = Math.round(Number(progress.percent) || 0);
-                uploadProgress.message = `Atualizando ${result.ctosToUpdate.length} CTO(s) que mudaram...`;
+                uploadProgress.message = `Atualizando CTO(s)... ${progress.updated}/${progress.total} (${Math.round(Number(progress.percent) || 0)}%)`;
               };
               
               updateResult = await updateCTOsInBatches(
