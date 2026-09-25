@@ -8220,9 +8220,11 @@
         );
       }
 
-      const exportResult = await exportToPDF();
+      const exportResult = await exportToPDF({
+        skipPrint: formData?.skipPrint === true
+      });
 
-      if (showPopupInstructions) {
+      if (!formData?.skipPrint && showPopupInstructions) {
         throw new Error('Pop-up bloqueado. Permita pop-ups para este site e tente de novo.');
       }
 
@@ -8390,7 +8392,8 @@
     showPopupInstructions = false; // Limpar instruções ao fechar modal
   }
 
-  async function exportToPDF() {
+  async function exportToPDF(options = {}) {
+    const skipPrint = options?.skipPrint === true;
     if (generatingPDF) {
       return;
     }
@@ -9226,6 +9229,19 @@
       `;
 
       console.log('HTML do PDF criado com sucesso, tamanho:', htmlContent.length, 'caracteres');
+
+      // Só monta HTML (Salvar PDF / backup SharePoint) — sem abrir impressão
+      if (skipPrint) {
+        generatingPDF = false;
+        return {
+          htmlContent,
+          viAla: currentVIALA,
+          printed: false,
+          geradoEm,
+          pdfFileName,
+          skipPrint: true
+        };
+      }
 
       // Criar nova janela para abrir PDF em nova aba
       console.log('Abrindo janela de impressão em nova aba...');
