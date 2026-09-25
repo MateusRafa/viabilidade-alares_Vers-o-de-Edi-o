@@ -711,7 +711,7 @@
    * Pede à extensão que prepare pastas SharePoint (mês/dia) e espera a resposta.
    * @returns {Promise<{ ok?: boolean, cancelled?: boolean, skipped?: boolean, error?: string }>}
    */
-  function requestSharePointBackupEnsure(timeoutMs = 90000) {
+  function requestSharePointBackupEnsure(timeoutMs = 180000) {
     const requestId = `spb_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
     return new Promise((resolve) => {
       let done = false;
@@ -730,11 +730,37 @@
         finish(data);
       };
       const timer = window.setTimeout(() => {
-        finish({ ok: false, skipped: true, error: 'Tempo esgotado ao preparar pastas no SharePoint.' });
+        finish({
+          ok: false,
+          error:
+            'Extensão não respondeu ao preparar pastas. Instale a v0.5.142+, recarregue a Agenda e use «Testar pastas» em Backup Relatórios.'
+        });
       }, timeoutMs);
       window.addEventListener('message', onMsg);
       postToParent('REPORT_BACKUP_ENSURE', { requestId });
     });
+  }
+
+  /** Envia HTML em partes (postMessage único com HTML grande costuma falhar). */
+  async function postSharePointBackupHtml({ htmlContent, fileName, chamadoId, viAla }) {
+    const html = String(htmlContent || '');
+    if (!html) return;
+    const transferId = `html_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const CHUNK = 280_000;
+    postToParent('REPORT_BACKUP_HTML_BEGIN', {
+      transferId,
+      totalLen: html.length,
+      fileName: fileName || '',
+      chamadoId: chamadoId || null,
+      viAla: viAla || null
+    });
+    // Yield entre chunks para não travar a UI / o clone estruturado
+    for (let i = 0; i < html.length; i += CHUNK) {
+      const chunk = html.slice(i, i + CHUNK);
+      postToParent('REPORT_BACKUP_HTML_CHUNK', { transferId, chunk });
+      await new Promise((r) => setTimeout(r, 0));
+    }
+    postToParent('REPORT_BACKUP_HTML_END', { transferId, fileName: fileName || '' });
   }
 
   /** Largura mínima do mapa: box Endereço inteiro (com Gerar Relatório) + Satélite. */
@@ -1512,15 +1538,16 @@
           doSharePointBackup = false;
           statusMsg = 'Backup SharePoint cancelado — salvando só no Portal…';
         } else if (ensure?.skipped && !ensure?.ok) {
-          // Sem link / timeout: ainda salva no Portal
           doSharePointBackup = false;
-          if (ensure?.error) {
-            console.warn('[Workbench] Backup SharePoint:', ensure.error);
-          }
+          error =
+            ensure?.error ||
+            'Configure o link de Backup Consultas em Configurações → Backup Relatórios.';
+          statusMsg = '';
+          // Continua salvando no Portal
         } else if (!ensure?.ok) {
           throw new Error(ensure?.error || 'Falha ao preparar pastas no SharePoint');
         } else {
-          statusMsg = 'Pastas OK — preparando relatório…';
+          statusMsg = `Pastas OK (${ensure.dayFolderName || 'dia'}) — preparando relatório…`;
         }
       }
 
@@ -1559,6 +1586,12 @@
         }
       }
 
+      if (doSharePointBackup && !htmlForSave) {
+        throw new Error(
+          'Não foi possível montar o HTML do relatório. Confira os campos obrigatórios e tente Salvar PDF de novo.'
+        );
+      }
+
       const targetId = chamadoId || pedidoKey;
       const response = await fetch(
         getApiUrl(`/api/portal-censup/chamados/${encodeURIComponent(targetId)}/relatorio`),
@@ -1594,11 +1627,12 @@
         silent: silent === true
       });
       if (doSharePointBackup && htmlForSave) {
-        postToParent('REPORT_BACKUP_SHAREPOINT', {
+        statusMsg = 'Relatório salvo no Portal — enviando ao SharePoint…';
+        await postSharePointBackupHtml({
+          htmlContent: htmlForSave,
+          fileName: fileNameForBackup,
           chamadoId: chamadoId || chamado?.id || targetId,
-          viAla: chamado?.viAla || null,
-          pdfHtml: htmlForSave,
-          fileName: fileNameForBackup
+          viAla: chamado?.viAla || null
         });
       }
     } catch (err) {
