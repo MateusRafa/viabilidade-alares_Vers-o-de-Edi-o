@@ -741,7 +741,32 @@
     });
   }
 
-  /** Envia HTML em partes (postMessage único com HTML grande costuma falhar). */
+  /** Envia PDF em base64 (partes) para a extensão — mais leve que HTML com mapa. */
+  async function postSharePointBackupPdf({ pdfBase64, fileName, chamadoId, viAla }) {
+    const b64 = String(pdfBase64 || '');
+    if (!b64) return;
+    const transferId = `pdf_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const CHUNK = 280_000;
+    let pdfName = String(fileName || 'VI ALA - relatório.pdf').trim();
+    if (/\.html?$/i.test(pdfName)) pdfName = pdfName.replace(/\.html?$/i, '.pdf');
+    else if (!/\.pdf$/i.test(pdfName)) pdfName = `${pdfName}.pdf`;
+
+    postToParent('REPORT_BACKUP_PDF_BEGIN', {
+      transferId,
+      totalLen: b64.length,
+      fileName: pdfName,
+      chamadoId: chamadoId || null,
+      viAla: viAla || null
+    });
+    for (let i = 0; i < b64.length; i += CHUNK) {
+      const chunk = b64.slice(i, i + CHUNK);
+      postToParent('REPORT_BACKUP_PDF_CHUNK', { transferId, chunk });
+      await new Promise((r) => setTimeout(r, 0));
+    }
+    postToParent('REPORT_BACKUP_PDF_END', { transferId, fileName: pdfName });
+  }
+
+  /** @deprecated HTML — mantido só por compat; preferir PDF */
   async function postSharePointBackupHtml({ htmlContent, fileName, chamadoId, viAla }) {
     const html = String(htmlContent || '');
     if (!html) return;
@@ -754,7 +779,6 @@
       chamadoId: chamadoId || null,
       viAla: viAla || null
     });
-    // Yield entre chunks para não travar a UI / o clone estruturado
     for (let i = 0; i < html.length; i += CHUNK) {
       const chunk = html.slice(i, i + CHUNK);
       postToParent('REPORT_BACKUP_HTML_CHUNK', { transferId, chunk });
@@ -1627,13 +1651,38 @@
         silent: silent === true
       });
       if (doSharePointBackup && htmlForSave) {
+        statusMsg = 'Gerando PDF para o SharePoint…';
+        let pdfBase64 = null;
+        let pdfFileName = fileNameForBackup || 'VI ALA - relatório.pdf';
+        try {
+          const { reportHtmlToPdfBlob, blobToBase64 } = await import('../lib/reportHtmlToPdf.js');
+          const pdfBlob = await reportHtmlToPdfBlob(htmlForSave);
+          pdfBase64 = await blobToBase64(pdfBlob);
+          if (/\.html?$/i.test(pdfFileName)) {
+            pdfFileName = pdfFileName.replace(/\.html?$/i, '.pdf');
+          } else if (!/\.pdf$/i.test(pdfFileName)) {
+            pdfFileName = `${pdfFileName}.pdf`;
+          }
+        } catch (pdfErr) {
+          console.warn('[Workbench] Falha ao gerar PDF, enviando HTML:', pdfErr);
+        }
+
         statusMsg = 'Relatório salvo no Portal — enviando ao SharePoint…';
-        await postSharePointBackupHtml({
-          htmlContent: htmlForSave,
-          fileName: fileNameForBackup,
-          chamadoId: chamadoId || chamado?.id || targetId,
-          viAla: chamado?.viAla || null
-        });
+        if (pdfBase64) {
+          await postSharePointBackupPdf({
+            pdfBase64,
+            fileName: pdfFileName,
+            chamadoId: chamadoId || chamado?.id || targetId,
+            viAla: chamado?.viAla || null
+          });
+        } else {
+          await postSharePointBackupHtml({
+            htmlContent: htmlForSave,
+            fileName: fileNameForBackup,
+            chamadoId: chamadoId || chamado?.id || targetId,
+            viAla: chamado?.viAla || null
+          });
+        }
       }
     } catch (err) {
       if (!silent) {
