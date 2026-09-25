@@ -766,25 +766,32 @@
     postToParent('REPORT_BACKUP_PDF_END', { transferId, fileName: pdfName });
   }
 
-  /** @deprecated HTML — mantido só por compat; preferir PDF */
+  /** Envia HTML do relatório ao painel (caminho rápido do backup SharePoint). */
   async function postSharePointBackupHtml({ htmlContent, fileName, chamadoId, viAla }) {
     const html = String(htmlContent || '');
     if (!html) return;
     const transferId = `html_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    const CHUNK = 280_000;
+    const CHUNK = 500_000;
+    let htmlName = String(fileName || 'VI ALA - relatório.html').trim();
+    if (/\.pdf$/i.test(htmlName)) htmlName = htmlName.replace(/\.pdf$/i, '.html');
+    else if (!/\.html?$/i.test(htmlName)) htmlName = `${htmlName}.html`;
+
     postToParent('REPORT_BACKUP_HTML_BEGIN', {
       transferId,
       totalLen: html.length,
-      fileName: fileName || '',
+      fileName: htmlName,
       chamadoId: chamadoId || null,
       viAla: viAla || null
     });
     for (let i = 0; i < html.length; i += CHUNK) {
       const chunk = html.slice(i, i + CHUNK);
       postToParent('REPORT_BACKUP_HTML_CHUNK', { transferId, chunk });
-      await new Promise((r) => setTimeout(r, 0));
+      // Cede o event loop a cada ~2 MB para não travar a UI
+      if (i > 0 && i % (CHUNK * 4) === 0) {
+        await new Promise((r) => setTimeout(r, 0));
+      }
     }
-    postToParent('REPORT_BACKUP_HTML_END', { transferId, fileName: fileName || '' });
+    postToParent('REPORT_BACKUP_HTML_END', { transferId, fileName: htmlName });
   }
 
   /** Largura mínima do mapa: box Endereço inteiro (com Gerar Relatório) + Satélite. */
@@ -1617,7 +1624,18 @@
       }
 
       const targetId = chamadoId || pedidoKey;
-      const response = await fetch(
+      let htmlNameForSp = null;
+      if (doSharePointBackup && htmlForSave) {
+        htmlNameForSp = String(fileNameForBackup || 'VI ALA - relatório.html').trim();
+        if (/\.pdf$/i.test(htmlNameForSp)) {
+          htmlNameForSp = htmlNameForSp.replace(/\.pdf$/i, '.html');
+        } else if (!/\.html?$/i.test(htmlNameForSp)) {
+          htmlNameForSp = `${htmlNameForSp}.html`;
+        }
+      }
+
+      // Portal + envio HTML ao painel em paralelo (economiza segundos)
+      const portalPromise = fetch(
         getApiUrl(`/api/portal-censup/chamados/${encodeURIComponent(targetId)}/relatorio`),
         {
           method: 'POST',
@@ -1631,6 +1649,21 @@
           })
         }
       );
+      const spSendPromise =
+        doSharePointBackup && htmlForSave
+          ? postSharePointBackupHtml({
+              htmlContent: htmlForSave,
+              fileName: htmlNameForSp,
+              chamadoId: chamadoId || chamado?.id || targetId,
+              viAla: chamado?.viAla || null
+            })
+          : Promise.resolve();
+
+      if (doSharePointBackup && htmlForSave) {
+        statusMsg = 'Salvando no Portal e enviando ao SharePoint…';
+      }
+
+      const [response] = await Promise.all([portalPromise, spSendPromise]);
       const data = await response.json().catch(() => ({}));
       if (!response.ok || !data.success) {
         throw new Error(data.error || `Falha ao salvar relatório (${response.status})`);
@@ -1641,7 +1674,7 @@
       }
       if (!silent) {
         statusMsg = doSharePointBackup
-          ? 'Relatório salvo no Portal — enviando ao SharePoint…'
+          ? 'Relatório salvo — backup SharePoint em andamento…'
           : 'Relatório salvo no arquivo do Portal';
       }
       postToParent('REPORT_SAVED', {
@@ -1650,40 +1683,6 @@
         corrected: data.corrected === true,
         silent: silent === true
       });
-      if (doSharePointBackup && htmlForSave) {
-        statusMsg = 'Gerando PDF para o SharePoint…';
-        let pdfBase64 = null;
-        let pdfFileName = fileNameForBackup || 'VI ALA - relatório.pdf';
-        try {
-          const { reportHtmlToPdfBlob, blobToBase64 } = await import('../lib/reportHtmlToPdf.js');
-          const pdfBlob = await reportHtmlToPdfBlob(htmlForSave);
-          pdfBase64 = await blobToBase64(pdfBlob);
-          if (/\.html?$/i.test(pdfFileName)) {
-            pdfFileName = pdfFileName.replace(/\.html?$/i, '.pdf');
-          } else if (!/\.pdf$/i.test(pdfFileName)) {
-            pdfFileName = `${pdfFileName}.pdf`;
-          }
-        } catch (pdfErr) {
-          console.warn('[Workbench] Falha ao gerar PDF, enviando HTML:', pdfErr);
-        }
-
-        statusMsg = 'Relatório salvo no Portal — enviando ao SharePoint…';
-        if (pdfBase64) {
-          await postSharePointBackupPdf({
-            pdfBase64,
-            fileName: pdfFileName,
-            chamadoId: chamadoId || chamado?.id || targetId,
-            viAla: chamado?.viAla || null
-          });
-        } else {
-          await postSharePointBackupHtml({
-            htmlContent: htmlForSave,
-            fileName: fileNameForBackup,
-            chamadoId: chamadoId || chamado?.id || targetId,
-            viAla: chamado?.viAla || null
-          });
-        }
-      }
     } catch (err) {
       if (!silent) {
         error = err?.message || String(err);
