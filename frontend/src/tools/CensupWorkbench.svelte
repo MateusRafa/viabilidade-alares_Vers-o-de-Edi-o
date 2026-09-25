@@ -801,84 +801,52 @@
   function buildSharePointPreviewHtml(reportHtml, { previewId, fileName, titleMarker }) {
     const safeId = String(previewId || '').replace(/[^a-zA-Z0-9_-]/g, '');
     const safeMarker = String(titleMarker || safeId).replace(/[<>]/g, '');
-    const safeName = String(fileName || 'VI ALA - relatório.pdf')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;');
-    const bar = `
-<style>
-  .censup-sp-bar {
-    position: fixed; top: 0; left: 0; right: 0; z-index: 2147483646;
-    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
-    padding: 10px 14px; background: #0f172a; color: #e2e8f0;
-    font: 14px/1.4 system-ui, Segoe UI, sans-serif;
-    box-shadow: 0 2px 12px rgba(0,0,0,.35);
-  }
-  .censup-sp-bar strong { color: #fff; }
-  .censup-sp-bar .censup-sp-status { flex: 1; min-width: 160px; opacity: .95; }
-  .censup-sp-bar button {
-    border: 0; border-radius: 8px; padding: 8px 14px; cursor: pointer;
-    font-weight: 600; background: #7c3aed; color: #fff;
-  }
-  .censup-sp-bar button:disabled { opacity: .45; cursor: not-allowed; }
-  .censup-sp-bar button.secondary { background: #334155; }
-  body { padding-top: 58px !important; }
-  @media print { .censup-sp-bar { display: none !important; } body { padding-top: 0 !important; } }
-</style>
-<div class="censup-sp-bar" id="censup-sp-bar">
-  <strong>CENSUP</strong>
-  <span class="censup-sp-status" id="censup-sp-status">Gerando PDF…</span>
-  <button type="button" class="secondary" id="censup-sp-print">Imprimir / Salvar no PC</button>
-  <button type="button" id="censup-sp-upload" disabled>Enviar ao SharePoint</button>
-</div>
-<script>
-(function () {
-  var previewId = ${JSON.stringify(safeId)};
-  var statusEl = document.getElementById('censup-sp-status');
-  var uploadBtn = document.getElementById('censup-sp-upload');
-  var printBtn = document.getElementById('censup-sp-print');
-  function setStatus(msg, ready) {
-    if (statusEl) statusEl.textContent = msg || '';
-    if (uploadBtn) uploadBtn.disabled = !ready;
-  }
-  if (printBtn) printBtn.onclick = function () { try { window.print(); } catch (e) {} };
-  if (uploadBtn) uploadBtn.onclick = function () {
-    setStatus('Enviando ao SharePoint…', false);
-    try {
-      if (window.opener) {
-        window.opener.postMessage({
-          source: 'censup-sp-preview',
-          type: 'CENSUP_SP_UPLOAD_CLICK',
-          previewId: previewId
-        }, '*');
-      }
-    } catch (e) {}
-  };
-  window.addEventListener('message', function (ev) {
-    var d = ev && ev.data;
-    if (!d || d.source !== 'censup-workbench') return;
-    if (d.type !== 'CENSUP_SP_STATUS' || String(d.previewId) !== previewId) return;
-    var phase = d.phase || '';
-    setStatus(d.message || '', phase === 'ready' || phase === 'done');
-    if (phase === 'done' && uploadBtn) {
-      uploadBtn.textContent = 'Salvo no SharePoint';
-      uploadBtn.disabled = true;
-    }
-    if (phase === 'error' && uploadBtn) uploadBtn.disabled = false;
-  });
-  try {
-    document.title = ${JSON.stringify(safeMarker + ' — ' + String(fileName || 'relatório').replace(/\.pdf$/i, ''))};
-  } catch (e) {}
-  try {
-    if (window.opener) {
-      window.opener.postMessage({
-        source: 'censup-sp-preview',
-        type: 'CENSUP_SP_PREVIEW_READY',
-        previewId: previewId
-      }, '*');
-    }
-  } catch (e) {}
-})();
-</script>`;
+    const titleText = `${safeMarker} - ${String(fileName || 'relatorio').replace(/\.pdf$/i, '')}`;
+    const previewIdJson = JSON.stringify(safeId);
+    const titleJson = JSON.stringify(titleText);
+    // Monta a barra sem tag script literal (quebra o parser do Svelte)
+    const bar = [
+      '<style>',
+      '.censup-sp-bar{position:fixed;top:0;left:0;right:0;z-index:2147483646;display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:10px 14px;background:#0f172a;color:#e2e8f0;font:14px/1.4 system-ui,Segoe UI,sans-serif;box-shadow:0 2px 12px rgba(0,0,0,.35)}',
+      '.censup-sp-bar strong{color:#fff}',
+      '.censup-sp-bar .censup-sp-status{flex:1;min-width:160px;opacity:.95}',
+      '.censup-sp-bar button{border:0;border-radius:8px;padding:8px 14px;cursor:pointer;font-weight:600;background:#7c3aed;color:#fff}',
+      '.censup-sp-bar button:disabled{opacity:.45;cursor:not-allowed}',
+      '.censup-sp-bar button.secondary{background:#334155}',
+      'body{padding-top:58px!important}',
+      '@media print{.censup-sp-bar{display:none!important}body{padding-top:0!important}}',
+      '</style>',
+      '<div class="censup-sp-bar" id="censup-sp-bar">',
+      '<strong>CENSUP</strong>',
+      '<span class="censup-sp-status" id="censup-sp-status">Gerando PDF…</span>',
+      '<button type="button" class="secondary" id="censup-sp-print">Imprimir / Salvar no PC</button>',
+      '<button type="button" id="censup-sp-upload" disabled>Enviar ao SharePoint</button>',
+      '</div>',
+      '<scr' + 'ipt>',
+      '(function(){',
+      'var previewId=' + previewIdJson + ';',
+      'var statusEl=document.getElementById("censup-sp-status");',
+      'var uploadBtn=document.getElementById("censup-sp-upload");',
+      'var printBtn=document.getElementById("censup-sp-print");',
+      'function setStatus(msg,ready){if(statusEl)statusEl.textContent=msg||"";if(uploadBtn)uploadBtn.disabled=!ready;}',
+      'if(printBtn)printBtn.onclick=function(){try{window.print()}catch(e){}};',
+      'if(uploadBtn)uploadBtn.onclick=function(){',
+      'setStatus("Enviando ao SharePoint…",false);',
+      'try{if(window.opener){window.opener.postMessage({source:"censup-sp-preview",type:"CENSUP_SP_UPLOAD_CLICK",previewId:previewId},"*");}}catch(e){}',
+      '};',
+      'window.addEventListener("message",function(ev){',
+      'var d=ev&&ev.data;if(!d||d.source!=="censup-workbench")return;',
+      'if(d.type!=="CENSUP_SP_STATUS"||String(d.previewId)!==previewId)return;',
+      'var phase=d.phase||"";',
+      'setStatus(d.message||"",phase==="ready"||phase==="done");',
+      'if(phase==="done"&&uploadBtn){uploadBtn.textContent="Salvo no SharePoint";uploadBtn.disabled=true;}',
+      'if(phase==="error"&&uploadBtn)uploadBtn.disabled=false;',
+      '});',
+      'try{document.title=' + titleJson + ';}catch(e){}',
+      'try{if(window.opener){window.opener.postMessage({source:"censup-sp-preview",type:"CENSUP_SP_PREVIEW_READY",previewId:previewId},"*");}}catch(e){}',
+      '})();',
+      '</scr' + 'ipt>'
+    ].join('\n');
     const html = String(reportHtml || '');
     if (/<\/body>/i.test(html)) {
       return html.replace(/<\/body>/i, `${bar}</body>`);
