@@ -854,7 +854,7 @@
     return `${html}${bar}`;
   }
 
-  function openSharePointPreview(reportHtml, { fileName, ensureMeta = null } = {}) {
+  function openSharePointPreview(reportHtml, { fileName, ensureMeta = null, autoPrepare = true } = {}) {
     const previewId = `sp${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
     const titleMarker = `CENSUP:${previewId}`;
     let pdfName = String(fileName || 'VI ALA - relatório.pdf').trim();
@@ -876,9 +876,8 @@
     spPreviewWindows.set(previewId, win);
     setTimeout(() => URL.revokeObjectURL(url), 60_000);
 
-    const meta = ensureMeta || lastSpEnsureMeta || {};
-    // Aguarda a aba setar o title; a extensão acha pelo marcador e gera o PDF
-    setTimeout(() => {
+    const requestPrepare = (metaOverride = null) => {
+      const meta = metaOverride || ensureMeta || lastSpEnsureMeta || {};
       postToParent('REPORT_PREVIEW_PREPARE', {
         previewId,
         titleMarker,
@@ -887,9 +886,14 @@
         dayServerRelativeUrl: meta.dayServerRelativeUrl || '',
         folderUrl: meta.folderUrl || ''
       });
-    }, 400);
+    };
 
-    return { previewId, fileName: pdfName, win };
+    if (autoPrepare) {
+      // Title da aba precisa existir para a extensão achar o printToPDF
+      setTimeout(() => requestPrepare(), 250);
+    }
+
+    return { previewId, fileName: pdfName, titleMarker, win, requestPrepare };
   }
 
   function notifySpPreview(previewId, payload) {
@@ -1667,38 +1671,46 @@
       saving = true;
       error = '';
       statusMsg = backupSharePoint
-        ? 'Preparando pastas no SharePoint…'
+        ? 'Preparando relatório…'
         : 'Salvando relatório no Portal…';
     }
     try {
-      // Salvar PDF: cria pastas mês/dia ANTES de montar o HTML (mais rápido + pasta do dia já existe)
       let doSharePointBackup = backupSharePoint === true;
-      if (doSharePointBackup) {
-        const ensure = await requestSharePointBackupEnsure();
-        if (ensure?.cancelled) {
-          doSharePointBackup = false;
-          statusMsg = 'Backup SharePoint cancelado — salvando só no Portal…';
-        } else if (ensure?.skipped && !ensure?.ok) {
-          doSharePointBackup = false;
-          error =
-            ensure?.error ||
-            'Configure o link de Backup Consultas em Configurações → Backup Relatórios.';
-          statusMsg = '';
-          // Continua salvando no Portal
-        } else if (!ensure?.ok) {
-          throw new Error(ensure?.error || 'Falha ao preparar pastas no SharePoint');
-        } else {
-          statusMsg = `Pastas OK (${ensure.dayFolderName || 'dia'}) — preparando relatório…`;
-          lastSpEnsureMeta = {
-            webUrl: ensure.webUrl || '',
-            dayServerRelativeUrl: ensure.dayServerRelativeUrl || '',
-            folderUrl: ensure.folderUrl || '',
-            dayFolderName: ensure.dayFolderName || ''
-          };
-        }
-      }
 
-      if (!mapPreviewImage && typeof viabilidadeRef?.refreshWorkbenchMapPreview === 'function') {
+      // Pastas SharePoint em paralelo (não bloqueia a prévia — era a causa da demora)
+      const ensurePromise = doSharePointBackup
+        ? requestSharePointBackupEnsure()
+            .then((ensure) => {
+              if (ensure?.cancelled) {
+                doSharePointBackup = false;
+                return { ...ensure, _cancelled: true };
+              }
+              if (ensure?.skipped && !ensure?.ok) {
+                doSharePointBackup = false;
+                return { ...ensure, _skipped: true };
+              }
+              if (!ensure?.ok) {
+                throw new Error(ensure?.error || 'Falha ao preparar pastas no SharePoint');
+              }
+              lastSpEnsureMeta = {
+                webUrl: ensure.webUrl || '',
+                dayServerRelativeUrl: ensure.dayServerRelativeUrl || '',
+                folderUrl: ensure.folderUrl || '',
+                dayFolderName: ensure.dayFolderName || ''
+              };
+              return ensure;
+            })
+            .catch((err) => {
+              throw err;
+            })
+        : Promise.resolve(null);
+
+      // Só captura mapa se ainda não tiver prévia (igual Gerar PDF)
+      if (
+        doSharePointBackup &&
+        !mapPreviewImage &&
+        typeof viabilidadeRef?.refreshWorkbenchMapPreview === 'function'
+      ) {
         capturingMapPreview = true;
         try {
           const preview = await viabilidadeRef.refreshWorkbenchMapPreview();
@@ -1712,9 +1724,7 @@
       let fileNameForBackup = null;
       let geradoEmSave = geradoEm;
 
-      // Salvar PDF: monta o HTML do relatório (sem abrir impressão) para Portal + SharePoint
       if (doSharePointBackup && !htmlForSave && viabilidadeRef?.generateWorkbenchReport) {
-        statusMsg = 'Preparando relatório…';
         if (typeof viabilidadeRef.syncWorkbenchAddressFromMap === 'function') {
           const pinAddr = await viabilidadeRef.syncWorkbenchAddressFromMap();
           if (pinAddr) applyMapAddressToForm(pinAddr);
@@ -1728,9 +1738,6 @@
         fileNameForBackup = built?.pdfFileName || null;
         geradoEmSave = built?.geradoEm || geradoEmSave;
         if (built?.preview) mapPreviewImage = built.preview;
-        if (built?.viAla) {
-          statusMsg = `Salvando (${built.viAla})…`;
-        }
       }
 
       if (doSharePointBackup && !htmlForSave) {
@@ -1741,11 +1748,18 @@
 
       const targetId = chamadoId || pedidoKey;
 
+      // Prévia na hora (como Gerar PDF) — pastas/Portal continuam em paralelo
+      let previewHandle = null;
       if (doSharePointBackup && htmlForSave) {
-        statusMsg = 'Salvando no Portal e abrindo prévia…';
+        previewHandle = openSharePointPreview(htmlForSave, {
+          fileName: fileNameForBackup || 'VI ALA - relatório.pdf',
+          autoPrepare: false
+        });
+        statusMsg = 'Prévia aberta — gerando PDF…';
+        if (!silent) showInfoModal = false;
       }
 
-      const response = await fetch(
+      const portalPromise = fetch(
         getApiUrl(`/api/portal-censup/chamados/${encodeURIComponent(targetId)}/relatorio`),
         {
           method: 'POST',
@@ -1759,6 +1773,31 @@
           })
         }
       );
+
+      // printToPDF logo após a aba abrir (pastas seguem em paralelo — não bloqueiam)
+      if (previewHandle?.requestPrepare) {
+        setTimeout(() => previewHandle.requestPrepare(), 200);
+      }
+
+      const [ensureResult, response] = await Promise.all([ensurePromise, portalPromise]);
+
+      if (ensureResult?._cancelled) {
+        statusMsg = 'Backup SharePoint cancelado — relatório salvo só no Portal';
+        notifySpPreview(previewHandle?.previewId, {
+          phase: 'error',
+          message: 'Backup cancelado. Relatório ficou só no Portal.'
+        });
+      } else if (ensureResult?._skipped) {
+        error =
+          ensureResult?.error ||
+          'Configure o link de Backup Consultas em Configurações → Backup Relatórios.';
+        statusMsg = '';
+        notifySpPreview(previewHandle?.previewId, {
+          phase: 'error',
+          message: error
+        });
+      }
+
       const data = await response.json().catch(() => ({}));
       if (!response.ok || !data.success) {
         throw new Error(data.error || `Falha ao salvar relatório (${response.status})`);
@@ -1767,9 +1806,9 @@
       if (chamado?.id) {
         chamadoId = String(chamado.id);
       }
-      if (!silent) {
+      if (!silent && !error) {
         statusMsg = doSharePointBackup
-          ? 'Relatório salvo — abrindo prévia para enviar ao SharePoint…'
+          ? 'Prévia aberta — aguarde «PDF pronto» e envie ao SharePoint'
           : 'Relatório salvo no arquivo do Portal';
       }
       postToParent('REPORT_SAVED', {
@@ -1778,15 +1817,6 @@
         corrected: data.corrected === true,
         silent: silent === true
       });
-
-      // SharePoint: prévia HTML + printToPDF + botão Enviar (PDF real, ~10–15s no upload)
-      if (doSharePointBackup && htmlForSave) {
-        openSharePointPreview(htmlForSave, {
-          fileName: fileNameForBackup || 'VI ALA - relatório.pdf',
-          ensureMeta: lastSpEnsureMeta
-        });
-        statusMsg = 'Prévia aberta — aguarde o PDF e clique em «Enviar ao SharePoint»';
-      }
     } catch (err) {
       if (!silent) {
         error = err?.message || String(err);
