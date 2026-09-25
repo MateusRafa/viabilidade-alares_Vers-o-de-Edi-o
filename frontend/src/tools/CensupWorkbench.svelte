@@ -1423,17 +1423,18 @@
         ? `PDF gerado (${result.viAla})`
         : 'PDF gerado (modelo Viabilidade Alares)';
       showInfoModal = false;
-      postToParent('REPORT_GENERATED', {
-        chamadoId: chamadoId || null,
-        viAla: result?.viAla || null,
-        pdfHtml: result?.htmlContent || null,
-        fileName: result?.pdfFileName || null
-      });
-      // Por trás: cria/finaliza no Portal (mesmo sem chamadoId prévio)
+      // Gerar PDF: Portal + download local — sem backup SharePoint
+      if (chamadoId) {
+        postToParent('REPORT_GENERATED', {
+          chamadoId,
+          viAla: result?.viAla || null
+        });
+      }
       void salvarRelatorio({
         silent: true,
         pdfHtml: result?.htmlContent || null,
-        geradoEm: result?.geradoEm || null
+        geradoEm: result?.geradoEm || null,
+        backupSharePoint: false
       });
     } catch (err) {
       error = err?.message || String(err);
@@ -1446,13 +1447,18 @@
   }
 
   async function onSalvarRelatorioSubmit() {
-    await salvarRelatorio();
+    await salvarRelatorio({ backupSharePoint: true });
     if (!error) {
       showInfoModal = false;
     }
   }
 
-  async function salvarRelatorio({ silent = false, pdfHtml = null, geradoEm = null } = {}) {
+  async function salvarRelatorio({
+    silent = false,
+    pdfHtml = null,
+    geradoEm = null,
+    backupSharePoint = false
+  } = {}) {
     const pedidoKey = String(form.numeroALA || workbenchSeed?.pedido || chamadoId || '')
       .replace(/\D/g, '')
       .trim();
@@ -1463,7 +1469,9 @@
     if (!silent) {
       saving = true;
       error = '';
-      statusMsg = 'Salvando relatório no Portal…';
+      statusMsg = backupSharePoint
+        ? 'Salvando relatório no Portal e SharePoint…'
+        : 'Salvando relatório no Portal…';
     }
     try {
       if (!mapPreviewImage && typeof viabilidadeRef?.refreshWorkbenchMapPreview === 'function') {
@@ -1473,6 +1481,31 @@
           if (preview) mapPreviewImage = preview;
         } finally {
           capturingMapPreview = false;
+        }
+      }
+
+      let htmlForSave = pdfHtml;
+      let fileNameForBackup = null;
+      let geradoEmSave = geradoEm;
+
+      // Salvar PDF: monta o HTML do relatório (sem abrir impressão) para Portal + SharePoint
+      if (backupSharePoint && !htmlForSave && viabilidadeRef?.generateWorkbenchReport) {
+        statusMsg = 'Preparando relatório…';
+        if (typeof viabilidadeRef.syncWorkbenchAddressFromMap === 'function') {
+          const pinAddr = await viabilidadeRef.syncWorkbenchAddressFromMap();
+          if (pinAddr) applyMapAddressToForm(pinAddr);
+        }
+        const built = await viabilidadeRef.generateWorkbenchReport({
+          ...buildReportPayload(),
+          previewImage: mapPreviewImage || undefined,
+          skipPrint: true
+        });
+        htmlForSave = built?.htmlContent || null;
+        fileNameForBackup = built?.pdfFileName || null;
+        geradoEmSave = built?.geradoEm || geradoEmSave;
+        if (built?.preview) mapPreviewImage = built.preview;
+        if (built?.viAla) {
+          statusMsg = `Salvando (${built.viAla})…`;
         }
       }
 
@@ -1486,8 +1519,8 @@
             ...buildReportPayload(),
             persist: true,
             seed: workbenchSeed || undefined,
-            ...(pdfHtml ? { pdfHtml } : {}),
-            ...(geradoEm ? { geradoEm } : {})
+            ...(htmlForSave ? { pdfHtml: htmlForSave } : {}),
+            ...(geradoEmSave ? { geradoEm: geradoEmSave } : {})
           })
         }
       );
@@ -1500,7 +1533,9 @@
         chamadoId = String(chamado.id);
       }
       if (!silent) {
-        statusMsg = 'Relatório salvo no arquivo do Portal';
+        statusMsg = backupSharePoint
+          ? 'Relatório salvo no Portal — enviando ao SharePoint…'
+          : 'Relatório salvo no arquivo do Portal';
       }
       postToParent('REPORT_SAVED', {
         chamadoId: chamadoId || chamado?.id || targetId,
@@ -1508,6 +1543,14 @@
         corrected: data.corrected === true,
         silent: silent === true
       });
+      if (backupSharePoint && htmlForSave) {
+        postToParent('REPORT_BACKUP_SHAREPOINT', {
+          chamadoId: chamadoId || chamado?.id || targetId,
+          viAla: chamado?.viAla || null,
+          pdfHtml: htmlForSave,
+          fileName: fileNameForBackup
+        });
+      }
     } catch (err) {
       if (!silent) {
         error = err?.message || String(err);
@@ -2073,7 +2116,7 @@
           <div class="wb-modal-actions">
             <button type="button" class="wb-modal-btn-cancel" on:click={closeInfoModal}>Cancelar</button>
             <button type="submit" class="wb-modal-btn-save" disabled={saving || loading || !(form.numeroALA || '').trim()}>
-              {saving ? 'Salvando…' : 'Salvar Relatório'}
+              {saving ? 'Salvando…' : 'Salvar PDF'}
             </button>
             <button
               type="button"
