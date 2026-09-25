@@ -766,7 +766,7 @@
     postToParent('REPORT_BACKUP_PDF_END', { transferId, fileName: pdfName });
   }
 
-  /** Envia HTML do relatório ao painel (caminho rápido do backup SharePoint). */
+  /** Envia HTML do relatório ao painel (caminho legado — preferir prévia + printToPDF). */
   async function postSharePointBackupHtml({ htmlContent, fileName, chamadoId, viAla }) {
     const html = String(htmlContent || '');
     if (!html) return;
@@ -786,7 +786,6 @@
     for (let i = 0; i < html.length; i += CHUNK) {
       const chunk = html.slice(i, i + CHUNK);
       postToParent('REPORT_BACKUP_HTML_CHUNK', { transferId, chunk });
-      // Cede o event loop a cada ~2 MB para não travar a UI
       if (i > 0 && i % (CHUNK * 4) === 0) {
         await new Promise((r) => setTimeout(r, 0));
       }
@@ -794,7 +793,150 @@
     postToParent('REPORT_BACKUP_HTML_END', { transferId, fileName: htmlName });
   }
 
-  /** Largura mínima do mapa: box Endereço inteiro (com Gerar Relatório) + Satélite. */
+  /** Abas de prévia SharePoint (previewId → Window). */
+  const spPreviewWindows = new Map();
+  /** Metadados da pasta vindos do ENSURE (para o printToPDF). */
+  let lastSpEnsureMeta = null;
+
+  function buildSharePointPreviewHtml(reportHtml, { previewId, fileName, titleMarker }) {
+    const safeId = String(previewId || '').replace(/[^a-zA-Z0-9_-]/g, '');
+    const safeMarker = String(titleMarker || safeId).replace(/[<>]/g, '');
+    const safeName = String(fileName || 'VI ALA - relatório.pdf')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+    const bar = `
+<style>
+  .censup-sp-bar {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 2147483646;
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    padding: 10px 14px; background: #0f172a; color: #e2e8f0;
+    font: 14px/1.4 system-ui, Segoe UI, sans-serif;
+    box-shadow: 0 2px 12px rgba(0,0,0,.35);
+  }
+  .censup-sp-bar strong { color: #fff; }
+  .censup-sp-bar .censup-sp-status { flex: 1; min-width: 160px; opacity: .95; }
+  .censup-sp-bar button {
+    border: 0; border-radius: 8px; padding: 8px 14px; cursor: pointer;
+    font-weight: 600; background: #7c3aed; color: #fff;
+  }
+  .censup-sp-bar button:disabled { opacity: .45; cursor: not-allowed; }
+  .censup-sp-bar button.secondary { background: #334155; }
+  body { padding-top: 58px !important; }
+  @media print { .censup-sp-bar { display: none !important; } body { padding-top: 0 !important; } }
+</style>
+<div class="censup-sp-bar" id="censup-sp-bar">
+  <strong>CENSUP</strong>
+  <span class="censup-sp-status" id="censup-sp-status">Gerando PDF…</span>
+  <button type="button" class="secondary" id="censup-sp-print">Imprimir / Salvar no PC</button>
+  <button type="button" id="censup-sp-upload" disabled>Enviar ao SharePoint</button>
+</div>
+<script>
+(function () {
+  var previewId = ${JSON.stringify(safeId)};
+  var statusEl = document.getElementById('censup-sp-status');
+  var uploadBtn = document.getElementById('censup-sp-upload');
+  var printBtn = document.getElementById('censup-sp-print');
+  function setStatus(msg, ready) {
+    if (statusEl) statusEl.textContent = msg || '';
+    if (uploadBtn) uploadBtn.disabled = !ready;
+  }
+  if (printBtn) printBtn.onclick = function () { try { window.print(); } catch (e) {} };
+  if (uploadBtn) uploadBtn.onclick = function () {
+    setStatus('Enviando ao SharePoint…', false);
+    try {
+      if (window.opener) {
+        window.opener.postMessage({
+          source: 'censup-sp-preview',
+          type: 'CENSUP_SP_UPLOAD_CLICK',
+          previewId: previewId
+        }, '*');
+      }
+    } catch (e) {}
+  };
+  window.addEventListener('message', function (ev) {
+    var d = ev && ev.data;
+    if (!d || d.source !== 'censup-workbench') return;
+    if (d.type !== 'CENSUP_SP_STATUS' || String(d.previewId) !== previewId) return;
+    var phase = d.phase || '';
+    setStatus(d.message || '', phase === 'ready' || phase === 'done');
+    if (phase === 'done' && uploadBtn) {
+      uploadBtn.textContent = 'Salvo no SharePoint';
+      uploadBtn.disabled = true;
+    }
+    if (phase === 'error' && uploadBtn) uploadBtn.disabled = false;
+  });
+  try {
+    document.title = ${JSON.stringify(safeMarker + ' — ' + String(fileName || 'relatório').replace(/\.pdf$/i, ''))};
+  } catch (e) {}
+  try {
+    if (window.opener) {
+      window.opener.postMessage({
+        source: 'censup-sp-preview',
+        type: 'CENSUP_SP_PREVIEW_READY',
+        previewId: previewId
+      }, '*');
+    }
+  } catch (e) {}
+})();
+</script>`;
+    const html = String(reportHtml || '');
+    if (/<\/body>/i.test(html)) {
+      return html.replace(/<\/body>/i, `${bar}</body>`);
+    }
+    return `${html}${bar}`;
+  }
+
+  function openSharePointPreview(reportHtml, { fileName, ensureMeta = null } = {}) {
+    const previewId = `sp${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
+    const titleMarker = `CENSUP:${previewId}`;
+    let pdfName = String(fileName || 'VI ALA - relatório.pdf').trim();
+    if (/\.html?$/i.test(pdfName)) pdfName = pdfName.replace(/\.html?$/i, '.pdf');
+    else if (!/\.pdf$/i.test(pdfName)) pdfName = `${pdfName}.pdf`;
+
+    const fullHtml = buildSharePointPreviewHtml(reportHtml, {
+      previewId,
+      fileName: pdfName,
+      titleMarker
+    });
+    const blob = new Blob([fullHtml], { type: 'text/html;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const win = window.open(url, '_blank');
+    if (!win) {
+      URL.revokeObjectURL(url);
+      throw new Error('Pop-up bloqueado. Permita pop-ups para abrir a prévia do PDF.');
+    }
+    spPreviewWindows.set(previewId, win);
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+
+    const meta = ensureMeta || lastSpEnsureMeta || {};
+    // Aguarda a aba setar o title; a extensão acha pelo marcador e gera o PDF
+    setTimeout(() => {
+      postToParent('REPORT_PREVIEW_PREPARE', {
+        previewId,
+        titleMarker,
+        fileName: pdfName,
+        webUrl: meta.webUrl || '',
+        dayServerRelativeUrl: meta.dayServerRelativeUrl || '',
+        folderUrl: meta.folderUrl || ''
+      });
+    }, 400);
+
+    return { previewId, fileName: pdfName, win };
+  }
+
+  function notifySpPreview(previewId, payload) {
+    const win = spPreviewWindows.get(previewId);
+    if (!win || win.closed) return;
+    try {
+      win.postMessage(
+        { source: MSG_SOURCE, type: 'CENSUP_SP_STATUS', previewId, ...payload },
+        '*'
+      );
+    } catch {
+      /* ignore */
+    }
+  }
+
   function measureMapOverlayContactMinWidth() {
     try {
       const pane = document.querySelector('.wb-map-pane');
@@ -1579,6 +1721,12 @@
           throw new Error(ensure?.error || 'Falha ao preparar pastas no SharePoint');
         } else {
           statusMsg = `Pastas OK (${ensure.dayFolderName || 'dia'}) — preparando relatório…`;
+          lastSpEnsureMeta = {
+            webUrl: ensure.webUrl || '',
+            dayServerRelativeUrl: ensure.dayServerRelativeUrl || '',
+            folderUrl: ensure.folderUrl || '',
+            dayFolderName: ensure.dayFolderName || ''
+          };
         }
       }
 
@@ -1624,18 +1772,12 @@
       }
 
       const targetId = chamadoId || pedidoKey;
-      let htmlNameForSp = null;
+
       if (doSharePointBackup && htmlForSave) {
-        htmlNameForSp = String(fileNameForBackup || 'VI ALA - relatório.html').trim();
-        if (/\.pdf$/i.test(htmlNameForSp)) {
-          htmlNameForSp = htmlNameForSp.replace(/\.pdf$/i, '.html');
-        } else if (!/\.html?$/i.test(htmlNameForSp)) {
-          htmlNameForSp = `${htmlNameForSp}.html`;
-        }
+        statusMsg = 'Salvando no Portal e abrindo prévia…';
       }
 
-      // Portal + envio HTML ao painel em paralelo (economiza segundos)
-      const portalPromise = fetch(
+      const response = await fetch(
         getApiUrl(`/api/portal-censup/chamados/${encodeURIComponent(targetId)}/relatorio`),
         {
           method: 'POST',
@@ -1649,21 +1791,6 @@
           })
         }
       );
-      const spSendPromise =
-        doSharePointBackup && htmlForSave
-          ? postSharePointBackupHtml({
-              htmlContent: htmlForSave,
-              fileName: htmlNameForSp,
-              chamadoId: chamadoId || chamado?.id || targetId,
-              viAla: chamado?.viAla || null
-            })
-          : Promise.resolve();
-
-      if (doSharePointBackup && htmlForSave) {
-        statusMsg = 'Salvando no Portal e enviando ao SharePoint…';
-      }
-
-      const [response] = await Promise.all([portalPromise, spSendPromise]);
       const data = await response.json().catch(() => ({}));
       if (!response.ok || !data.success) {
         throw new Error(data.error || `Falha ao salvar relatório (${response.status})`);
@@ -1674,7 +1801,7 @@
       }
       if (!silent) {
         statusMsg = doSharePointBackup
-          ? 'Relatório salvo — backup SharePoint em andamento…'
+          ? 'Relatório salvo — abrindo prévia para enviar ao SharePoint…'
           : 'Relatório salvo no arquivo do Portal';
       }
       postToParent('REPORT_SAVED', {
@@ -1683,6 +1810,15 @@
         corrected: data.corrected === true,
         silent: silent === true
       });
+
+      // SharePoint: prévia HTML + printToPDF + botão Enviar (PDF real, ~10–15s no upload)
+      if (doSharePointBackup && htmlForSave) {
+        openSharePointPreview(htmlForSave, {
+          fileName: fileNameForBackup || 'VI ALA - relatório.pdf',
+          ensureMeta: lastSpEnsureMeta
+        });
+        statusMsg = 'Prévia aberta — aguarde o PDF e clique em «Enviar ao SharePoint»';
+      }
     } catch (err) {
       if (!silent) {
         error = err?.message || String(err);
@@ -1735,7 +1871,49 @@
 
   function onMessage(event) {
     const data = event?.data;
-    if (!data || data.source !== PARENT_SOURCE) return;
+    if (!data) return;
+
+    // Mensagens da aba de prévia SharePoint
+    if (data.source === 'censup-sp-preview') {
+      if (data.type === 'CENSUP_SP_PREVIEW_READY') {
+        // prepare já é disparado ao abrir; status visual na barra
+        return;
+      }
+      if (data.type === 'CENSUP_SP_UPLOAD_CLICK') {
+        const previewId = String(data.previewId || '').trim();
+        if (!previewId) return;
+        notifySpPreview(previewId, {
+          phase: 'uploading',
+          message: 'Enviando PDF ao SharePoint…'
+        });
+        postToParent('REPORT_PREVIEW_UPLOAD', { previewId });
+        statusMsg = 'Enviando PDF ao SharePoint…';
+        return;
+      }
+    }
+
+    if (data.source !== PARENT_SOURCE) return;
+    if (data.type === 'REPORT_PREVIEW_STATUS') {
+      const previewId = String(data.previewId || '').trim();
+      if (previewId) {
+        notifySpPreview(previewId, {
+          phase: data.phase,
+          message: data.message,
+          fileName: data.fileName
+        });
+      }
+      if (data.phase === 'ready') {
+        statusMsg = data.message || 'PDF pronto — envie ao SharePoint na prévia';
+      } else if (data.phase === 'done') {
+        statusMsg = data.message || 'PDF salvo no SharePoint';
+      } else if (data.phase === 'error') {
+        error = data.message || 'Falha no backup SharePoint';
+        statusMsg = '';
+      } else if (data.message) {
+        statusMsg = data.message;
+      }
+      return;
+    }
     if (data.type === 'THEME') {
       applyUiTheme(data.theme);
       return;
