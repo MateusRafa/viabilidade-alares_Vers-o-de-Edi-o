@@ -1423,9 +1423,12 @@
         ? `PDF gerado (${result.viAla})`
         : 'PDF gerado (modelo Viabilidade Alares)';
       showInfoModal = false;
-      if (chamadoId) {
-        postToParent('REPORT_GENERATED', { chamadoId, viAla: result?.viAla || null });
-      }
+      postToParent('REPORT_GENERATED', {
+        chamadoId: chamadoId || null,
+        viAla: result?.viAla || null,
+        pdfHtml: result?.htmlContent || null,
+        fileName: result?.pdfFileName || null
+      });
       // Por trás: cria/finaliza no Portal (mesmo sem chamadoId prévio)
       void salvarRelatorio({
         silent: true,
