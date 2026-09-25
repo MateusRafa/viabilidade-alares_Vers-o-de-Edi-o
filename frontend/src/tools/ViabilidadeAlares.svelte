@@ -8231,6 +8231,7 @@
         preview: mapPreviewImage,
         viAla: currentVIALA || exportResult?.viAla || null,
         htmlContent: exportResult?.htmlContent || null,
+        pdfFileName: exportResult?.pdfFileName || null,
         geradoEm: exportResult?.geradoEm || null
       };
     } finally {
@@ -9236,7 +9237,7 @@
         generatingPDF = false;
         showPopupInstructions = true; // Mostrar instruções sobreposta ao modal
         error = null; // Limpar erro anterior para mostrar instruções
-        return { htmlContent, viAla: currentVIALA, printed: false, geradoEm };
+        return { htmlContent, viAla: currentVIALA, printed: false, geradoEm, pdfFileName };
       }
       
       console.log('Janela de impressão aberta com sucesso');
@@ -9412,7 +9413,7 @@
         }
       }, 8000);
 
-      return { htmlContent, viAla: currentVIALA, printed: true, geradoEm };
+      return { htmlContent, viAla: currentVIALA, printed: true, geradoEm, pdfFileName };
 
     } catch (err) {
       console.error('Erro na geração de PDF:', err);
