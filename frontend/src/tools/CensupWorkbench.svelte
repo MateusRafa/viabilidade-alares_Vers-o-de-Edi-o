@@ -854,6 +854,19 @@
     return `${html}${bar}`;
   }
 
+  function ensurePreviewTitleMarker(html, titleMarker) {
+    const marker = String(titleMarker || '').replace(/[<>]/g, '');
+    const titleTag = `<title>${marker}</title>`;
+    const raw = String(html || '');
+    if (/<title[^>]*>[\s\S]*?<\/title>/i.test(raw)) {
+      return raw.replace(/<title[^>]*>[\s\S]*?<\/title>/i, titleTag);
+    }
+    if (/<head[^>]*>/i.test(raw)) {
+      return raw.replace(/<head[^>]*>/i, (m) => `${m}\n${titleTag}`);
+    }
+    return `${titleTag}${raw}`;
+  }
+
   function openSharePointPreview(reportHtml, { fileName, ensureMeta = null, autoPrepare = true } = {}) {
     const previewId = `sp${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
     const titleMarker = `CENSUP:${previewId}`;
@@ -861,20 +874,36 @@
     if (/\.html?$/i.test(pdfName)) pdfName = pdfName.replace(/\.html?$/i, '.pdf');
     else if (!/\.pdf$/i.test(pdfName)) pdfName = `${pdfName}.pdf`;
 
-    const fullHtml = buildSharePointPreviewHtml(reportHtml, {
+    let fullHtml = buildSharePointPreviewHtml(reportHtml, {
       previewId,
       fileName: pdfName,
       titleMarker
     });
-    const blob = new Blob([fullHtml], { type: 'text/html;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const win = window.open(url, '_blank');
+    fullHtml = ensurePreviewTitleMarker(fullHtml, titleMarker);
+
+    // Mesmo caminho do Gerar PDF (about:blank + write) — blob: atrapalha o debugger/printToPDF
+    const win = window.open('about:blank', '_blank');
     if (!win) {
-      URL.revokeObjectURL(url);
       throw new Error('Pop-up bloqueado. Permita pop-ups para abrir a prévia do PDF.');
     }
+    try {
+      win.document.open();
+      win.document.write(fullHtml);
+      win.document.close();
+      try {
+        win.document.title = titleMarker;
+      } catch {
+        /* ignore */
+      }
+    } catch (err) {
+      try {
+        win.close();
+      } catch {
+        /* ignore */
+      }
+      throw new Error(err?.message || 'Falha ao abrir a prévia do PDF.');
+    }
     spPreviewWindows.set(previewId, win);
-    setTimeout(() => URL.revokeObjectURL(url), 60_000);
 
     const requestPrepare = (metaOverride = null) => {
       const meta = metaOverride || ensureMeta || lastSpEnsureMeta || {};
@@ -889,8 +918,7 @@
     };
 
     if (autoPrepare) {
-      // Title da aba precisa existir para a extensão achar o printToPDF
-      setTimeout(() => requestPrepare(), 250);
+      setTimeout(() => requestPrepare(), 300);
     }
 
     return { previewId, fileName: pdfName, titleMarker, win, requestPrepare };
