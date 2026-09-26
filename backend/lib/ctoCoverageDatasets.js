@@ -19,21 +19,21 @@ export async function isDatasetStagingEnabled(client) {
 
   try {
     const { error } = await client.from('data_datasets').select('id').limit(1);
-    featureCache = {
-      checkedAt: now,
-      enabled: !error || !/does not exist|PGRST/i.test(error.message || '')
-    };
-    if (error && /does not exist/i.test(error.message || '')) {
-      featureCache.enabled = false;
-    } else if (!error) {
-      featureCache.enabled = true;
-    } else if (error.code === 'PGRST116') {
-      featureCache.enabled = true;
-    } else if (error.code === '42P01') {
-      featureCache.enabled = false;
-    } else {
-      // tabela existe mas vazia / RLS etc.
-      featureCache.enabled = !/relation .* does not exist/i.test(error.message || '');
+    if (!error) {
+      featureCache = { checkedAt: now, enabled: true };
+      return true;
+    }
+    const msg = String(error.message || error.code || '');
+    // PostgREST: tabela inexistente / schema cache / PGRST205 etc.
+    const missing =
+      error.code === '42P01' ||
+      error.code === 'PGRST205' ||
+      /does not exist|schema cache|Could not find the table|relation .* does not exist/i.test(
+        msg
+      );
+    featureCache = { checkedAt: now, enabled: !missing };
+    if (missing) {
+      console.warn('ℹ️ [Datasets] Staging desligado (tabelas ausentes):', msg.slice(0, 120));
     }
   } catch (err) {
     featureCache = { checkedAt: now, enabled: false };
