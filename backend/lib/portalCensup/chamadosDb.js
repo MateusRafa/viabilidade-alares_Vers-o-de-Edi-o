@@ -51,9 +51,33 @@ function parseDataSituacao(value) {
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
+/** Campos que incham o JSONB (HTML/print e mapa base64) — não persistir. */
+const HEAVY_EXTRAS_KEYS = ['pdfHtml', 'mapPreviewImage', 'previewImage'];
+
+/**
+ * Remove HTML/print e imagens base64 antes de gravar no Supabase/JSON.
+ * Mantém metadados do relatório (tabulação, endereço, CTOs, etc.).
+ */
+export function stripHeavyPersistFields(chamado) {
+  if (!chamado || typeof chamado !== 'object') return chamado;
+  const next = { ...chamado };
+  for (const key of HEAVY_EXTRAS_KEYS) {
+    delete next[key];
+  }
+  if (next.relatorio && typeof next.relatorio === 'object') {
+    const rel = { ...next.relatorio };
+    for (const key of HEAVY_EXTRAS_KEYS) {
+      delete rel[key];
+    }
+    next.relatorio = rel;
+  }
+  return next;
+}
+
 export function chamadoToRow(chamado) {
+  const light = stripHeavyPersistFields(chamado);
   const extras = {};
-  for (const [key, value] of Object.entries(chamado || {})) {
+  for (const [key, value] of Object.entries(light || {})) {
     if (!CORE_KEYS.has(key) && value !== undefined) extras[key] = value;
   }
 
@@ -66,37 +90,37 @@ export function chamadoToRow(chamado) {
 
   // Preserva texto BR da Agenda mesmo se data_situacao for gravado em ISO
   const rawAgenda =
-    clean(chamado.dataSituacaoRaw) ||
-    (typeof chamado.dataSituacao === 'string' && /\d{2}\/\d{2}\/\d{4}/.test(chamado.dataSituacao)
-      ? clean(chamado.dataSituacao)
+    clean(light.dataSituacaoRaw) ||
+    (typeof light.dataSituacao === 'string' && /\d{2}\/\d{2}\/\d{4}/.test(light.dataSituacao)
+      ? clean(light.dataSituacao)
       : null);
   if (rawAgenda && !extras.dataSituacaoRaw) {
     extras.dataSituacaoRaw = rawAgenda;
   }
 
   return {
-    id: chamado.id,
-    agenda_code: clean(chamado.agendaCode),
-    pedido: chamado.pedido != null ? String(chamado.pedido) : null,
-    uf: clean(chamado.uf),
-    cidade: clean(chamado.cidade),
-    sistema: clean(chamado.sistema),
-    pdv: clean(chamado.pdv),
-    motivo: clean(chamado.motivo),
-    situacao: clean(chamado.situacao),
-    data_situacao: parseDataSituacao(chamado.dataSituacao || rawAgenda),
-    endereco: chamado.endereco && typeof chamado.endereco === 'object' ? chamado.endereco : {},
-    mapa_coords: chamado.mapaCoords || null,
-    mapa_referencias: Array.isArray(chamado.mapaReferencias) ? chamado.mapaReferencias : [],
-    origem: chamado.origem || 'extensao',
-    agenda_url: chamado.agendaUrl || null,
-    fila_status: chamado.filaStatus || 'na_fila',
-    tabulacao_status: chamado.tabulacaoStatus || 'aguardando_analise',
-    tabulacao_final: clean(chamado.tabulacaoFinal),
-    pdf_path: chamado.pdfPath || null,
+    id: light.id,
+    agenda_code: clean(light.agendaCode),
+    pedido: light.pedido != null ? String(light.pedido) : null,
+    uf: clean(light.uf),
+    cidade: clean(light.cidade),
+    sistema: clean(light.sistema),
+    pdv: clean(light.pdv),
+    motivo: clean(light.motivo),
+    situacao: clean(light.situacao),
+    data_situacao: parseDataSituacao(light.dataSituacao || rawAgenda),
+    endereco: light.endereco && typeof light.endereco === 'object' ? light.endereco : {},
+    mapa_coords: light.mapaCoords || null,
+    mapa_referencias: Array.isArray(light.mapaReferencias) ? light.mapaReferencias : [],
+    origem: light.origem || 'extensao',
+    agenda_url: light.agendaUrl || null,
+    fila_status: light.filaStatus || 'na_fila',
+    tabulacao_status: light.tabulacaoStatus || 'aguardando_analise',
+    tabulacao_final: clean(light.tabulacaoFinal),
+    pdf_path: light.pdfPath || null,
     extras,
     updated_at: new Date().toISOString(),
-    created_at: chamado.createdAt || new Date().toISOString()
+    created_at: light.createdAt || new Date().toISOString()
   };
 }
 
