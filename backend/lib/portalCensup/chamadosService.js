@@ -3,7 +3,7 @@ import path from 'path';
 import crypto from 'crypto';
 import { analisarLocalizacaoChamado } from './analiseLocalizacao.js';
 import { isPortalCensupSupabaseAvailable } from './supabaseCensup.js';
-import { dbFindChamado, dbListAllChamados, dbListChamadosNaFila, dbReconcileChamadosComAgenda, dbRestoreChamadosSalvosArquivados, dbUpsertChamado } from './chamadosDb.js';
+import { dbFindChamado, dbListAllChamados, dbListChamadosNaFila, dbReconcileChamadosComAgenda, dbRestoreChamadosSalvosArquivados, dbUpsertChamado, stripHeavyPersistFields } from './chamadosDb.js';
 import { peekAtribuicaoPedido } from './filaEsteira.js';
 
 const FAKE_SEED_ID = '5303036a-6e14-4ca1-b5a7-46207c301735';
@@ -860,7 +860,7 @@ export async function getChamadoById(id, { usuario } = {}) {
     }
   }
 
-  // Relatório finalizado: preservar o HTML/print salvo (não regenerar e perder o print do Workbench)
+  // Relatório finalizado: prévia montada sob demanda (não depende de pdfHtml no banco)
   const savedPdfHtml =
     chamado.relatorioSalvo && typeof chamado.pdfHtml === 'string' && chamado.pdfHtml.trim()
       ? chamado.pdfHtml
@@ -868,6 +868,7 @@ export async function getChamadoById(id, { usuario } = {}) {
 
   return {
     ...withPortalListLabels(chamado),
+    // Preferir HTML salvo legado se ainda existir; senão remontar (mapa estático leve)
     pdfHtml: savedPdfHtml || buildChamadoPdfHtml(chamado)
   };
 }
@@ -1055,33 +1056,39 @@ export async function upsertChamado(payload) {
     createdAt: previous.createdAt || now
   };
 
+  const toPersist = stripHeavyPersistFields(next);
+
   const store = await readStore();
   const existingIndex = store.chamados.findIndex(
-    (item) => item.id === id || (next.pedido && String(item.pedido) === String(next.pedido))
+    (item) => item.id === id || (toPersist.pedido && String(item.pedido) === String(toPersist.pedido))
   );
-  if (existingIndex >= 0) store.chamados[existingIndex] = { ...store.chamados[existingIndex], ...next };
-  else store.chamados.unshift(next);
+  if (existingIndex >= 0) {
+    store.chamados[existingIndex] = {
+      ...stripHeavyPersistFields(store.chamados[existingIndex]),
+      ...toPersist
+    };
+  } else store.chamados.unshift(toPersist);
   await writeStore(store);
 
   if (!isPortalCensupSupabaseAvailable()) {
     console.warn(
-      `⚠️ [PortalCENSUP] Pedido ${next.pedido} salvo só no JSON. Configure PORTAL_CENSUP_SUPABASE_URL e PORTAL_CENSUP_SUPABASE_SERVICE_KEY no backend Railway.`
+      `⚠️ [PortalCENSUP] Pedido ${toPersist.pedido} salvo só no JSON. Configure PORTAL_CENSUP_SUPABASE_URL e PORTAL_CENSUP_SUPABASE_SERVICE_KEY no backend Railway.`
     );
-    next.persistedToSupabase = false;
-    next.supabaseError =
+    toPersist.persistedToSupabase = false;
+    toPersist.supabaseError =
       'Supabase CENSUP não configurado neste processo. Confira as variáveis no serviço backend e faça Redeploy.';
-    return next;
+    return toPersist;
   }
 
   try {
-    const saved = await dbUpsertChamado(next);
-    console.log(`✅ [PortalCENSUP] Pedido ${next.pedido} gravado na tabela chamados do Supabase`);
-    return { ...(saved || next), persistedToSupabase: true };
+    const saved = await dbUpsertChamado(toPersist);
+    console.log(`✅ [PortalCENSUP] Pedido ${toPersist.pedido} gravado na tabela chamados do Supabase`);
+    return { ...(saved || toPersist), persistedToSupabase: true };
   } catch (err) {
-    console.error(`❌ [PortalCENSUP] Pedido ${next.pedido} NÃO gravou no Supabase:`, err.message);
-    next.persistedToSupabase = false;
-    next.supabaseError = err.message;
-    return next;
+    console.error(`❌ [PortalCENSUP] Pedido ${toPersist.pedido} NÃO gravou no Supabase:`, err.message);
+    toPersist.persistedToSupabase = false;
+    toPersist.supabaseError = err.message;
+    return toPersist;
   }
 }
 
@@ -1457,9 +1464,10 @@ export async function salvarRelatorioWorkbench(id, { usuario, report = {}, persi
   const clientPdfHtml = String(report.pdfHtml || '').trim();
   const resultadoFinal =
     resolveResultadoFinal({ tabulacaoFinal }) || 'reprovado';
-
-  const geradoEmDate = parseSituacaoDate(report.geradoEm || report.geradoEmAt || null);
-  const fechamentoIso = geradoEmDate ? geradoEmDate.toISOString() : new Date().toISOString();
+  const fechamentoIso = (() => {
+    const geradoEmDate = parseSituacaoDate(report.geradoEm || report.geradoEmAt || null);
+    return geradoEmDate ? geradoEmDate.toISOString() : new Date().toISOString();
+  })();
 
   const next = {
     ...chamado,
@@ -1482,6 +1490,7 @@ export async function salvarRelatorioWorkbench(id, { usuario, report = {}, persi
       ...(chamado.viabilidadeResumo || {}),
       projetista: projetista || chamado.viabilidadeResumo?.projetista || null
     },
+    // Mapa base64 só em memória para montar a resposta — NÃO vai para o banco
     ...(mapPreviewImage ? { mapPreviewImage } : {}),
     geradoEm: fechamentoIso,
     relatorioSalvoAt: fechamentoIso,
@@ -1495,13 +1504,13 @@ export async function salvarRelatorioWorkbench(id, { usuario, report = {}, persi
       projetista,
       resultadoFinal,
       savedAt: fechamentoIso,
-      savedBy: usuario || null,
-      ...(mapPreviewImage ? { mapPreviewImage } : {})
+      savedBy: usuario || null
+      // sem mapPreviewImage — economiza dezenas/centenas de MB no JSONB
     },
     updatedAt: fechamentoIso
   };
 
-  // Preferir HTML do print do Workbench; senão montar template com a prévia do mapa
+  // HTML completo só para a resposta (SharePoint/Workbench); persistência é leve
   const pdfHtml = clientPdfHtml || buildChamadoPdfHtml(next);
   next.pdfHtml = pdfHtml;
 
@@ -1517,7 +1526,8 @@ export async function salvarRelatorioWorkbench(id, { usuario, report = {}, persi
     next.relatorioSalvo = true;
     next.relatorioSalvoAt = fechamentoIso;
 
-    await upsertChamado(next);
+    // Grava metadados + CTOs/resumo; remove pdfHtml e mapa base64
+    await upsertChamado(stripHeavyPersistFields(next));
 
     if (corrected) {
       await registerFeedback(id, {
@@ -1542,7 +1552,9 @@ export async function salvarRelatorioWorkbench(id, { usuario, report = {}, persi
   }
 
   return {
-    chamado: persist ? await getChamadoById(id) : { ...next, pdfHtml },
+    chamado: persist
+      ? await getChamadoById(id)
+      : { ...stripHeavyPersistFields(next), pdfHtml },
     pdfHtml,
     corrected,
     persisted: persist === true
