@@ -3888,9 +3888,18 @@ app.get('/api/base-last-modified', async (req, res) => {
     const dbClient = supabasePrimary || (isSupabaseAvailable() ? supabase : null);
 
     if (dbClient) {
-      const activeDatasetId = (await isDatasetStagingEnabled(dbClient))
-        ? await getActiveDatasetId(dbClient)
-        : null;
+      let activeDatasetId = null;
+      try {
+        activeDatasetId = (await isDatasetStagingEnabled(dbClient))
+          ? await getActiveDatasetId(dbClient)
+          : null;
+      } catch (dsErr) {
+        console.warn(
+          '⚠️ [API] Dataset staging indisponível em base-last-modified:',
+          dsErr?.message || dsErr
+        );
+        activeDatasetId = null;
+      }
       // Primeiro verificar se existe dados na tabela ctos
       let countQuery = dbClient
         .from('ctos')
