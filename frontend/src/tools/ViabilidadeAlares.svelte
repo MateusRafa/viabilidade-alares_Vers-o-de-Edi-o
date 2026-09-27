@@ -2001,7 +2001,7 @@
       // Verificar se o Supabase está disponível fazendo uma busca simples
       const testLat = -23.5505; // Coordenada de teste (São Paulo)
       const testLng = -46.6333;
-      const response = await fetch(getApiUrl(`/api/ctos/nearby?lat=${testLat}&lng=${testLng}&radius=1000`), {
+      const response = await fetch(getApiUrl(`/api/ctos/nearby?lat=${testLat}&lng=${testLng}&radius=1000&probe=1`), {
         headers: apiFetchHeaders()
       });
       if (response.ok) {
