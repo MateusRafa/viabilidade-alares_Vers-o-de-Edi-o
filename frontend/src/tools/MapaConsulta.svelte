@@ -1023,7 +1023,7 @@
       baseDataExists = true; // Resetar estado
       try {
         // Verificar se há CTOs na base fazendo uma busca de teste
-        const testResponse = await fetch(getApiUrl('/api/ctos/nearby?lat=-23.5505&lng=-46.6333&radius=1000'));
+        const testResponse = await fetch(getApiUrl('/api/ctos/nearby?lat=-23.5505&lng=-46.6333&radius=1000&probe=1'));
         if (testResponse.ok) {
           const testData = await testResponse.json();
           baseDataExists = testData.success && testData.ctos && testData.ctos.length > 0;
