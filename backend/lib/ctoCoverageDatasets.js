@@ -42,12 +42,21 @@ export async function isDatasetStagingEnabled(client) {
   return featureCache.enabled;
 }
 
+const ACTIVE_ID_TTL_MS = 30_000;
+let activeIdCache = { checkedAt: 0, id: null };
+
 export function invalidateDatasetFeatureCache() {
   featureCache = { checkedAt: 0, enabled: false };
+  activeIdCache = { checkedAt: 0, id: null };
 }
 
 export async function getActiveDatasetId(client) {
   if (!(await isDatasetStagingEnabled(client))) return null;
+
+  const now = Date.now();
+  if (activeIdCache.id && now - activeIdCache.checkedAt < ACTIVE_ID_TTL_MS) {
+    return activeIdCache.id;
+  }
 
   const { data, error } = await client
     .from('app_runtime_config')
@@ -56,12 +65,17 @@ export async function getActiveDatasetId(client) {
     .maybeSingle();
 
   if (error) throw new Error(`getActiveDatasetId: ${error.message}`);
-  if (data?.value_uuid) return data.value_uuid;
+  let id = data?.value_uuid || null;
 
-  // Bootstrap via RPC se config vazia
-  const { data: rpcId, error: rpcErr } = await client.rpc('get_active_ctos_dataset_id');
-  if (rpcErr) throw new Error(`get_active_ctos_dataset_id: ${rpcErr.message}`);
-  return rpcId || null;
+  if (!id) {
+    // Bootstrap via RPC se config vazia
+    const { data: rpcId, error: rpcErr } = await client.rpc('get_active_ctos_dataset_id');
+    if (rpcErr) throw new Error(`get_active_ctos_dataset_id: ${rpcErr.message}`);
+    id = rpcId || null;
+  }
+
+  activeIdCache = { checkedAt: now, id };
+  return id;
 }
 
 export async function getStagingDataset(client) {
