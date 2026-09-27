@@ -1303,7 +1303,7 @@
       // Verificar se o Supabase está disponível fazendo uma busca simples
       const testLat = -23.5505; // Coordenada de teste (São Paulo)
       const testLng = -46.6333;
-      const response = await fetch(getApiUrl(`/api/ctos/nearby?lat=${testLat}&lng=${testLng}&radius=1000`));
+      const response = await fetch(getApiUrl(`/api/ctos/nearby?lat=${testLat}&lng=${testLng}&radius=1000&probe=1`));
       if (response.ok) {
         baseDataExists = true;
         return true;
@@ -2407,15 +2407,40 @@
       }
 
       // Buscar CTOs próximas de cada ponto (em paralelo)
-      const nearbyPromises = validPoints.map(({ lat, lng }) =>
-        fetch(getApiUrl(`/api/ctos/nearby?lat=${lat}&lng=${lng}&radius=250`))
-          .then(response => response.json())
-          .then(data => ({ data, lat, lng }))
-          .catch(err => {
-            console.error(`Erro ao buscar CTOs próximas de ${lat}, ${lng}:`, err);
-            return { data: null, lat, lng };
-          })
-      );
+      // Estratégia: primeiro tentar 250m, se não encontrar, expandir para 500m, depois 700m
+      const searchRadii = [250, 500, 700]; // Raios progressivos
+      
+      const nearbyPromises = validPoints.map(async ({ lat, lng }) => {
+        let lastData = null;
+        let lastRadius = 250;
+        
+        // Tentar cada raio progressivamente até encontrar CTOs
+        for (const radius of searchRadii) {
+          try {
+            const response = await fetch(getApiUrl(`/api/ctos/nearby?lat=${lat}&lng=${lng}&radius=${radius}`));
+            if (!response.ok) continue;
+            
+            const data = await response.json();
+            if (data?.success && data.ctos) {
+              // Se encontrou CTOs (mesmo que sejam poucas), usar este resultado
+              // Não verificar length > 0 aqui, pois pode ter CTOs que serão filtradas depois
+              // O importante é ter um resultado válido da API
+              return { data, lat, lng, searchRadius: radius };
+            }
+            // Guardar último resultado válido
+            if (data?.success) {
+              lastData = data;
+              lastRadius = radius;
+            }
+          } catch (err) {
+            console.error(`Erro ao buscar CTOs próximas de ${lat}, ${lng} com raio ${radius}m:`, err);
+            continue;
+          }
+        }
+        
+        // Se não encontrou resultado válido em nenhum raio, retornar último resultado (pode estar vazio)
+        return { data: lastData, lat, lng, searchRadius: lastRadius };
+      });
 
       const nearbyResults = await Promise.all(nearbyPromises);
 
@@ -2425,15 +2450,16 @@
       
       for (let i = 0; i < validPoints.length; i++) {
         const point = validPoints[i];
-        const { data, lat, lng } = nearbyResults[i];
+        const { data, lat, lng, searchRadius = 250 } = nearbyResults[i];
         const pointKey = `${lat.toFixed(6)},${lng.toFixed(6)}`;
         
         if (data?.success && data.ctos) {
-          // Filtrar apenas CTOs dentro de 250m (garantir precisão)
+          // Filtrar CTOs usando o raio real da busca (pode ser 250m, 500m ou 700m)
           const nearbyCTOs = data.ctos.filter(cto => {
             if (!cto.latitude || !cto.longitude) return false;
             const distance = calculateDistance(lat, lng, parseFloat(cto.latitude), parseFloat(cto.longitude));
-            return distance <= 250;
+            // Aceitar CTOs dentro do raio da busca (pode ser 250m, 500m, 700m, etc.)
+            return distance <= searchRadius;
           });
 
           // Armazenar CTOs deste ponto
@@ -2560,7 +2586,12 @@
       // Usar as CTOs encontradas para a tabela
       ctos = foundCTOs;
 
-      console.log(`📍 Busca por endereço/coordenadas: ${ctos.length} CTOs únicas encontradas dentro de 250m`);
+      // Calcular raio máximo usado na busca para a mensagem de log
+      const maxRadiusUsed = nearbyResults.reduce((max, result) => {
+        return Math.max(max, result.searchRadius || 250);
+      }, 250);
+
+      console.log(`📍 Busca por endereço/coordenadas: ${ctos.length} CTOs únicas encontradas (raio máximo usado: ${maxRadiusUsed}m)`);
 
       // Inicializar visibilidade de todas as CTOs como verdadeira (todas visíveis por padrão)
       ctoVisibility.clear();
@@ -2604,7 +2635,11 @@
       }
 
       if (ctos.length === 0) {
-        error = 'Nenhuma CTO encontrada dentro de 250m dos pontos pesquisados.';
+        // Calcular raio máximo usado para a mensagem de erro
+        const maxRadiusUsed = nearbyResults.reduce((max, result) => {
+          return Math.max(max, result.searchRadius || 250);
+        }, 250);
+        error = `Nenhuma CTO encontrada dentro de ${maxRadiusUsed}m dos pontos pesquisados.`;
         loadingCTOs = false;
         return;
       }
@@ -2960,12 +2995,23 @@
   // Função para formatar data de criação (formato: MM/YYYY)
   function formatDataCriacao(cto) {
     const dataCriacao = cto.data_criacao || cto.data_cadastro || cto.created_at || '';
-    if (!dataCriacao) return 'N/A';
+    
+    // Log temporário para debug (apenas primeiras 3 CTOs)
+    if (ctos.indexOf(cto) < 3) {
+      console.log(`🔍 [Frontend] CTO ${ctos.indexOf(cto) + 1} - ID: ${cto.id_cto}, data_criacao:`, dataCriacao, 'tipo:', typeof dataCriacao);
+    }
+    
+    // Verificar se está vazio, null ou undefined
+    if (!dataCriacao || dataCriacao === 'null' || dataCriacao === 'undefined' || String(dataCriacao).trim() === '') {
+      return 'N/A';
+    }
     
     // Se for string, verificar se já está no formato MM/YYYY
     if (typeof dataCriacao === 'string') {
+      const dataStr = dataCriacao.trim();
+      
       // Verificar se já está no formato MM/YYYY (ex: "04/2023")
-      const mmYYYYMatch = dataCriacao.match(/^(\d{1,2})\/(\d{4})$/);
+      const mmYYYYMatch = dataStr.match(/^(\d{1,2})\/(\d{4})$/);
       if (mmYYYYMatch) {
         const mes = mmYYYYMatch[1].padStart(2, '0');
         const ano = mmYYYYMatch[2];
@@ -2973,7 +3019,7 @@
       }
       
       // Tentar formato YYYY-MM (ex: "2023-04")
-      const yyyyMMMatch = dataCriacao.match(/^(\d{4})-(\d{1,2})/);
+      const yyyyMMMatch = dataStr.match(/^(\d{4})-(\d{1,2})$/);
       if (yyyyMMMatch) {
         const ano = yyyyMMMatch[1];
         const mes = yyyyMMMatch[2].padStart(2, '0');
@@ -2981,7 +3027,7 @@
       }
       
       // Tentar formato YYYY-MM-DD (ex: "2023-04-15")
-      const yyyyMMDDMatch = dataCriacao.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+      const yyyyMMDDMatch = dataStr.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
       if (yyyyMMDDMatch) {
         const ano = yyyyMMDDMatch[1];
         const mes = yyyyMMDDMatch[2].padStart(2, '0');
@@ -2989,29 +3035,37 @@
       }
       
       // Tentar formato DD/MM/YYYY (ex: "15/04/2023")
-      const ddMMYYYYMatch = dataCriacao.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+      const ddMMYYYYMatch = dataStr.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
       if (ddMMYYYYMatch) {
         const mes = ddMMYYYYMatch[2].padStart(2, '0');
         const ano = ddMMYYYYMatch[3];
         return `${mes}/${ano}`;
       }
+      
+      // Se não bateu com nenhum padrão conhecido e não é uma string vazia, retornar como está
+      if (dataStr.length > 0) {
+        return dataStr;
+      }
     }
     
-    // Tentar converter para Date se não for string ou se não bateu com nenhum padrão
+    // Tentar converter para Date apenas se não for string ou se não bateu com nenhum padrão
     try {
       const data = new Date(dataCriacao);
-      if (!isNaN(data.getTime())) {
-        // Formato: MM/YYYY (apenas mês e ano)
-        const mes = String(data.getMonth() + 1).padStart(2, '0');
+      if (!isNaN(data.getTime()) && data.getTime() > 0) {
+        // Verificar se a data não é uma data inválida padrão (1970-01-01)
         const ano = data.getFullYear();
-        return `${mes}/${ano}`;
+        if (ano >= 2000 && ano <= 2100) {
+          // Formato: MM/YYYY (apenas mês e ano)
+          const mes = String(data.getMonth() + 1).padStart(2, '0');
+          return `${mes}/${ano}`;
+        }
       }
     } catch (e) {
       // Ignorar erro
     }
     
-    // Se não conseguiu formatar, retornar como está (pode ser que já esteja no formato correto)
-    return String(dataCriacao);
+    // Se não conseguiu formatar, retornar N/A
+    return 'N/A';
   }
 
   function formatPercentage(value) {
