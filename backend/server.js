@@ -123,6 +123,7 @@ app.use((req, res, next) => {
 
 // Função auxiliar para deletar polígonos de um dataset (ou todos, legado)
 async function deleteAllCoveragePolygons(datasetId = null) {
+  if (!datasetId) invalidateCoveragePolygonCache();
   try {
     if (!isDbAvailable()) {
       console.warn('⚠️ [Polygons] Supabase não disponível - não é possível deletar polígonos');
@@ -550,6 +551,7 @@ let uploadProgress = {
 
 function markBaseReadyPublished() {
   uploadProgress.baseReadyAt = new Date().toISOString();
+  invalidateCoveragePolygonCache();
 }
 
 function isBaseUploadBusy() {
@@ -1115,6 +1117,10 @@ function buildCtosInternasFromNomes(nomesCtoRaw, situacaoCto, ctoByName) {
 
 // Nova rota OTIMIZADA: Buscar CTOs próximas por coordenadas (não carrega todas)
 // Esta é a solução para resolver o problema de memória - busca apenas CTOs próximas
+// Só as colunas usadas na montagem da resposta (evita chave_unica, estado, updated_at, dataset_id).
+const NEARBY_CTO_COLUMNS =
+  'id, id_cto, cto, latitude, longitude, portas, ocupado, livre, pct_ocup, status_cto, cid_rede, pop, olt, slot, pon, data_cadastro, created_at';
+
 app.get('/api/ctos/nearby', async (req, res) => {
   try {
     // Garantir headers CORS
@@ -1134,6 +1140,24 @@ app.get('/api/ctos/nearby', async (req, res) => {
       return res.status(400).json({ error: 'Latitude e longitude são obrigatórios' });
     }
     
+    // probe=1: só verifica se existe base (telas usam para "base disponível?")
+    if (req.query.probe === '1') {
+      if (!supabase || !isSupabaseAvailable()) {
+        return res.status(503).json({ error: 'Supabase não disponível' });
+      }
+      const probeDatasetId = (await isDatasetStagingEnabled(supabase))
+        ? await getActiveDatasetId(supabase)
+        : null;
+      let probeQuery = supabase.from('ctos').select('id, id_cto, latitude, longitude').limit(1);
+      probeQuery = applyDatasetFilter(probeQuery, probeDatasetId);
+      const { data: probeRows, error: probeErr } = await probeQuery;
+      if (probeErr) {
+        return res.status(500).json({ error: 'Erro ao buscar CTOs', details: probeErr.message });
+      }
+      const ctos = probeRows || [];
+      return res.json({ success: true, probe: true, ctos, count: ctos.length });
+    }
+
     console.log(`🔍 [API] Buscando CTOs próximas de (${lat}, ${lng}) em raio de ${radiusMeters}m`);
     
     if (supabase && isSupabaseAvailable()) {
@@ -1152,7 +1176,7 @@ app.get('/api/ctos/nearby', async (req, res) => {
           : null;
         let nearbyQuery = supabase
           .from('ctos')
-          .select('*')
+          .select(NEARBY_CTO_COLUMNS)
           .gte('latitude', latMin)
           .lte('latitude', latMax)
           .gte('longitude', lngMin)
@@ -2292,6 +2316,87 @@ app.get('/api/coverage/calculate-status', async (req, res) => {
   }
 });
 
+// O GeoJSON da mancha tem vários MB: guardamos a resposta pronta por polígono e só
+// reconsultamos os metadados (id/versão) no Supabase a cada COVERAGE_POLYGON_RECHECK_MS.
+const COVERAGE_POLYGON_RECHECK_MS = 60_000;
+const coveragePolygonCache = new Map(); // simplified(bool) -> { key, body, checkedAt }
+const coveragePolygonInflight = new Map();
+
+function invalidateCoveragePolygonCache() {
+  coveragePolygonCache.clear();
+}
+
+async function loadCoveragePolygonBody(useSimplified) {
+  const cached = coveragePolygonCache.get(useSimplified);
+  const now = Date.now();
+  if (cached && now - cached.checkedAt < COVERAGE_POLYGON_RECHECK_MS) {
+    return { status: 200, body: cached.body };
+  }
+
+  const { data, error } = await supabase.rpc('get_active_coverage_polygon');
+  if (error) {
+    console.error('❌ [API] Erro ao buscar polígono:', error);
+    return {
+      status: 500,
+      body: JSON.stringify({
+        success: false,
+        error: 'Erro ao buscar polígono de cobertura',
+        details: error.message
+      })
+    };
+  }
+
+  if (!data || data.length === 0) {
+    coveragePolygonCache.delete(useSimplified);
+    return {
+      status: 200,
+      body: JSON.stringify({
+        success: false,
+        message: 'Nenhum polígono de cobertura encontrado. Execute o cálculo primeiro.'
+      })
+    };
+  }
+
+  const polygon = data[0];
+  const key = `${polygon.id}:${polygon.version}:${polygon.created_at}`;
+  if (cached && cached.key === key) {
+    cached.checkedAt = now;
+    return { status: 200, body: cached.body };
+  }
+
+  const { data: geoJsonData, error: geoJsonError } = await supabase.rpc('get_polygon_geojson', {
+    p_polygon_id: polygon.id,
+    p_use_simplified: useSimplified
+  });
+
+  let geometryJson = 'null';
+  if (!geoJsonError && geoJsonData && geoJsonData.length > 0 && geoJsonData[0].geojson) {
+    geometryJson = String(geoJsonData[0].geojson);
+  } else if (geoJsonError) {
+    console.warn('⚠️ [API] Erro ao buscar GeoJSON:', geoJsonError);
+  }
+
+  // Monta o JSON sem parse/stringify do GeoJSON (string já é JSON válido do ST_AsGeoJSON).
+  const meta = JSON.stringify({
+    success: true,
+    id: polygon.id,
+    total_ctos: polygon.total_ctos,
+    area_km2: polygon.area_km2,
+    version: polygon.version,
+    created_at: polygon.created_at,
+    is_simplified: useSimplified
+  });
+  const body = `${meta.slice(0, -1)},"geometry":${geometryJson}}`;
+
+  if (geometryJson !== 'null') {
+    coveragePolygonCache.set(useSimplified, { key, body, checkedAt: now });
+    console.log(
+      `🗺️ [API] Polígono ${polygon.id} v${polygon.version} em cache (${Math.round(body.length / 1024)} KB)`
+    );
+  }
+  return { status: 200, body };
+}
+
 // Rota para obter polígono de cobertura ativo
 app.get('/api/coverage/polygon', async (req, res) => {
   try {
@@ -2312,55 +2417,16 @@ app.get('/api/coverage/polygon', async (req, res) => {
         error: 'Supabase não disponível' 
       });
     }
-    
-    // Buscar polígono ativo
-    const { data, error } = await supabase.rpc('get_active_coverage_polygon');
-    
-    if (error) {
-      console.error('❌ [API] Erro ao buscar polígono:', error);
-      return res.status(500).json({ 
-        success: false, 
-        error: 'Erro ao buscar polígono de cobertura', 
-        details: error.message 
+
+    let pending = coveragePolygonInflight.get(useSimplified);
+    if (!pending) {
+      pending = loadCoveragePolygonBody(useSimplified).finally(() => {
+        coveragePolygonInflight.delete(useSimplified);
       });
+      coveragePolygonInflight.set(useSimplified, pending);
     }
-    
-    if (!data || data.length === 0) {
-      return res.json({ 
-        success: false, 
-        message: 'Nenhum polígono de cobertura encontrado. Execute o cálculo primeiro.' 
-      });
-    }
-    
-    const polygon = data[0];
-    
-    // Converter geometria para GeoJSON usando função SQL
-    const { data: geoJsonData, error: geoJsonError } = await supabase.rpc('get_polygon_geojson', {
-      p_polygon_id: polygon.id,
-      p_use_simplified: useSimplified
-    });
-    
-    let geometry = null;
-    if (!geoJsonError && geoJsonData && geoJsonData.length > 0 && geoJsonData[0].geojson) {
-      try {
-        geometry = JSON.parse(geoJsonData[0].geojson);
-      } catch (parseError) {
-        console.warn('⚠️ [API] Erro ao fazer parse do GeoJSON:', parseError);
-      }
-    } else if (geoJsonError) {
-      console.warn('⚠️ [API] Erro ao buscar GeoJSON:', geoJsonError);
-    }
-    
-    res.json({
-      success: true,
-      id: polygon.id,
-      geometry: geometry,
-      total_ctos: polygon.total_ctos,
-      area_km2: polygon.area_km2,
-      version: polygon.version,
-      created_at: polygon.created_at,
-      is_simplified: useSimplified
-    });
+    const { status, body } = await pending;
+    res.status(status).type('application/json').send(body);
     
   } catch (err) {
     console.error('❌ [API] Erro na rota /api/coverage/polygon:', err);
