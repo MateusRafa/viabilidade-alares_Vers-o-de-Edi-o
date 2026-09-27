@@ -177,6 +177,28 @@ export async function createStagingDataset(client, { label = null, meta = {} } =
   return data;
 }
 
+const PURGE_BATCH = 20000;
+
+async function deleteCtosInBatches(c, datasetIds) {
+  let total = 0;
+  for (;;) {
+    const r = await c.query(
+      `
+      DELETE FROM public.ctos
+      WHERE id IN (
+        SELECT id FROM public.ctos
+        WHERE dataset_id = ANY($1::uuid[])
+        LIMIT ${PURGE_BATCH}
+      )
+    `,
+      [datasetIds]
+    );
+    total += r.rowCount;
+    if (r.rowCount < PURGE_BATCH) break;
+  }
+  return total;
+}
+
 /** Remove CTOs/polígonos de um dataset failed (best-effort). */
 export async function cleanupFailedDataset(client, datasetId) {
   if (!datasetId) return;
@@ -186,7 +208,8 @@ export async function cleanupFailedDataset(client, datasetId) {
     const c = new pg.Client({ connectionString: pgUrl, ssl: { rejectUnauthorized: false } });
     await c.connect();
     try {
-      await c.query(`DELETE FROM public.ctos WHERE dataset_id = $1`, [datasetId]);
+      await c.query(`SET statement_timeout = 0`);
+      await deleteCtosInBatches(c, [datasetId]);
       await c.query(`DELETE FROM public.coverage_polygons WHERE dataset_id = $1`, [datasetId]);
       console.log(`🧹 [Datasets] GC PG ok: ${datasetId}`);
       return;
@@ -230,7 +253,79 @@ export async function swapActiveDataset(client, stagingId) {
   if (error) throw new Error(`swapActiveDataset: ${error.message}`);
   invalidateDatasetFeatureCache();
   console.log(`🔀 [Datasets] Swap OK → active=${data || stagingId}`);
+
+  // A base anterior vira archived e não é lida por nenhuma rota: libera o espaço em background.
+  setTimeout(() => {
+    purgeInactiveDatasets(client).catch((err) => {
+      console.warn('⚠️ [Datasets] Limpeza pós-swap:', err?.message || err);
+    });
+  }, 0);
+
   return data || stagingId;
+}
+
+/**
+ * Apaga CTOs/polígonos de todas as bases archived e failed.
+ * Nunca toca na active (app_runtime_config) nem na staging.
+ * A linha em data_datasets fica como histórico (meta.purged_at).
+ */
+export async function purgeInactiveDatasets(client) {
+  const pgUrl = resolvePgUrlForActiveWrite();
+  if (!pgUrl) {
+    const { data: rows, error } = await client
+      .from('data_datasets')
+      .select('id')
+      .in('status', ['archived', 'failed']);
+    if (error) throw new Error(`purgeInactiveDatasets: ${error.message}`);
+    const activeId = await getActiveDatasetId(client);
+    for (const r of rows || []) {
+      if (r.id !== activeId) await cleanupFailedDataset(client, r.id);
+    }
+    return;
+  }
+
+  const pg = (await import('pg')).default;
+  const c = new pg.Client({ connectionString: pgUrl, ssl: { rejectUnauthorized: false } });
+  await c.connect();
+  try {
+    await c.query(`SET statement_timeout = 0`);
+    const { rows } = await c.query(`
+      SELECT d.id
+      FROM public.data_datasets d
+      WHERE d.status IN ('archived', 'failed')
+        AND d.id IS DISTINCT FROM (
+          SELECT value_uuid FROM public.app_runtime_config
+          WHERE key = '${CONFIG_KEY}'
+        )
+    `);
+    const ids = rows.map((r) => r.id);
+    if (!ids.length) return;
+
+    const ctos = await deleteCtosInBatches(c, ids);
+    const polys = await c.query(
+      `DELETE FROM public.coverage_polygons
+       WHERE dataset_id = ANY($1::uuid[]) AND is_active = false`,
+      [ids]
+    );
+    await c.query(
+      `DELETE FROM public.coverage_calculation_progress WHERE dataset_id = ANY($1::uuid[])`,
+      [ids]
+    );
+    await c.query(
+      `UPDATE public.data_datasets
+       SET meta = COALESCE(meta, '{}'::jsonb) || jsonb_build_object('purged_at', now())
+       WHERE id = ANY($1::uuid[]) AND NOT (meta ? 'purged_at')`,
+      [ids]
+    );
+    if (ctos > 0) {
+      await c.query(`VACUUM (ANALYZE) public.ctos`);
+    }
+    console.log(
+      `🧹 [Datasets] Bases antigas limpas: ${ctos} CTOs, ${polys.rowCount} polígonos (${ids.length} datasets)`
+    );
+  } finally {
+    await c.end();
+  }
 }
 
 /** Dataset alvo do cálculo de mancha: staging se existir com CTOs, senão active. */
