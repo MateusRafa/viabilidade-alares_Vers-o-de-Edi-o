@@ -61,9 +61,75 @@
   /** Painel flutuante “Lista de equipamentos” sobre o mapa (botão acima dos prédios). */
   let equipPanelOpen = false;
   let equipPanelEl = null;
+  const EQUIP_PANEL_STORAGE_KEY = 'censupWbEquipPanel';
+  const savedEquipPanel = loadEquipPanelLayout();
   /** Posição manual (px, relativa ao mapa); null = canto padrão ao lado dos botões. */
-  let equipPanelPos = null;
+  let equipPanelPos = savedEquipPanel.pos;
+  /** Tamanho escolhido pelo usuário (px); null = tamanho padrão do CSS. */
+  let equipPanelSize = savedEquipPanel.size;
   let equipPanelDrag = null;
+  let equipPanelSaveTimer = null;
+
+  function loadEquipPanelLayout() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(EQUIP_PANEL_STORAGE_KEY) || 'null');
+      const num = (v) => (Number.isFinite(Number(v)) ? Math.round(Number(v)) : null);
+      const w = num(raw?.w);
+      const h = num(raw?.h);
+      const left = num(raw?.left);
+      const top = num(raw?.top);
+      return {
+        size: w > 0 && h > 0 ? { w, h } : null,
+        pos: left != null && top != null ? { left, top } : null
+      };
+    } catch {
+      return { size: null, pos: null };
+    }
+  }
+
+  function saveEquipPanelLayout() {
+    if (equipPanelSaveTimer) clearTimeout(equipPanelSaveTimer);
+    equipPanelSaveTimer = setTimeout(() => {
+      try {
+        localStorage.setItem(
+          EQUIP_PANEL_STORAGE_KEY,
+          JSON.stringify({ ...(equipPanelSize || {}), ...(equipPanelPos || {}) })
+        );
+      } catch {
+        // ignore
+      }
+    }, 250);
+  }
+
+  /** Mantém tamanho/posição do painel: grava o redimensionamento e encaixa no mapa ao abrir. */
+  function equipPanelLayout(node) {
+    const pane = node.parentElement;
+    if (pane && equipPanelPos) {
+      const maxLeft = Math.max(0, pane.clientWidth - node.offsetWidth);
+      const maxTop = Math.max(0, pane.clientHeight - node.offsetHeight);
+      if (equipPanelPos.left > maxLeft || equipPanelPos.top > maxTop) {
+        equipPanelPos = {
+          left: Math.min(equipPanelPos.left, maxLeft),
+          top: Math.min(equipPanelPos.top, maxTop)
+        };
+      }
+    }
+    if (typeof ResizeObserver !== 'function') return {};
+    const ro = new ResizeObserver(() => {
+      const w = Math.round(node.offsetWidth);
+      const h = Math.round(node.offsetHeight);
+      if (!w || !h) return;
+      if (equipPanelSize && Math.abs(equipPanelSize.w - w) < 2 && Math.abs(equipPanelSize.h - h) < 2) return;
+      equipPanelSize = { w, h };
+      saveEquipPanelLayout();
+    });
+    ro.observe(node);
+    return {
+      destroy() {
+        ro.disconnect();
+      }
+    };
+  }
   /** Coords da casinha (mapa) — evita re-geocode por texto ao sync do form. */
   let pinCoords = null;
   let reanaliseTimer = null;
@@ -503,11 +569,17 @@
   function endEquipPanelDrag(e) {
     if (!equipPanelDrag || (e?.pointerId != null && e.pointerId !== equipPanelDrag.pointerId)) return;
     equipPanelDrag = null;
+    saveEquipPanelLayout();
   }
 
-  $: equipPanelStyle = equipPanelPos
-    ? `left:${equipPanelPos.left}px;top:${equipPanelPos.top}px;right:auto;bottom:auto`
-    : '';
+  $: equipPanelStyle = [
+    equipPanelPos
+      ? `left:${equipPanelPos.left}px;top:${equipPanelPos.top}px;right:auto;bottom:auto`
+      : '',
+    equipPanelSize ? `width:${equipPanelSize.w}px;height:${equipPanelSize.h}px` : ''
+  ]
+    .filter(Boolean)
+    .join(';');
 
   let form = {
     numeroALA: '',
@@ -1980,6 +2052,7 @@
     document.removeEventListener('keydown', onEquipCopyKeydown);
     document.removeEventListener('click', handleEquipDocumentClick);
     if (reanaliseTimer) clearTimeout(reanaliseTimer);
+    if (equipPanelSaveTimer) clearTimeout(equipPanelSaveTimer);
   });
 </script>
 
@@ -1995,6 +2068,7 @@
         <div
           class="wb-equip-panel"
           bind:this={equipPanelEl}
+          use:equipPanelLayout
           style={equipPanelStyle}
           role="dialog"
           aria-label="Lista de equipamentos"
