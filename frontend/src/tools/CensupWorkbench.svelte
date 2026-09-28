@@ -2452,7 +2452,7 @@
           <div class="wb-modal-actions">
             <button type="button" class="wb-modal-btn-cancel" on:click={closeInfoModal}>Cancelar</button>
             <button type="submit" class="wb-modal-btn-save" disabled={saving || loading || !(form.numeroALA || '').trim()}>
-              {saving ? 'Salvando…' : 'Salvar PDF'}
+              {#if saving}Salvando<span class="wb-dots" aria-hidden="true"><span>.</span><span>.</span><span>.</span></span>{:else}Salvar PDF{/if}
             </button>
             <button
               type="button"
@@ -2460,7 +2460,7 @@
               on:click={gerarRelatorio}
               disabled={generating || loading || capturingMapPreview}
             >
-              {generating || capturingMapPreview ? 'Gerando…' : 'Gerar PDF'}
+              {#if generating || capturingMapPreview}Gerando<span class="wb-dots" aria-hidden="true"><span>.</span><span>.</span><span>.</span></span>{:else}Gerar PDF{/if}
             </button>
           </div>
         </form>
