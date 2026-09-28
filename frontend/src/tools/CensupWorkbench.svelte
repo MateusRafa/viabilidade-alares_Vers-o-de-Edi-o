@@ -58,19 +58,12 @@
   /** Box “Fora do Limite” (CTO > 250m) — espelho do oficial. */
   let foraLimiteInfo = null;
   let showInfoForaLimite = false;
-  /** Altura do box Equipamentos (px) dentro do split; null = padrão ~32%. */
-  let equipPaneHeightPx = null;
-  let equipCollapsed = true;
-  let mapCollapsed = false;
-  let splitDragging = false;
-  let splitEl = null;
-  let equipPaneEl = null;
-  let splitResizeRaf = 0;
-  let splitStartY = 0;
-  let splitStartEquipHeight = 0;
-  let splitHandleEl = null;
-  let splitPointerId = null;
-  let splitShieldEl = null;
+  /** Painel flutuante “Lista de equipamentos” sobre o mapa (botão acima dos prédios). */
+  let equipPanelOpen = false;
+  let equipPanelEl = null;
+  /** Posição manual (px, relativa ao mapa); null = canto padrão ao lado dos botões. */
+  let equipPanelPos = null;
+  let equipPanelDrag = null;
   /** Coords da casinha (mapa) — evita re-geocode por texto ao sync do form. */
   let pinCoords = null;
   let reanaliseTimer = null;
@@ -79,13 +72,6 @@
   let capturingMapPreview = false;
   let locating = false;
   let mapSearchError = '';
-
-  /** Altura da barra Equipamentos colapsada (toolbar + padding ≈ Informações). */
-  const EQUIP_HEADER_H = 42;
-  const MAP_COLLAPSED_H = 8;
-  const HANDLE_H = 12;
-  const SNAP_PX = 28;
-  const DEFAULT_EQUIP_RATIO = 0.32;
 
   function requestMapResize(delayMs = 120) {
     setTimeout(() => {
@@ -472,166 +458,56 @@
     }
   }
 
-  function clampEquipHeight(height, splitHeight) {
-    const maxEquip = Math.max(EQUIP_HEADER_H, splitHeight - HANDLE_H - MAP_COLLAPSED_H);
-    let h = Math.max(EQUIP_HEADER_H, Math.min(maxEquip, height));
-    if (h <= EQUIP_HEADER_H + SNAP_PX) {
-      h = EQUIP_HEADER_H;
-      equipCollapsed = true;
-      mapCollapsed = false;
-    } else if (h >= maxEquip - SNAP_PX) {
-      h = maxEquip;
-      equipCollapsed = false;
-      mapCollapsed = true;
-    } else {
-      equipCollapsed = false;
-      mapCollapsed = false;
-    }
-    return h;
+  function toggleEquipPanel() {
+    equipPanelOpen = !equipPanelOpen;
+    if (!equipPanelOpen) clearEquipSelection();
   }
 
-  function ensureSplitShield() {
-    if (splitShieldEl) return splitShieldEl;
-    splitShieldEl = document.createElement('div');
-    splitShieldEl.className = 'wb-split-shield';
-    splitShieldEl.setAttribute('aria-hidden', 'true');
-    return splitShieldEl;
+  function closeEquipPanel() {
+    equipPanelOpen = false;
+    clearEquipSelection();
   }
 
-  function beginSplitCapture(handle, pointerId) {
-    const root = document.querySelector('.workbench') || document.body;
-    const shield = ensureSplitShield();
-    if (!shield.isConnected) root.appendChild(shield);
-    document.body.classList.add('wb-split-interacting');
-    try {
-      if (handle && pointerId != null && typeof handle.setPointerCapture === 'function') {
-        handle.setPointerCapture(pointerId);
-      }
-    } catch {
-      // ignore
-    }
-    // Mapa Google / iframes internos não roubam o ponteiro
-    root.querySelectorAll('iframe, .map, #censup-workbench-map').forEach((el) => {
-      el.classList?.add?.('wb-pe-none');
-      if (el.style) el.style.pointerEvents = 'none';
-    });
-  }
-
-  function endSplitCapture() {
-    document.body.classList.remove('wb-split-interacting');
-    splitShieldEl?.remove();
-    try {
-      if (
-        splitHandleEl &&
-        splitPointerId != null &&
-        typeof splitHandleEl.releasePointerCapture === 'function'
-      ) {
-        splitHandleEl.releasePointerCapture(splitPointerId);
-      }
-    } catch {
-      // ignore
-    }
-    document.querySelectorAll('.wb-pe-none').forEach((el) => {
-      el.classList.remove('wb-pe-none');
-      if (el.style) el.style.pointerEvents = '';
-    });
-    splitHandleEl = null;
-    splitPointerId = null;
-  }
-
-  function onSplitPointerMove(e) {
-    if (!splitDragging) return;
-    e.preventDefault();
-    if (!splitEl) return;
-    const splitRect = splitEl.getBoundingClientRect();
-    if (splitRect.height < EQUIP_HEADER_H + HANDLE_H + MAP_COLLAPSED_H) return;
-    const deltaY = e.clientY - splitStartY;
-    const nextHeight = splitStartEquipHeight + deltaY;
-    equipPaneHeightPx = clampEquipHeight(nextHeight, splitRect.height);
-    if (splitResizeRaf) cancelAnimationFrame(splitResizeRaf);
-    splitResizeRaf = requestAnimationFrame(() => {
-      try {
-        window.dispatchEvent(new Event('resize'));
-      } catch {
-        // ignore
-      }
-    });
-  }
-
-  function endSplitDrag() {
-    if (!splitDragging) return;
-    splitDragging = false;
-    try {
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-    } catch {
-      // ignore
-    }
-    endSplitCapture();
-    window.removeEventListener('pointermove', onSplitPointerMove, true);
-    window.removeEventListener('pointerup', endSplitDrag, true);
-    window.removeEventListener('pointercancel', endSplitDrag, true);
-    window.removeEventListener('blur', endSplitDrag);
-    requestMapResize(60);
-  }
-
-  function startSplitDrag(e) {
+  /** Arrasta o painel pelo cabeçalho, sempre dentro da área do mapa. */
+  function startEquipPanelDrag(e) {
     if (e.button != null && e.button !== 0) return;
+    if (e.target?.closest?.('button')) return;
+    const pane = equipPanelEl?.parentElement;
+    if (!equipPanelEl || !pane) return;
     e.preventDefault();
-    if (!splitEl || !equipPaneEl) return;
-    const splitRect = splitEl.getBoundingClientRect();
-    if (splitRect.height < EQUIP_HEADER_H + HANDLE_H + MAP_COLLAPSED_H) return;
-    splitDragging = true;
-    splitStartY = e.clientY;
-    splitStartEquipHeight = equipPaneEl.getBoundingClientRect().height;
-    splitHandleEl = e.currentTarget;
-    splitPointerId = e.pointerId;
+    const paneRect = pane.getBoundingClientRect();
+    const rect = equipPanelEl.getBoundingClientRect();
+    equipPanelDrag = {
+      pointerId: e.pointerId,
+      offsetX: e.clientX - rect.left,
+      offsetY: e.clientY - rect.top,
+      paneRect
+    };
     try {
-      document.body.style.cursor = 'row-resize';
-      document.body.style.userSelect = 'none';
+      e.currentTarget.setPointerCapture(e.pointerId);
     } catch {
       // ignore
     }
-    beginSplitCapture(splitHandleEl, splitPointerId);
-    window.addEventListener('pointermove', onSplitPointerMove, true);
-    window.addEventListener('pointerup', endSplitDrag, true);
-    window.addEventListener('pointercancel', endSplitDrag, true);
-    window.addEventListener('blur', endSplitDrag);
   }
 
-  function toggleEquipCollapsed() {
-    const willCollapse = !equipCollapsed;
-    if (willCollapse) {
-      equipCollapsed = true;
-      mapCollapsed = false;
-      equipPaneHeightPx = EQUIP_HEADER_H;
-      requestMapResize(60);
-      return;
-    }
-
-    equipCollapsed = false;
-    mapCollapsed = false;
-    if (splitEl) {
-      const h = splitEl.getBoundingClientRect().height;
-      if (h >= EQUIP_HEADER_H + HANDLE_H + MAP_COLLAPSED_H) {
-        const next = Math.round(Math.max(EQUIP_HEADER_H + 8, (h - HANDLE_H) * DEFAULT_EQUIP_RATIO));
-        equipPaneHeightPx = clampEquipHeight(next, h);
-      }
-    } else {
-      equipPaneHeightPx = null;
-    }
-    requestMapResize(60);
+  function onEquipPanelDragMove(e) {
+    if (!equipPanelDrag || e.pointerId !== equipPanelDrag.pointerId || !equipPanelEl) return;
+    const { paneRect, offsetX, offsetY } = equipPanelDrag;
+    const w = equipPanelEl.offsetWidth;
+    const h = equipPanelEl.offsetHeight;
+    const left = Math.max(0, Math.min(paneRect.width - w, e.clientX - paneRect.left - offsetX));
+    const top = Math.max(0, Math.min(paneRect.height - h, e.clientY - paneRect.top - offsetY));
+    equipPanelPos = { left: Math.round(left), top: Math.round(top) };
   }
 
-  function equipPaneStyle() {
-    if (equipCollapsed) {
-      return 'height:auto';
-    }
-    if (equipPaneHeightPx == null) {
-      return `height:${DEFAULT_EQUIP_RATIO * 100}%`;
-    }
-    return `height:${equipPaneHeightPx}px`;
+  function endEquipPanelDrag(e) {
+    if (!equipPanelDrag || (e?.pointerId != null && e.pointerId !== equipPanelDrag.pointerId)) return;
+    equipPanelDrag = null;
   }
+
+  $: equipPanelStyle = equipPanelPos
+    ? `left:${equipPanelPos.left}px;top:${equipPanelPos.top}px;right:auto;bottom:auto`
+    : '';
 
   let form = {
     numeroALA: '',
@@ -1981,8 +1857,6 @@
     document.addEventListener('keydown', onEquipCopyKeydown);
     document.addEventListener('click', handleEquipDocumentClick);
     // Equipamentos inicia minimizado — mapa ocupa o split desde o boot
-    equipCollapsed = true;
-    equipPaneHeightPx = EQUIP_HEADER_H;
     requestMapResize(80);
     try {
       const mod = await import('./ViabilidadeAlares.svelte');
@@ -2106,8 +1980,6 @@
     document.removeEventListener('keydown', onEquipCopyKeydown);
     document.removeEventListener('click', handleEquipDocumentClick);
     if (reanaliseTimer) clearTimeout(reanaliseTimer);
-    endSplitDrag();
-    if (splitResizeRaf) cancelAnimationFrame(splitResizeRaf);
   });
 </script>
 
@@ -2117,26 +1989,33 @@
   {/if}
 
   <div class="wb-body">
-    <div class="wb-split" bind:this={splitEl}>
-      <aside
-        class="wb-equip-pane"
-        bind:this={equipPaneEl}
-        class:collapsed={equipCollapsed}
-        style={equipPaneStyle()}
-      >
-        <div class="wb-form-toolbar">
-          <span class="wb-form-toolbar-title">Equipamentos</span>
-          <button
-            type="button"
-            class="wb-pane-toggle"
-            on:click={toggleEquipCollapsed}
-            title={equipCollapsed ? 'Expandir equipamentos' : 'Minimizar equipamentos'}
-            aria-label={equipCollapsed ? 'Expandir equipamentos' : 'Minimizar equipamentos'}
+    <div class="wb-split">
+      <section class="wb-map-pane">
+        {#if equipPanelOpen}
+        <div
+          class="wb-equip-panel"
+          bind:this={equipPanelEl}
+          style={equipPanelStyle}
+          role="dialog"
+          aria-label="Lista de equipamentos"
+        >
+          <div
+            class="wb-equip-panel-head"
+            title="Segure e arraste para mover"
+            on:pointerdown={startEquipPanelDrag}
+            on:pointermove={onEquipPanelDragMove}
+            on:pointerup={endEquipPanelDrag}
+            on:pointercancel={endEquipPanelDrag}
           >
-            {equipCollapsed ? '▾' : '▴'}
-          </button>
-        </div>
-        {#if !equipCollapsed}
+            <span class="wb-equip-panel-title">Equipamentos</span>
+            <button
+              type="button"
+              class="wb-equip-panel-close"
+              on:click={closeEquipPanel}
+              title="Fechar"
+              aria-label="Fechar lista de equipamentos"
+            >×</button>
+          </div>
           <div class="wb-equip-body">
             {#if equipamentos.length > 0}
               <div class="wb-equip-table-wrap" role="presentation">
@@ -2232,20 +2111,9 @@
               </p>
             {/if}
           </div>
+        </div>
         {/if}
-      </aside>
 
-      <div
-        class="wb-split-handle"
-        class:dragging={splitDragging}
-        role="separator"
-        aria-orientation="horizontal"
-        aria-label="Redimensionar equipamentos e mapa"
-        title="Arraste para redimensionar"
-        on:pointerdown={startSplitDrag}
-      ></div>
-
-      <section class="wb-map-pane" class:collapsed={mapCollapsed}>
         {#if ViabilidadeAlares}
           <div class="wb-map-host">
             <svelte:component
@@ -2263,6 +2131,8 @@
               onClientLocationChange={onClientLocationFromMap}
               onMapPreviewChange={onMapPreviewFromViabilidade}
               onEquipamentosChange={onEquipamentosFromViabilidade}
+              equipListOpen={equipPanelOpen}
+              onEquipListToggle={toggleEquipPanel}
               onForaLimiteChange={onForaLimiteFromViabilidade}
               onTabulacaoSugeridaChange={onTabulacaoSugeridaFromMap}
               onMapReady={onMapReadyFromViabilidade}
@@ -2272,7 +2142,6 @@
           <div class="wb-map-placeholder">Carregando mapa…</div>
         {/if}
 
-        {#if !mapCollapsed}
           <div class="wb-map-search-box">
             <label class="wb-map-search-label" for="wb-map-address">
               Endereço
@@ -2332,7 +2201,6 @@
               </div>
             {/if}
           </div>
-        {/if}
       </section>
     </div>
   </div>
@@ -2515,28 +2383,27 @@
     color: #94a3b8;
   }
 
-  .workbench.theme-dark .wb-split-handle:hover::after,
-  .workbench.theme-dark .wb-split-handle.dragging::after {
-    background: rgba(123, 104, 238, 0.45);
-  }
-
-  .workbench.theme-dark .wb-equip-pane,
-  .workbench.theme-dark .wb-form-toolbar {
+  .workbench.theme-dark .wb-equip-panel {
     background: #111827;
     border-color: #334155;
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
   }
 
-  .workbench.theme-dark .wb-form-toolbar-title {
+  .workbench.theme-dark .wb-equip-panel-head {
+    border-bottom-color: #334155;
+  }
+
+  .workbench.theme-dark .wb-equip-panel-title {
     color: #a78bfa;
   }
 
-  .workbench.theme-dark .wb-pane-toggle {
+  .workbench.theme-dark .wb-equip-panel-close {
     background: #1e293b;
     border-color: #475569;
     color: #cbd5e1;
   }
 
-  .workbench.theme-dark .wb-pane-toggle:hover {
+  .workbench.theme-dark .wb-equip-panel-close:hover {
     background: #334155;
     border-color: #a78bfa;
     color: #c4b5fd;
@@ -2619,82 +2486,68 @@
     box-sizing: border-box;
   }
 
-  .wb-equip-pane {
-    flex: 0 0 auto;
-    align-self: stretch;
-    width: auto;
-    min-width: 0;
-    max-width: 100%;
-    height: 32%;
-    max-height: none;
-    overflow: hidden;
+  /* Painel flutuante ao lado da coluna de botões do mapa (Equipamentos / Prédios / …) */
+  .wb-equip-panel {
+    position: absolute;
+    right: 56px;
+    bottom: 10px;
+    z-index: 6;
+    width: 380px;
+    height: 220px;
+    min-width: 220px;
+    min-height: 120px;
+    max-width: calc(100% - 20px);
+    max-height: calc(100% - 20px);
     display: flex;
     flex-direction: column;
-    gap: 0;
-    padding: 0;
     background: #ffffff;
     border: 1px solid #d1d5db;
     border-radius: 10px;
-    box-shadow: none;
+    box-shadow: 0 10px 28px rgba(15, 23, 42, 0.22);
     box-sizing: border-box;
+    overflow: hidden;
+    resize: both;
   }
 
-  .wb-equip-pane.collapsed {
-    height: auto !important;
-    flex: 0 0 auto;
-  }
-
-  .wb-equip-pane.collapsed .wb-form-toolbar {
-    width: 100%;
-    max-width: 100%;
+  .wb-equip-panel-head {
+    display: flex;
     align-items: center;
     justify-content: space-between;
+    gap: 0.35rem;
+    flex-shrink: 0;
+    padding: 0.3rem 0.35rem 0.3rem 0.6rem;
+    border-bottom: 1px solid #e5e7eb;
+    cursor: move;
+    touch-action: none;
+    user-select: none;
   }
 
-  .wb-split-handle {
-    flex: 0 0 12px;
-    width: 100%;
-    margin: -2px 0;
+  .wb-equip-panel-title {
+    font-size: 0.74rem;
+    font-weight: 700;
+    color: #7b68ee;
+  }
+
+  .wb-equip-panel-close {
+    width: 24px;
+    height: 24px;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    background: #ffffff;
+    color: #4b5563;
+    font-size: 1rem;
+    line-height: 1;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     padding: 0;
-    border: none;
-    background: transparent;
-    cursor: row-resize;
-    touch-action: none;
-    position: relative;
-    z-index: 3;
-    box-sizing: border-box;
   }
 
-  .wb-split-handle::after {
-    content: '';
-    position: absolute;
-    left: 18%;
-    right: 18%;
-    top: 50%;
-    height: 2px;
-    margin-top: -1px;
-    border-radius: 2px;
-    background: transparent;
-  }
-
-  .wb-split-handle:hover::after,
-  .wb-split-handle.dragging::after {
-    background: rgba(123, 104, 238, 0.35);
-  }
-
-  :global(.wb-split-shield) {
-    position: fixed;
-    inset: 0;
-    z-index: 99999;
-    background: transparent;
-    cursor: row-resize;
-    touch-action: none;
-  }
-
-  :global(body.wb-split-interacting),
-  :global(body.wb-split-interacting *) {
-    cursor: row-resize !important;
-    user-select: none !important;
+  .wb-equip-panel-close:hover {
+    border-color: #a78bfa;
+    color: #7b68ee;
+    background: #f5f3ff;
   }
 
   .wb-equip-body {
@@ -2826,52 +2679,6 @@
   .wb-status-badge.desativado {
     background: #fee2e2;
     color: #991b1b;
-  }
-
-  .wb-form-toolbar {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 0.35rem;
-    flex-shrink: 0;
-    min-width: 0;
-    min-height: 28px;
-    padding: 0.3rem 0.45rem;
-    box-sizing: border-box;
-  }
-
-  .wb-form-toolbar-title {
-    font-size: 0.72rem;
-    font-weight: 700;
-    color: #7b68ee;
-    line-height: 1.2;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .wb-pane-toggle {
-    width: 28px;
-    height: 28px;
-    border: 1px solid #d1d5db;
-    border-radius: 8px;
-    background: #ffffff;
-    color: #4b5563;
-    font-size: 0.85rem;
-    line-height: 1;
-    cursor: pointer;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
-    box-sizing: border-box;
-  }
-
-  .wb-pane-toggle:hover {
-    border-color: #a78bfa;
-    color: #7b68ee;
-    background: #f5f3ff;
   }
 
   .hint {
@@ -3336,18 +3143,6 @@
     }
   }
 
-  .wb-map-pane.collapsed {
-    flex: 0 0 8px;
-    min-height: 8px;
-    max-height: 8px;
-  }
-
-  .wb-map-pane.collapsed .wb-map-placeholder,
-  .wb-map-pane.collapsed .wb-map-host {
-    opacity: 0;
-    pointer-events: none;
-  }
-
   .wb-map-host {
     flex: 1;
     min-width: 0;
@@ -3437,27 +3232,12 @@
     background: #f4f6fb;
   }
 
-  .workbench.layout-mobile .wb-equip-pane {
-    border-radius: 8px;
-  }
-
-  .workbench.layout-mobile .wb-form-toolbar {
-    padding: 0.35rem 0.5rem;
-    min-height: 2rem;
-  }
-
-  .workbench.layout-mobile .wb-form-toolbar-title {
-    font-size: 0.72rem;
-  }
-
-  .workbench.layout-mobile .wb-pane-toggle {
-    width: 1.75rem;
-    height: 1.75rem;
-    font-size: 0.85rem;
-  }
-
-  .workbench.layout-mobile .wb-split-handle {
-    flex-basis: 10px;
+  .workbench.layout-mobile .wb-equip-panel {
+    top: 8px;
+    bottom: auto;
+    right: 52px;
+    width: calc(100% - 68px);
+    height: 45%;
   }
 
   .workbench.layout-mobile .wb-map-search-box {
