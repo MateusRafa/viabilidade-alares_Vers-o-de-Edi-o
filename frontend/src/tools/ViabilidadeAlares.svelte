@@ -7,6 +7,7 @@
   let ConfigComponent = null;
   import Loading from '../Loading.svelte';
   import { getApiUrl } from '../config.js';
+  import { drawCoverageOverlays, coverageGeometryFromResponse, coveragePreviewQuery } from '../lib/coverageMap.js';
   import { theme } from '../themeStore.js';
 
   // Props do componente
@@ -3831,7 +3832,7 @@
     }
     
     try {
-      const coverageCheckResponse = await fetch(getApiUrl(`/api/coverage/check-point?lat=${lat}&lng=${lng}`), {
+      const coverageCheckResponse = await fetch(getApiUrl(`/api/coverage/check-point?lat=${lat}&lng=${lng}${coveragePreviewQuery()}`), {
         headers: apiFetchHeaders()
       });
       if (coverageCheckResponse.ok) {
@@ -3948,7 +3949,7 @@
     try {
       console.log('📥 [ViabilidadeAlares] Carregando polígono de cobertura do backend...');
       
-      const response = await fetch(getApiUrl('/api/coverage/polygon?simplified=true'), {
+      const response = await fetch(getApiUrl(`/api/coverage/polygon?simplified=true${coveragePreviewQuery()}`), {
         headers: apiFetchHeaders()
       });
       
@@ -3965,7 +3966,7 @@
       }
       
       coverageData = data;
-      coveragePolygonGeoJSON = data.geometry;
+      coveragePolygonGeoJSON = coverageGeometryFromResponse(data);
       
       console.log(`✅ [ViabilidadeAlares] Polígono de cobertura carregado: ${data.total_ctos} CTOs, ${data.area_km2?.toFixed(2)} km²`);
       
@@ -4020,57 +4021,23 @@
 
     // Converter GeoJSON para formato do Google Maps
     try {
-      // GeoJSON pode ter múltiplos polígonos (MultiPolygon) ou um único Polygon
-      let polygonsToRender = [];
-      
-      if (coveragePolygonGeoJSON.type === 'Polygon') {
-        // Polígono simples
-        polygonsToRender = [coveragePolygonGeoJSON];
-      } else if (coveragePolygonGeoJSON.type === 'MultiPolygon') {
-        // Múltiplos polígonos - converter para array de polígonos
-        polygonsToRender = coveragePolygonGeoJSON.coordinates.map(coords => ({
-          type: 'Polygon',
-          coordinates: coords
-        }));
-      } else {
+      if (!['Polygon', 'MultiPolygon', 'FeatureCollection'].includes(coveragePolygonGeoJSON.type)) {
         console.error('❌ [ViabilidadeAlares] Formato GeoJSON não suportado:', coveragePolygonGeoJSON.type);
         return;
       }
       
-      console.log(`🎨 [ViabilidadeAlares] Renderizando ${polygonsToRender.length} polígono(s) de cobertura...`);
-      
       // Limpar polígonos anteriores se existirem
       clearCoveragePolygons();
       
-      // Renderizar cada polígono
-      for (const geoJsonPolygon of polygonsToRender) {
-        // Converter coordenadas GeoJSON para formato do Google Maps
-        const paths = geoJsonPolygon.coordinates[0].map(coord => ({
-          lat: coord[1], // GeoJSON usa [lng, lat], Google Maps usa {lat, lng}
-          lng: coord[0]
-        }));
-        
-        // Criar polígono no Google Maps
-        const polygon = new google.maps.Polygon({
-          paths: paths,
-          strokeColor: '#8B7AE8',
-          strokeOpacity: 0.8,
-          strokeWeight: 1.2,
-          fillColor: '#6B8DD6',
-          fillOpacity: coverageOpacity,
-          map: map,
-          zIndex: 1, // Colocar atrás dos marcadores (zIndex padrão de marcadores é maior)
-          geodesic: true
-        });
-        
-        coveragePolygons.push(polygon);
-        
-        // Adicionar ao bounds para ajustar zoom (opcional - não vamos ajustar automaticamente)
-        // para não interferir com a visualização do usuário
-        for (const path of paths) {
-          bounds.extend(path);
-        }
-      }
+      // zIndex 1: atrás dos marcadores
+      coveragePolygons = drawCoverageOverlays({
+        google,
+        map,
+        geometry: coveragePolygonGeoJSON,
+        fillOpacity: coverageOpacity,
+        zIndex: 1,
+        bounds
+      });
       
       console.log(`✅ [ViabilidadeAlares] ${coveragePolygons.length} polígono(s) renderizado(s) com sucesso!`);
       
