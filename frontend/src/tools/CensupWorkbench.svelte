@@ -749,7 +749,7 @@
   function buildSharePointPreviewHtml(reportHtml, { previewId, fileName, titleMarker }) {
     const safeId = String(previewId || '').replace(/[^a-zA-Z0-9_-]/g, '');
     const safeMarker = String(titleMarker || safeId).replace(/[<>]/g, '');
-    const titleText = `${safeMarker} - ${String(fileName || 'relatorio').replace(/\.pdf$/i, '')}`;
+    const titleText = safeMarker || String(fileName || 'relatorio').replace(/\.pdf$/i, '');
     const previewIdJson = JSON.stringify(safeId);
     const titleJson = JSON.stringify(titleText);
     // Monta a barra sem tag script literal (quebra o parser do Svelte)
@@ -817,10 +817,12 @@
 
   function openSharePointPreview(reportHtml, { fileName, ensureMeta = null, autoPrepare = true } = {}) {
     const previewId = `sp${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
-    const titleMarker = `CENSUP:${previewId}`;
     let pdfName = String(fileName || 'VI ALA - relatório.pdf').trim();
     if (/\.html?$/i.test(pdfName)) pdfName = pdfName.replace(/\.html?$/i, '.pdf');
     else if (!/\.pdf$/i.test(pdfName)) pdfName = `${pdfName}.pdf`;
+    // Nome da aba = nome do arquivo (ex.: VI ALA - 0019936 - ALA-1755914 - Engenharia).
+    // A extensão acha a aba por esse título + aba que abriu a prévia (Agenda).
+    const titleMarker = pdfName.replace(/\.pdf$/i, '').replace(/[<>]/g, '').trim() || `CENSUP:${previewId}`;
 
     let fullHtml = buildSharePointPreviewHtml(reportHtml, {
       previewId,
