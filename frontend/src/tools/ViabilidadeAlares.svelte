@@ -45,6 +45,9 @@
    * Payload: { items: [{ n, nome, status, statusClass, cidade, pop }] }
    */
   export let onEquipamentosChange = null;
+  /** Workbench only: painel flutuante “Lista de equipamentos” (fica no CensupWorkbench). */
+  export let equipListOpen = false;
+  export let onEquipListToggle = null;
   /**
    * Workbench only: CTO mais próxima fora do limite de 250m.
    * Payload: { active, nome, distancia } | { active: false }
@@ -9891,6 +9894,22 @@
               aria-hidden={wbStreetViewOpen}
             >
               {#if !wbStreetViewOpen}
+              {#if typeof onEquipListToggle === 'function'}
+                <button
+                  type="button"
+                  class="wb-map-tool-btn wb-equip-list-btn"
+                  class:active={equipListOpen}
+                  on:click={() => onEquipListToggle()}
+                  title={equipListOpen ? 'Fechar lista de equipamentos' : 'Lista de equipamentos'}
+                  aria-label="Lista de equipamentos"
+                  aria-pressed={equipListOpen}
+                >
+                  <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">
+                    <path fill="currentColor" d="M4 6h16v2H4V6zm0 5h16v2H4v-2zm0 5h10v2H4v-2z"/>
+                    <circle cx="19" cy="17" r="2.2" fill="currentColor"/>
+                  </svg>
+                </button>
+              {/if}
               <button
                 type="button"
                 class="wb-map-tool-btn wb-predios-btn"
