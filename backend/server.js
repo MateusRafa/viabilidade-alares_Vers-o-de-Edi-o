@@ -34,6 +34,14 @@ import {
   cloneCtosBetweenDatasets,
   resolvePgUrlForActiveWrite
 } from './lib/ctoCoverageDatasets.js';
+import {
+  TILES_NOTES,
+  createCoverageExecutor,
+  createApiExecutor,
+  buildCoverageTiles,
+  activateTilesPolygon,
+  shortCoverageError
+} from './lib/coverageTiles.js';
 
 const supabase = supabasePrimary;
 
@@ -658,7 +666,7 @@ async function startCoverageCalculationInternal({ autoAfterUpload = false } = {}
     }
     // O job da mancha continua em background e atualiza uploadProgress.
   } catch (err) {
-    const detail = err?.message || String(err);
+    const detail = shortCoverageError(err);
     uploadProgress.stage = 'error';
     uploadProgress.coverageFailed = true;
     uploadProgress.inProgress = false;
@@ -1432,6 +1440,304 @@ app.get('/api/ctos/nearby', async (req, res) => {
 // ROTAS DE COBERTURA (Coverage Polygons)
 // ============================================
 
+// ============================================
+// MANCHA EM BLOCOS (COVERAGE_ENGINE=tiles)
+// ============================================
+
+function isTilesCoverageEngine() {
+  return String(process.env.COVERAGE_ENGINE || '').trim().toLowerCase() === 'tiles';
+}
+
+function tilesConcurrency() {
+  const n = Number(process.env.COVERAGE_TILES_CONCURRENCY || 3);
+  return Number.isFinite(n) ? Math.min(6, Math.max(1, Math.floor(n))) : 3;
+}
+
+let tilesJob = null;
+let tilesLastJob = null;
+
+function publicTilesJob(job) {
+  if (!job) return null;
+  return {
+    kind: job.kind,
+    datasetId: job.datasetId,
+    executor: job.executor || null,
+    startedAt: job.startedAt,
+    finishedAt: job.finishedAt,
+    progress: job.progress,
+    result: job.result,
+    error: job.error
+  };
+}
+
+async function runTilesJob(kind, datasetId, { onProgress = null, afterBuild = null } = {}) {
+  const job = {
+    kind,
+    datasetId,
+    startedAt: new Date().toISOString(),
+    finishedAt: null,
+    progress: null,
+    result: null,
+    error: null,
+    abort: false
+  };
+  tilesJob = job;
+  let exec = null;
+  try {
+    exec = await createCoverageExecutor({ supabase, concurrency: tilesConcurrency() });
+    job.executor = exec.label;
+    const result = await buildCoverageTiles({
+      exec,
+      datasetId,
+      options: { concurrency: tilesConcurrency() },
+      shouldAbort: () => job.abort,
+      onProgress: (p) => {
+        job.progress = p;
+        if (onProgress) onProgress(p);
+      }
+    });
+    if (afterBuild) await afterBuild(exec, result);
+    job.result = result;
+    return result;
+  } catch (err) {
+    job.error = shortCoverageError(err);
+    throw err;
+  } finally {
+    job.finishedAt = new Date().toISOString();
+    if (exec) await exec.close();
+    tilesLastJob = job;
+    if (tilesJob === job) tilesJob = null;
+  }
+}
+
+/** Cancela uma prévia em andamento (o cálculo da base tem prioridade). */
+async function abortTilesPreview() {
+  if (tilesJob?.kind !== 'preview') return;
+  tilesJob.abort = true;
+  const deadline = Date.now() + 120_000;
+  while (tilesJob && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 500));
+  }
+}
+
+async function findLatestTilesPolygon() {
+  const datasetId = await getActiveDatasetId(supabase).catch(() => null);
+  let q = supabase
+    .from('coverage_polygons')
+    .select('id, total_ctos, area_km2, version, is_active, created_at, notes, dataset_id')
+    .eq('notes', TILES_NOTES)
+    .order('id', { ascending: false })
+    .limit(1);
+  if (datasetId) q = q.eq('dataset_id', datasetId);
+  const { data, error } = await q;
+  if (error) throw new Error(error.message);
+  return data?.[0] || null;
+}
+
+async function startTilesCoverageForUpload(res, { coverageDatasetId, shouldSwapAfterCoverage }) {
+  await abortTilesPreview();
+  if (tilesJob) {
+    return res.status(409).json({ success: false, error: 'Já existe um cálculo de mancha em andamento' });
+  }
+
+  const calculationId = `calc_tiles_${Date.now()}`;
+  const baseMessage = shouldSwapAfterCoverage
+    ? 'Calculando mancha no staging (ferramenta continua na base anterior)'
+    : (uploadProgress.coverageAutoStarted ? 'Calculando mancha de cobertura automaticamente' : 'Calculando mancha de cobertura');
+
+  uploadProgress = {
+    ...uploadProgress,
+    stage: 'calculating',
+    uploadPercent: 100,
+    calculationPercent: 0,
+    message: `${baseMessage}...`,
+    totalRows: 0,
+    processedRows: 0,
+    importedRows: 0,
+    calculationId,
+    totalCTOs: 0,
+    processedCTOs: 0,
+    stagingDatasetId: shouldSwapAfterCoverage ? coverageDatasetId : null,
+    pendingSwap: shouldSwapAfterCoverage,
+    inProgress: true,
+    coverageFailed: false
+  };
+  uploadInProgress = true;
+
+  res.json({
+    success: true,
+    message: 'Cálculo iniciado em background (blocos). Use GET /api/upload-progress para verificar progresso.',
+    status: 'processing',
+    calculation_id: calculationId,
+    engine: 'tiles'
+  });
+
+  (async () => {
+    try {
+      const result = await runTilesJob('upload', coverageDatasetId, {
+        onProgress: (p) => {
+          uploadProgress.totalCTOs = p.totalCtos;
+          uploadProgress.processedCTOs = p.insideCtos;
+          uploadProgress.calculationPercent = p.percent;
+          uploadProgress.message = `${baseMessage}: ${p.percent}% (${p.tiles} blocos)`;
+        },
+        afterBuild: async (exec, built) => {
+          if (shouldSwapAfterCoverage && coverageDatasetId) {
+            uploadProgress.message = 'Publicando nova base (swap staging → active)...';
+            try {
+              await swapActiveDataset(supabase, coverageDatasetId);
+            } catch (swapErr) {
+              throw new Error(`publicação da mancha falhou: ${shortCoverageError(swapErr)}`);
+            }
+            uploadProgress.pendingSwap = false;
+          } else {
+            await activateTilesPolygon(exec, { polygonId: built.polygonId, datasetId: coverageDatasetId });
+          }
+        }
+      });
+
+      uploadProgress.stage = 'completed';
+      uploadProgress.calculationPercent = 100;
+      uploadProgress.coverageFailed = false;
+      uploadProgress.inProgress = false;
+      uploadInProgress = false;
+      markBaseReadyPublished();
+      if (shouldSwapAfterCoverage) {
+        uploadProgress.message = 'Área de cobertura publicada! Nova base ativa para todos.';
+      } else {
+        uploadProgress.message = uploadProgress.coverageAutoStarted
+          ? 'Base e mancha de cobertura atualizadas com sucesso!'
+          : 'Área de cobertura criada com sucesso!';
+      }
+      console.log(
+        `✅ [API] Mancha em blocos publicada: #${result.polygonId} v${result.version}, ${result.totalCtos} CTOs, ${result.tiles} blocos, ${(result.elapsedMs / 1000).toFixed(1)}s`
+      );
+    } catch (err) {
+      console.error('❌ [API] Erro na mancha em blocos:', err?.message || err);
+      const detail = shortCoverageError(err);
+      uploadProgress.stage = 'error';
+      uploadProgress.coverageFailed = true;
+      uploadProgress.inProgress = false;
+      uploadInProgress = false;
+      uploadProgress.message = uploadProgress.coverageAutoStarted
+        ? `Aviso: a base foi atualizada, mas a mancha de cobertura falhou: ${detail}`
+        : `Erro: ${detail}`;
+    }
+  })();
+}
+
+// Prévia: calcula uma mancha em blocos inativa sobre a base ativa (o mapa não muda).
+app.post('/api/coverage/tiles/preview', requireAdmin, async (req, res) => {
+  try {
+    if (!supabase || !isSupabaseAvailable()) {
+      return res.status(503).json({ success: false, error: 'Supabase não disponível' });
+    }
+    if (isBaseUploadBusy()) {
+      return res.status(409).json({ success: false, error: 'Atualização de base em andamento' });
+    }
+    if (tilesJob) {
+      return res.status(409).json({ success: false, error: 'Já existe um cálculo de mancha em andamento', job: publicTilesJob(tilesJob) });
+    }
+    const datasetId = await getActiveDatasetId(supabase).catch(() => null);
+    runTilesJob('preview', datasetId).catch((err) => {
+      console.error('❌ [API] Prévia da mancha em blocos falhou:', shortCoverageError(err));
+    });
+    res.status(202).json({ success: true, message: 'Prévia iniciada. Acompanhe em GET /api/coverage/tiles/status.' });
+  } catch (err) {
+    res.status(500).json({ success: false, error: shortCoverageError(err) });
+  }
+});
+
+app.get('/api/coverage/tiles/status', async (req, res) => {
+  try {
+    if (!supabase || !isSupabaseAvailable()) {
+      return res.status(503).json({ success: false, error: 'Supabase não disponível' });
+    }
+    const { data, error } = await supabase
+      .from('coverage_polygons')
+      .select('id, version, is_active, notes, total_ctos, area_km2, created_at, dataset_id')
+      .order('id', { ascending: false })
+      .limit(10);
+    if (error) throw new Error(error.message);
+    res.json({
+      success: true,
+      engine: isTilesCoverageEngine() ? 'tiles' : 'legacy',
+      job: publicTilesJob(tilesJob),
+      lastJob: publicTilesJob(tilesLastJob),
+      polygons: data || []
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: shortCoverageError(err) });
+  }
+});
+
+// Publica uma mancha em blocos pronta (padrão: a mais recente da base ativa).
+app.post('/api/coverage/tiles/publish', requireAdmin, async (req, res) => {
+  try {
+    if (!supabase || !isSupabaseAvailable()) {
+      return res.status(503).json({ success: false, error: 'Supabase não disponível' });
+    }
+    if (tilesJob || isBaseUploadBusy()) {
+      return res.status(409).json({ success: false, error: 'Há um cálculo ou atualização de base em andamento' });
+    }
+    const requestedId = Number(req.body?.polygon_id || req.query.polygon_id || 0);
+    let target = null;
+    if (requestedId) {
+      const { data, error } = await supabase
+        .from('coverage_polygons')
+        .select('id, version, notes, dataset_id')
+        .eq('id', requestedId)
+        .maybeSingle();
+      if (error) throw new Error(error.message);
+      target = data;
+    } else {
+      target = await findLatestTilesPolygon();
+    }
+    if (!target || target.notes !== TILES_NOTES) {
+      return res.status(404).json({ success: false, error: 'Nenhuma mancha em blocos pronta para publicar' });
+    }
+    await activateTilesPolygon(createApiExecutor(supabase), { polygonId: Number(target.id), datasetId: target.dataset_id || null });
+    markBaseReadyPublished();
+    console.log(`✅ [API] Mancha em blocos #${target.id} publicada manualmente`);
+    res.json({ success: true, polygon_id: Number(target.id), version: target.version });
+  } catch (err) {
+    res.status(500).json({ success: false, error: shortCoverageError(err) });
+  }
+});
+
+// Volta para a mancha antiga (polígono único) mais recente da base ativa.
+app.post('/api/coverage/tiles/rollback', requireAdmin, async (req, res) => {
+  try {
+    if (!supabase || !isSupabaseAvailable()) {
+      return res.status(503).json({ success: false, error: 'Supabase não disponível' });
+    }
+    if (tilesJob || isBaseUploadBusy()) {
+      return res.status(409).json({ success: false, error: 'Há um cálculo ou atualização de base em andamento' });
+    }
+    const datasetId = await getActiveDatasetId(supabase).catch(() => null);
+    let q = supabase
+      .from('coverage_polygons')
+      .select('id, version, notes')
+      .or('notes.is.null,notes.not.like.tiles*')
+      .order('version', { ascending: false })
+      .limit(1);
+    if (datasetId) q = q.eq('dataset_id', datasetId);
+    const { data, error } = await q;
+    if (error) throw new Error(error.message);
+    const legacy = data?.[0];
+    if (!legacy) {
+      return res.status(404).json({ success: false, error: 'Nenhuma mancha antiga disponível para voltar' });
+    }
+    const { error: actErr } = await supabase.rpc('coverage_activate_polygon', { p_polygon_id: legacy.id });
+    if (actErr) throw new Error(actErr.message);
+    markBaseReadyPublished();
+    console.log(`↩️ [API] Mancha antiga #${legacy.id} reativada`);
+    res.json({ success: true, polygon_id: Number(legacy.id), version: legacy.version });
+  } catch (err) {
+    res.status(500).json({ success: false, error: shortCoverageError(err) });
+  }
+});
+
 // Rota para calcular polígonos de cobertura (processamento assíncrono)
 // Rota para calcular polígonos de cobertura (INCREMENTAL - manual)
 app.post('/api/coverage/calculate', async (req, res) => {
@@ -1461,6 +1767,10 @@ app.post('/api/coverage/calculate', async (req, res) => {
     console.log(
       `🗺️ [API] Target mancha: mode=${coverageTarget.mode} dataset=${coverageDatasetId || 'legacy'} swap=${shouldSwapAfterCoverage}`
     );
+
+    if (isTilesCoverageEngine()) {
+      return startTilesCoverageForUpload(res, { coverageDatasetId, shouldSwapAfterCoverage });
+    }
     
     // Deletar polígonos antigos do dataset alvo (não apaga a mancha active se estamos em staging)
     console.log('🗑️ [API] Deletando polígonos de cobertura do dataset alvo...');
@@ -2179,7 +2489,7 @@ app.post('/api/coverage/calculate', async (req, res) => {
         uploadProgress.coverageFailed = true;
         uploadProgress.inProgress = false;
         uploadInProgress = false;
-        const detail = err?.message || String(err);
+        const detail = shortCoverageError(err);
         uploadProgress.message = uploadProgress.coverageAutoStarted
           ? `Aviso: a base foi atualizada, mas a mancha de cobertura falhou: ${detail}`
           : `Erro: ${detail}`;
@@ -2192,7 +2502,7 @@ app.post('/api/coverage/calculate', async (req, res) => {
     uploadProgress.coverageFailed = true;
     uploadProgress.inProgress = false;
     uploadInProgress = false;
-    const detail = err?.message || String(err);
+    const detail = shortCoverageError(err);
     if (!uploadProgress.message || uploadProgress.stage === 'error') {
       uploadProgress.message = uploadProgress.coverageAutoStarted
         ? `Aviso: a base foi atualizada, mas a mancha de cobertura falhou: ${detail}`
@@ -2319,18 +2629,64 @@ app.get('/api/coverage/calculate-status', async (req, res) => {
 // O GeoJSON da mancha tem vários MB: guardamos a resposta pronta por polígono e só
 // reconsultamos os metadados (id/versão) no Supabase a cada COVERAGE_POLYGON_RECHECK_MS.
 const COVERAGE_POLYGON_RECHECK_MS = 60_000;
-const coveragePolygonCache = new Map(); // simplified(bool) -> { key, body, checkedAt }
+const coveragePolygonCache = new Map(); // `${preview}:${simplified}` -> { key, body, checkedAt }
 const coveragePolygonInflight = new Map();
 
 function invalidateCoveragePolygonCache() {
   coveragePolygonCache.clear();
 }
 
-async function loadCoveragePolygonBody(useSimplified) {
-  const cached = coveragePolygonCache.get(useSimplified);
+function coveragePolygonMeta(polygon, extra) {
+  return JSON.stringify({
+    success: true,
+    id: polygon.id,
+    total_ctos: polygon.total_ctos,
+    area_km2: polygon.area_km2,
+    version: polygon.version,
+    created_at: polygon.created_at,
+    ...extra
+  });
+}
+
+async function loadTilesPolygonBody(polygon, cacheKey, cached, key, now) {
+  const { data: fc, error } = await supabase.rpc('get_coverage_tiles_geojson', { p_polygon_id: polygon.id });
+  if (error || !fc) {
+    console.warn('⚠️ [API] Erro ao buscar blocos da mancha:', error?.message || 'vazio');
+    return {
+      status: 500,
+      body: JSON.stringify({ success: false, error: 'Erro ao buscar blocos da mancha', details: shortCoverageError(error) })
+    };
+  }
+  const meta = coveragePolygonMeta(polygon, { format: 'tiles', is_simplified: true, is_active: !!polygon.is_active });
+  const body = `${meta.slice(0, -1)},"geometry":null,"tiles":${String(fc)}}`;
+  coveragePolygonCache.set(cacheKey, { key, body, checkedAt: now });
+  console.log(`🗺️ [API] Mancha em blocos ${polygon.id} v${polygon.version} em cache (${Math.round(body.length / 1024)} KB)`);
+  return { status: 200, body };
+}
+
+async function loadCoveragePolygonBody(useSimplified, preview = false) {
+  const cacheKey = `${preview ? 'preview' : 'active'}:${useSimplified}`;
+  const cached = coveragePolygonCache.get(cacheKey);
   const now = Date.now();
   if (cached && now - cached.checkedAt < COVERAGE_POLYGON_RECHECK_MS) {
     return { status: 200, body: cached.body };
+  }
+
+  if (preview) {
+    const polygon = await findLatestTilesPolygon();
+    if (!polygon) {
+      coveragePolygonCache.delete(cacheKey);
+      return {
+        status: 200,
+        body: JSON.stringify({ success: false, message: 'Nenhuma prévia de mancha em blocos encontrada.' })
+      };
+    }
+    const key = `${polygon.id}:${polygon.version}:${polygon.created_at}`;
+    if (cached && cached.key === key) {
+      cached.checkedAt = now;
+      return { status: 200, body: cached.body };
+    }
+    return loadTilesPolygonBody(polygon, cacheKey, cached, key, now);
   }
 
   const { data, error } = await supabase.rpc('get_active_coverage_polygon');
@@ -2347,7 +2703,7 @@ async function loadCoveragePolygonBody(useSimplified) {
   }
 
   if (!data || data.length === 0) {
-    coveragePolygonCache.delete(useSimplified);
+    coveragePolygonCache.delete(cacheKey);
     return {
       status: 200,
       body: JSON.stringify({
@@ -2364,6 +2720,15 @@ async function loadCoveragePolygonBody(useSimplified) {
     return { status: 200, body: cached.body };
   }
 
+  const { data: header } = await supabase
+    .from('coverage_polygons')
+    .select('notes')
+    .eq('id', polygon.id)
+    .maybeSingle();
+  if (header?.notes === TILES_NOTES) {
+    return loadTilesPolygonBody(polygon, cacheKey, cached, key, now);
+  }
+
   const { data: geoJsonData, error: geoJsonError } = await supabase.rpc('get_polygon_geojson', {
     p_polygon_id: polygon.id,
     p_use_simplified: useSimplified
@@ -2377,19 +2742,11 @@ async function loadCoveragePolygonBody(useSimplified) {
   }
 
   // Monta o JSON sem parse/stringify do GeoJSON (string já é JSON válido do ST_AsGeoJSON).
-  const meta = JSON.stringify({
-    success: true,
-    id: polygon.id,
-    total_ctos: polygon.total_ctos,
-    area_km2: polygon.area_km2,
-    version: polygon.version,
-    created_at: polygon.created_at,
-    is_simplified: useSimplified
-  });
+  const meta = coveragePolygonMeta(polygon, { is_simplified: useSimplified });
   const body = `${meta.slice(0, -1)},"geometry":${geometryJson}}`;
 
   if (geometryJson !== 'null') {
-    coveragePolygonCache.set(useSimplified, { key, body, checkedAt: now });
+    coveragePolygonCache.set(cacheKey, { key, body, checkedAt: now });
     console.log(
       `🗺️ [API] Polígono ${polygon.id} v${polygon.version} em cache (${Math.round(body.length / 1024)} KB)`
     );
@@ -2418,12 +2775,14 @@ app.get('/api/coverage/polygon', async (req, res) => {
       });
     }
 
-    let pending = coveragePolygonInflight.get(useSimplified);
+    const preview = req.query.preview === '1' || req.query.preview === 'true';
+    const inflightKey = `${preview ? 'preview' : 'active'}:${useSimplified}`;
+    let pending = coveragePolygonInflight.get(inflightKey);
     if (!pending) {
-      pending = loadCoveragePolygonBody(useSimplified).finally(() => {
-        coveragePolygonInflight.delete(useSimplified);
+      pending = loadCoveragePolygonBody(useSimplified, preview).finally(() => {
+        coveragePolygonInflight.delete(inflightKey);
       });
-      coveragePolygonInflight.set(useSimplified, pending);
+      coveragePolygonInflight.set(inflightKey, pending);
     }
     const { status, body } = await pending;
     res.status(status).type('application/json').send(body);
@@ -2592,11 +2951,26 @@ app.get('/api/coverage/check-point', async (req, res) => {
       });
     }
     
-    // Verificar se ponto está coberto
-    const { data, error } = await supabase.rpc('check_point_in_coverage', {
-      p_latitude: lat,
-      p_longitude: lng
-    });
+    // Verificar se ponto está coberto (preview=1 → última mancha em blocos, mesmo inativa)
+    const preview = req.query.preview === '1' || req.query.preview === 'true';
+    let data;
+    let error;
+    if (preview) {
+      const tilesPolygon = await findLatestTilesPolygon();
+      if (!tilesPolygon) {
+        return res.json({ success: false, is_covered: false, message: 'Nenhuma prévia de mancha em blocos encontrada' });
+      }
+      ({ data, error } = await supabase.rpc('check_point_in_coverage_tiles', {
+        p_latitude: lat,
+        p_longitude: lng,
+        p_polygon_id: tilesPolygon.id
+      }));
+    } else {
+      ({ data, error } = await supabase.rpc('check_point_in_coverage', {
+        p_latitude: lat,
+        p_longitude: lng
+      }));
+    }
     
     if (error) {
       console.error('❌ [API] Erro ao verificar ponto:', error);
