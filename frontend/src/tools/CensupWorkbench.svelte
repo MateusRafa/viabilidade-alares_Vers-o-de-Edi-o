@@ -1620,6 +1620,7 @@
     generating = true;
     error = '';
     statusMsg = 'Gerando PDF…';
+    await waitForPaint();
 
     try {
       // Garante que o PDF use o endereço do pin (não o da Agenda)
@@ -1682,6 +1683,18 @@
     }
   }
 
+  async function waitForPaint() {
+    await tick();
+    await new Promise((resolve) => {
+      const done = () => setTimeout(resolve, 30);
+      if (typeof requestAnimationFrame === 'function') {
+        requestAnimationFrame(() => requestAnimationFrame(done));
+      } else {
+        done();
+      }
+    });
+  }
+
   async function salvarRelatorio({
     silent = false,
     pdfHtml = null,
@@ -1701,6 +1714,7 @@
       statusMsg = backupSharePoint
         ? 'Preparando relatório…'
         : 'Salvando relatório no Portal…';
+      await waitForPaint();
     }
     try {
       let doSharePointBackup = backupSharePoint === true;
@@ -3292,6 +3306,7 @@
   .wb-dots span {
     display: inline-block;
     animation: wb-dot-blink 1.2s infinite ease-in-out both;
+    will-change: opacity, transform;
   }
 
   .wb-dots span:nth-child(2) {
