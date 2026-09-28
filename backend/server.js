@@ -2649,6 +2649,20 @@ function coveragePolygonMeta(polygon, extra) {
 }
 
 async function loadTilesPolygonBody(polygon, cacheKey, cached, key, now) {
+  // Geometria única de exibição (blocos já unidos): desenho leve igual ao da mancha antiga
+  const { data: merged, error: mergedError } = await supabase.rpc('get_polygon_geojson', {
+    p_polygon_id: polygon.id,
+    p_use_simplified: true
+  });
+  const mergedJson = !mergedError && merged?.[0]?.geojson ? String(merged[0].geojson) : null;
+  if (mergedJson) {
+    const meta = coveragePolygonMeta(polygon, { format: 'merged', is_simplified: true, is_active: !!polygon.is_active });
+    const body = `${meta.slice(0, -1)},"geometry":${mergedJson}}`;
+    coveragePolygonCache.set(cacheKey, { key, body, checkedAt: now });
+    console.log(`🗺️ [API] Mancha ${polygon.id} v${polygon.version} (blocos unidos) em cache (${Math.round(body.length / 1024)} KB)`);
+    return { status: 200, body };
+  }
+
   const { data: fc, error } = await supabase.rpc('get_coverage_tiles_geojson', { p_polygon_id: polygon.id });
   if (error || !fc) {
     console.warn('⚠️ [API] Erro ao buscar blocos da mancha:', error?.message || 'vazio');
