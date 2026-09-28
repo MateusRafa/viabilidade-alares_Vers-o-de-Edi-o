@@ -441,6 +441,17 @@ export async function buildCoverageTiles({
       throw new Error(`Verificação falhou: ${stats.insideCtos} de ${totalCtos} CTOs incluídas nos blocos`);
     }
 
+    // Opcional: sem a geometria única o mapa desenha os blocos (mais pesado, mas correto)
+    let merged = null;
+    try {
+      const rows = await withRetry('geometria de exibição', () =>
+        exec.rows('coverage_tiles_build_display', { p_polygon_id: polygonId, p_tolerance: o.displayTol }, { timeoutMs: apiMode ? 8000 : 180_000 })
+      );
+      merged = rows[0] || null;
+    } catch (err) {
+      log(`⚠️ [Mancha blocos] Geometria única de exibição não gerada (mapa usará os blocos): ${shortCoverageError(err)}`);
+    }
+
     const fin = await withRetry('finalização', () =>
       exec.rows('coverage_tiles_finalize_header', { p_polygon_id: polygonId, p_total_ctos: totalCtos }, { timeoutMs: 60_000 })
     );
@@ -451,7 +462,8 @@ export async function buildCoverageTiles({
       totalCtos,
       tiles: Number(f.tiles || stats.tiles),
       areaKm2: Number(f.area_km2 || stats.areaKm2),
-      displayPoints: Number(f.display_points || stats.displayPoints),
+      displayPoints: merged ? Number(merged.points) : Number(f.display_points || stats.displayPoints),
+      displayParts: merged ? Number(merged.parts) : null,
       splits: stats.splits,
       elapsedMs: Date.now() - startedAt,
       executor: exec.label
