@@ -24,8 +24,11 @@ import {
   testPortalCensupSupabaseConnection
 } from './lib/portalCensup/supabaseCensup.js';
 import {
+  clearCensupSyncKick,
   clearCensupSyncPresence,
+  getCensupSyncKick,
   getCensupSyncPresenceTtlMs,
+  kickCensupSyncPresence,
   listCensupSyncOnline,
   touchCensupSyncPresence
 } from './lib/portalCensup/presenceStore.js';
@@ -159,7 +162,10 @@ export function registerPortalCensupRoutes(app) {
       }
 
       const enabled = req.body?.enabled !== false;
-      if (enabled) {
+      // resume = o próprio usuário religou a sync → descarta o deslogue do colega
+      if (enabled && req.body?.resume === true) clearCensupSyncKick(usuario);
+      const kicked = enabled ? getCensupSyncKick(usuario) : null;
+      if (enabled && !kicked) {
         touchCensupSyncPresence(usuario, {
           source: req.body?.source || 'extension-sync',
           badgeColor: req.body?.badgeColor
@@ -171,13 +177,38 @@ export function registerPortalCensupRoutes(app) {
       const online = listCensupSyncOnline();
       res.json({
         success: true,
-        enabled,
+        enabled: enabled && !kicked,
+        kicked,
         onlineCount: online.length,
         online,
         ttlMs: getCensupSyncPresenceTtlMs()
       });
     } catch (err) {
       console.error('❌ [PortalCENSUP] POST presence:', err);
+      sendError(res, err);
+    }
+  });
+
+  /**
+   * Deslogar colega (esqueceu a extensão ligada): só desliga a Sincronização dele.
+   * Body: { usuario }
+   */
+  app.post('/api/portal-censup/presence/kick', async (req, res) => {
+    try {
+      const by = getUsuarioFromRequest(req);
+      if (!by) {
+        return res.status(401).json({ success: false, error: 'Usuário não autenticado' });
+      }
+      const alvo = String(req.body?.alvo || '').trim();
+      if (!alvo) {
+        return res.status(400).json({ success: false, error: 'Informe o usuário a deslogar.' });
+      }
+      const kick = kickCensupSyncPresence(alvo, by);
+      console.log(`[PortalCENSUP] ${by} deslogou a sincronização de ${alvo}`);
+      const online = listCensupSyncOnline();
+      res.json({ success: true, kick, onlineCount: online.length, online });
+    } catch (err) {
+      console.error('❌ [PortalCENSUP] POST presence/kick:', err);
       sendError(res, err);
     }
   });
@@ -215,7 +246,7 @@ export function registerPortalCensupRoutes(app) {
 
       // Mesma requisição: se a sync estiver ligada, marca o usuário online antes de atribuir
       // (evita falha por presença só em memória / outra réplica).
-      if (req.body?.syncEnabled === true) {
+      if (req.body?.syncEnabled === true && !getCensupSyncKick(usuario)) {
         touchCensupSyncPresence(usuario, {
           source: req.body?.source || 'extension-sync',
           badgeColor: req.body?.badgeColor
