@@ -2278,7 +2278,7 @@
                 on:click={localizarNoMapa}
                 disabled={locating}
               >
-                {locating ? 'Localizando…' : 'Localizar'}
+                {#if locating}Localizando<span class="wb-dots" aria-hidden="true"><span>.</span><span>.</span><span>.</span></span>{:else}Localizar{/if}
               </button>
               <button
                 type="button"
@@ -2286,7 +2286,7 @@
                 on:click={abrirRelatorioComPrint}
                 disabled={loading || locating || capturingMapPreview || generating || !ViabilidadeAlares}
               >
-                {capturingMapPreview ? 'Capturando…' : 'Gerar Relatório'}
+                {#if capturingMapPreview}Capturando<span class="wb-dots" aria-hidden="true"><span>.</span><span>.</span><span>.</span></span>{:else}Gerar Relatório{/if}
               </button>
             </div>
             {#if mapSearchError}
@@ -3282,6 +3282,43 @@
 
   .wb-map-btn-report:hover:not(:disabled) {
     background: #4f7fd6;
+  }
+
+  .wb-dots {
+    display: inline-block;
+    margin-left: 1px;
+  }
+
+  .wb-dots span {
+    display: inline-block;
+    animation: wb-dot-blink 1.2s infinite ease-in-out both;
+  }
+
+  .wb-dots span:nth-child(2) {
+    animation-delay: 0.2s;
+  }
+
+  .wb-dots span:nth-child(3) {
+    animation-delay: 0.4s;
+  }
+
+  @keyframes wb-dot-blink {
+    0%,
+    80%,
+    100% {
+      opacity: 0.15;
+      transform: translateY(0);
+    }
+    40% {
+      opacity: 1;
+      transform: translateY(-2px);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .wb-dots span {
+      animation: none;
+    }
   }
 
   .wb-map-pane.collapsed {
