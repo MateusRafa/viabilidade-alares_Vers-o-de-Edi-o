@@ -10,6 +10,8 @@ import fs from 'fs';
 import path from 'path';
 
 const ONLINE_TTL_MS = 120_000;
+/** Deslogado por colega: vale até o próprio usuário religar a sync (ou expirar). */
+const KICK_TTL_MS = 12 * 60 * 60 * 1000;
 const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), 'data');
 const STORE_PATH = path.join(DATA_DIR, 'portal-censup-sync-presence.json');
 
@@ -18,6 +20,8 @@ const memory = new Map();
 /** Último usuário que recebeu chamado automático da esteira */
 let lastEsteiraAssignee = null;
 let lastLoadAt = 0;
+/** @type {Map<string, { usuario: string, by: string, at: number }>} */
+const kicks = new Map();
 
 function normalizeUsuario(usuario) {
   return String(usuario || '').trim();
@@ -61,6 +65,17 @@ function loadFromDisk() {
       });
     }
     lastEsteiraAssignee = normalizeUsuario(parsed?.lastEsteiraAssignee) || null;
+    kicks.clear();
+    const savedKicks = parsed?.kicks && typeof parsed.kicks === 'object' ? parsed.kicks : {};
+    for (const [key, kick] of Object.entries(savedKicks)) {
+      const at = Number(kick?.at) || 0;
+      if (!at || now - at > KICK_TTL_MS) continue;
+      kicks.set(key, {
+        usuario: normalizeUsuario(kick?.usuario || key),
+        by: normalizeUsuario(kick?.by),
+        at
+      });
+    }
     lastLoadAt = now;
   } catch {
     /* ignore */
@@ -86,6 +101,7 @@ function saveToDisk() {
         {
           sessions,
           lastEsteiraAssignee,
+          kicks: Object.fromEntries(kicks.entries()),
           updatedAt: new Date().toISOString()
         },
         null,
@@ -140,6 +156,43 @@ export function clearCensupSyncPresence(usuario) {
   const ok = memory.delete(nome.toLowerCase());
   if (ok) saveToDisk();
   return ok;
+}
+
+/** Colega desliga a sync de outro usuário (esqueceu a extensão ligada). */
+export function kickCensupSyncPresence(usuario, by) {
+  refreshFromDiskIfStale();
+  const nome = normalizeUsuario(usuario);
+  if (!nome) return null;
+  const key = nome.toLowerCase();
+  const kick = { usuario: memory.get(key)?.usuario || nome, by: normalizeUsuario(by), at: Date.now() };
+  memory.delete(key);
+  kicks.set(key, kick);
+  saveToDisk();
+  return kick;
+}
+
+/** Deslogue pendente (não consome — só some quando o usuário religa ou expira). */
+export function getCensupSyncKick(usuario) {
+  refreshFromDiskIfStale();
+  const key = normalizeUsuario(usuario).toLowerCase();
+  if (!key) return null;
+  const kick = kicks.get(key);
+  if (!kick) return null;
+  if (Date.now() - kick.at > KICK_TTL_MS) {
+    kicks.delete(key);
+    saveToDisk();
+    return null;
+  }
+  return { usuario: kick.usuario, by: kick.by, at: new Date(kick.at).toISOString() };
+}
+
+export function clearCensupSyncKick(usuario) {
+  refreshFromDiskIfStale();
+  const key = normalizeUsuario(usuario).toLowerCase();
+  if (!key || !kicks.has(key)) return false;
+  kicks.delete(key);
+  saveToDisk();
+  return true;
 }
 
 /**
