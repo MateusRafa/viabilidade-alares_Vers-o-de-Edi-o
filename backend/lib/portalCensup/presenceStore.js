@@ -246,9 +246,11 @@ export function setLastEsteiraAssignee(usuario) {
  * Próximo da esteira.
  * - Ordem: chegada online (depois alfabética)
  * - Com 2+ online: nunca o mesmo usuário duas vezes seguidas
+ * - accept(usuario): só considera quem aceita o chamado (tipos liberados)
  */
-export function pickNextCensupSyncAssignee() {
-  const online = listCensupSyncOnline();
+export function pickNextCensupSyncAssignee(accept = null) {
+  const all = listCensupSyncOnline();
+  const online = typeof accept === 'function' ? all.filter((u) => accept(u.usuario)) : all;
   if (!online.length) return null;
 
   if (online.length === 1) {
@@ -259,16 +261,22 @@ export function pickNextCensupSyncAssignee() {
   }
 
   const lastKey = normalizePersonKey(lastEsteiraAssignee);
-  let start = 0;
-  if (lastKey) {
-    const idx = online.findIndex((u) => normalizePersonKey(u.usuario) === lastKey);
-    start = idx >= 0 ? (idx + 1) % online.length : 0;
+  const eligible = new Set(online.map((u) => normalizePersonKey(u.usuario)));
+  let chosen = null;
+  // Próximo depois do último na ordem completa da esteira, pulando quem não aceita
+  const idx = lastKey ? all.findIndex((u) => normalizePersonKey(u.usuario) === lastKey) : -1;
+  if (idx >= 0) {
+    for (let i = 1; i <= all.length; i++) {
+      const cand = all[(idx + i) % all.length];
+      const key = normalizePersonKey(cand.usuario);
+      if (key !== lastKey && eligible.has(key)) {
+        chosen = cand;
+        break;
+      }
+    }
   }
-
-  // Garante que não repete o último se ainda estiver na lista
-  let chosen = online[start];
-  if (lastKey && normalizePersonKey(chosen.usuario) === lastKey) {
-    chosen = online[(start + 1) % online.length];
+  if (!chosen) {
+    chosen = online.find((u) => normalizePersonKey(u.usuario) !== lastKey) || online[0];
   }
 
   lastEsteiraAssignee = chosen.usuario;
