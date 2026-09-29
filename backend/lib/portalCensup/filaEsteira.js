@@ -5,9 +5,42 @@
 import fs from 'fs';
 import path from 'path';
 import { pickNextCensupSyncAssignee, listCensupSyncOnline, setLastEsteiraAssignee } from './presenceStore.js';
+import { isMotivoLiberadoParaUsuario, registrarMotivosConhecidos } from './motivosUsuario.js';
 
 const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), 'data');
 const STORE_PATH = path.join(DATA_DIR, 'portal-censup-fila-atribuicoes.json');
+
+/**
+ * Mesma allowlist da extensão: só estes motivos entram na esteira.
+ * Ex.: "Unidade MDU" NÃO atribui — fica Ignorado na lista.
+ */
+const ALLOWED_MOTIVOS_ESTEIRA = [
+  'analise de arrastadinhas',
+  'analise de complemento',
+  'analise de distancia',
+  'similaridade de endereco'
+];
+
+function normalizeMotivoEsteira(value) {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+/**
+ * Elegível = algum usuário online tem o tipo liberado.
+ * Ninguém online → allowlist padrão (ex.: Unidade MDU fica Ignorado).
+ */
+export function isMotivoElegivelEsteira(motivoRaw, online = null) {
+  const motivo = normalizeMotivoEsteira(motivoRaw);
+  if (!motivo) return true;
+  const lista = Array.isArray(online) ? online : listCensupSyncOnline();
+  if (lista.length) return lista.some((u) => isMotivoLiberadoParaUsuario(u.usuario, motivoRaw));
+  return ALLOWED_MOTIVOS_ESTEIRA.some((ok) => motivo === ok || motivo.includes(ok));
+}
 
 function ensureDir() {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -73,6 +106,7 @@ function toPublicAssignment(entry, item = {}) {
 
 /**
  * Registra pedidos vistos na Agenda.
+ * - Motivo não elegível (ex.: Unidade MDU) → nunca atribui; limpa dono se houver
  * - Pedido sem dono + há online → atribui (esteira)
  * - Pedido sem dono + ninguém online → data/hora na lista
  * - Pedido com dono → mantém, exceto se Agenda mostrar "Em análise por" outra pessoa → vira órfão
@@ -80,10 +114,13 @@ function toPublicAssignment(entry, item = {}) {
  */
 export function registrarPedidosNaEsteira(items = []) {
   const store = readStore();
-  const onlineCount = listCensupSyncOnline().length;
+  const online = listCensupSyncOnline();
+  const onlineCount = online.length;
+  registrarMotivosConhecidos((items || []).map((i) => i?.motivo));
   let created = 0;
   let assigned = 0;
   let released = 0;
+  let skippedMotivo = 0;
   let changed = false;
   const map = {};
 
@@ -94,12 +131,51 @@ export function registrarPedidosNaEsteira(items = []) {
     const existing = store.assignments[pedido];
     const analistaAgenda = extractAnalistaFromSituacaoAgenda(item?.situacao);
     const now = new Date().toISOString();
+    const elegivel = isMotivoElegivelEsteira(item?.motivo, online);
+    const aceita = (usuario) => isMotivoLiberadoParaUsuario(usuario, item?.motivo);
+
+    // Unidade MDU e demais motivos fora da allowlist: não entram na esteira
+    if (!elegivel) {
+      skippedMotivo += 1;
+      if (existing) {
+        if (item.dataSituacao || item.dataSituacaoRaw) {
+          existing.dataSituacao = item.dataSituacao || item.dataSituacaoRaw;
+        }
+        if (item.situacao) existing.situacaoAgenda = item.situacao;
+        existing.motivo = item.motivo || existing.motivo || null;
+        if (existing.usuarioFila && !aceita(existing.usuarioFila)) {
+          existing.usuarioFila = null;
+          existing.atribuidoEm = null;
+          changed = true;
+        }
+        map[pedido] = toPublicAssignment(existing, item);
+      } else {
+        store.assignments[pedido] = {
+          pedido,
+          usuarioFila: null,
+          atribuidoEm: null,
+          vistoEm: now,
+          dataSituacao: item.dataSituacao || item.dataSituacaoRaw || null,
+          situacaoAgenda: item.situacao || null,
+          motivo: item.motivo || null,
+          onlineNoMomento: onlineCount,
+          liberadoPorAgenda: null,
+          liberadoEm: null,
+          ignoradoMotivo: true
+        };
+        created += 1;
+        changed = true;
+        map[pedido] = toPublicAssignment(store.assignments[pedido], item);
+      }
+      continue;
+    }
 
     if (existing) {
       if (item.dataSituacao || item.dataSituacaoRaw) {
         existing.dataSituacao = item.dataSituacao || item.dataSituacaoRaw;
       }
       if (item.situacao) existing.situacaoAgenda = item.situacao;
+      existing.motivo = item.motivo || existing.motivo || null;
 
       // Outro usuário pegou na Agenda → libera (padrão órfão)
       if (
@@ -115,6 +191,17 @@ export function registrarPedidosNaEsteira(items = []) {
         changed = true;
       }
 
+      // Dono desligou este tipo → volta para a esteira (se ainda não está analisando na Agenda)
+      if (
+        existing.usuarioFila &&
+        !aceita(existing.usuarioFila) &&
+        !(analistaAgenda && sameEsteiraPerson(analistaAgenda, existing.usuarioFila))
+      ) {
+        existing.usuarioFila = null;
+        existing.atribuidoEm = null;
+        changed = true;
+      }
+
       // Já tem dono (ou acabou de liberar): não reaplica esteira automática
       if (existing.usuarioFila || existing.liberadoPorAgenda) {
         map[pedido] = toPublicAssignment(existing, item);
@@ -122,7 +209,7 @@ export function registrarPedidosNaEsteira(items = []) {
       }
 
       // Sem dono e nunca liberado pela Agenda: pode atribuir se houver online
-      const assignee = onlineCount > 0 ? pickNextCensupSyncAssignee() : null;
+      const assignee = onlineCount > 0 ? pickNextCensupSyncAssignee(aceita) : null;
       if (assignee) {
         existing.usuarioFila = assignee;
         existing.atribuidoEm = now;
@@ -136,7 +223,7 @@ export function registrarPedidosNaEsteira(items = []) {
       continue;
     }
 
-    const assignee = onlineCount > 0 ? pickNextCensupSyncAssignee() : null;
+    const assignee = onlineCount > 0 ? pickNextCensupSyncAssignee(aceita) : null;
     const entry = {
       pedido,
       usuarioFila: assignee,
@@ -171,6 +258,7 @@ export function registrarPedidosNaEsteira(items = []) {
     created,
     assigned,
     released,
+    skippedMotivo,
     onlineCount,
     assignments: map
   };
