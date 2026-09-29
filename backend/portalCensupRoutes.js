@@ -38,6 +38,7 @@ import {
   atribuirPedidoNaEsteira
 } from './lib/portalCensup/filaEsteira.js';
 import { getFilaEspelho, setFilaEspelho } from './lib/portalCensup/filaEspelho.js';
+import { getMotivosConfigUsuario, setMotivoUsuario } from './lib/portalCensup/motivosUsuario.js';
 
 function getUsuarioFromRequest(req) {
   const headerKeys = Object.keys(req.headers || {});
@@ -181,6 +182,7 @@ export function registerPortalCensupRoutes(app) {
         kicked,
         onlineCount: online.length,
         online,
+        motivos: getMotivosConfigUsuario(usuario),
         ttlMs: getCensupSyncPresenceTtlMs()
       });
     } catch (err) {
@@ -225,10 +227,46 @@ export function registerPortalCensupRoutes(app) {
         success: true,
         onlineCount: online.length,
         online,
+        motivos: getMotivosConfigUsuario(usuario),
         ttlMs: getCensupSyncPresenceTtlMs()
       });
     } catch (err) {
       console.error('❌ [PortalCENSUP] GET presence:', err);
+      sendError(res, err);
+    }
+  });
+
+  /** Tipos de chamado liberados para análise do próprio usuário. */
+  app.get('/api/portal-censup/motivos', async (req, res) => {
+    try {
+      const usuario = getUsuarioFromRequest(req);
+      if (!usuario) {
+        return res.status(401).json({ success: false, error: 'Usuário não autenticado' });
+      }
+      res.json({ success: true, motivos: getMotivosConfigUsuario(usuario) });
+    } catch (err) {
+      console.error('❌ [PortalCENSUP] GET motivos:', err);
+      sendError(res, err);
+    }
+  });
+
+  /**
+   * Liga/desliga um tipo para o próprio usuário (nunca para outro).
+   * Body: { motivo, liberado }
+   */
+  app.post('/api/portal-censup/motivos', async (req, res) => {
+    try {
+      const usuario = getUsuarioFromRequest(req);
+      if (!usuario) {
+        return res.status(401).json({ success: false, error: 'Usuário não autenticado' });
+      }
+      const motivos = setMotivoUsuario(usuario, req.body?.motivo, req.body?.liberado === true);
+      console.log(
+        `[PortalCENSUP] ${usuario} ${req.body?.liberado === true ? 'liberou' : 'bloqueou'} o tipo "${req.body?.motivo}"`
+      );
+      res.json({ success: true, motivos });
+    } catch (err) {
+      console.error('❌ [PortalCENSUP] POST motivos:', err);
       sendError(res, err);
     }
   });
