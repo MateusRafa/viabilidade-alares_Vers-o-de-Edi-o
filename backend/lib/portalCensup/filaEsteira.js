@@ -4,7 +4,7 @@
  */
 import fs from 'fs';
 import path from 'path';
-import { pickNextCensupSyncAssignee, listCensupSyncOnline, setLastEsteiraAssignee } from './presenceStore.js';
+import { pickNextCensupSyncAssignee, listCensupSyncOnline } from './presenceStore.js';
 import { isMotivoLiberadoParaUsuario, registrarMotivosConhecidos } from './motivosUsuario.js';
 
 const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), 'data');
@@ -264,7 +264,11 @@ export function registrarPedidosNaEsteira(items = []) {
   };
 }
 
-/** Duplo clique / claim manual: dono passa a ser o usuário da extensão. */
+/**
+ * Duplo clique / claim manual: dono passa a ser o usuário da extensão.
+ * Não mexe na vez da esteira — a sequência segue só as entregas automáticas
+ * (abrir o próprio chamado não pode fazer o usuário "perder a vez").
+ */
 export function atribuirPedidoNaEsteira(pedido, usuario) {
   const pedidoKey = normalizePedido(pedido);
   const nome = String(usuario || '').trim();
@@ -285,6 +289,10 @@ export function atribuirPedidoNaEsteira(pedido, usuario) {
     onlineNoMomento: listCensupSyncOnline().length
   };
 
+  if (existing.usuarioFila && sameEsteiraPerson(existing.usuarioFila, nome)) {
+    return toPublicAssignment(existing);
+  }
+
   existing.usuarioFila = nome;
   existing.atribuidoEm = now;
   existing.liberadoPorAgenda = null;
@@ -292,7 +300,6 @@ export function atribuirPedidoNaEsteira(pedido, usuario) {
   existing.claimManual = true;
   store.assignments[pedidoKey] = existing;
   writeStore(store);
-  setLastEsteiraAssignee(nome);
 
   return toPublicAssignment(existing);
 }
