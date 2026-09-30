@@ -39,6 +39,7 @@ import {
 } from './lib/portalCensup/filaEsteira.js';
 import { getFilaEspelho, setFilaEspelho } from './lib/portalCensup/filaEspelho.js';
 import { getMotivosConfigUsuario, setMotivoUsuario } from './lib/portalCensup/motivosUsuario.js';
+import { getRemoteRelayStatus } from './lib/portalCensup/remoteRelay.js';
 
 function getUsuarioFromRequest(req) {
   const headerKeys = Object.keys(req.headers || {});
@@ -379,6 +380,14 @@ export function registerPortalCensupRoutes(app) {
       console.error('❌ [PortalCENSUP] GET fila/espelho:', err);
       sendError(res, err);
     }
+  });
+
+  app.get('/api/portal-censup/remote/status', (req, res) => {
+    const usuario = getUsuarioFromRequest(req);
+    if (!usuario) {
+      return res.status(401).json({ success: false, error: 'Usuário não autenticado' });
+    }
+    res.json({ success: true, ...getRemoteRelayStatus(usuario) });
   });
 
   app.get('/api/portal-censup/chamados/:id', async (req, res) => {
