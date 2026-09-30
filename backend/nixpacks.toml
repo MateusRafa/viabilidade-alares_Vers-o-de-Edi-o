@@ -1,7 +1,6 @@
-[phases.setup]
-nixPkgs = ["nodejs_18", "npm-9_x"]
-
 [variables]
+# supabase-js atual exige Node 22 (WebSocket nativo)
+NIXPACKS_NODE_VERSION = "22"
 PLAYWRIGHT_BROWSERS_PATH = "/app/ms-playwright"
 PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD = "0"
 
