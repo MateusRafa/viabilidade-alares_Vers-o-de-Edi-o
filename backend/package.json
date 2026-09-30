@@ -2,6 +2,9 @@
   "name": "projetistas-backend",
   "version": "1.0.0",
   "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "start": "node --max-old-space-size=4096 --expose-gc server.js",
     "dev": "node --watch server.js",
