@@ -14,6 +14,7 @@ const WS_PATH = '/ws/remote';
 const MAX_PAYLOAD_BYTES = 4 * 1024 * 1024;
 const HEARTBEAT_MS = 25_000;
 const MAX_VIEWERS_PER_USER = 3;
+const VIEWER_BACKLOG_BYTES = 1024 * 1024;
 
 /** @type {Map<string, { usuario: string, host: import('ws').WebSocket | null, hostInfo: object | null, viewers: Map<string, import('ws').WebSocket> }>} */
 const sessions = new Map();
@@ -94,7 +95,10 @@ function handleHost(ws, session) {
   ws.on('message', (data, isBinary) => {
     if (isBinary) {
       for (const viewer of session.viewers.values()) {
-        if (viewer.readyState === viewer.OPEN) viewer.send(data, { binary: true });
+        if (viewer.readyState !== viewer.OPEN) continue;
+        // Celular lento: descarta o frame em vez de acumular atraso.
+        if (viewer.bufferedAmount > VIEWER_BACKLOG_BYTES) continue;
+        viewer.send(data, { binary: true });
       }
       return;
     }
