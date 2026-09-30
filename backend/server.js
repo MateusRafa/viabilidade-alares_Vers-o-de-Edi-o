@@ -19,6 +19,7 @@ import {
 } from './lib/viAlaDualDb.js';
 import { registerRelatoriosB2bRoutes } from './relatoriosB2bRoutes.js';
 import { registerPortalCensupRoutes } from './portalCensupRoutes.js';
+import { attachRemoteRelay } from './lib/portalCensup/remoteRelay.js';
 import { bootstrapAgendaBotIfEnabled } from './lib/portalCensup/agendaBot/index.js';
 import { replaceMduBaseFromExcel } from './lib/condominiosMdu/uploadAndGeocode.js';
 import {
@@ -10669,6 +10670,12 @@ try {
   server.on('error', (err) => {
     console.error('❌ [Server] Erro no servidor:', err);
   });
+
+  try {
+    attachRemoteRelay(server);
+  } catch (err) {
+    console.error('❌ [RemoteRelay] Não foi possível iniciar o WebSocket:', err.message);
+  }
   
 } catch (err) {
   console.error('❌ [Fatal] Erro ao iniciar servidor:', err);
