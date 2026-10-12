@@ -1878,11 +1878,55 @@
     return filteredPath;
   }
 
-  // Função para calcular distância REAL usando Directions API (ruas)
+  // Calcula rota pela Routes API (Route.computeRoutes) e devolve no formato legado do DirectionsService
+  // ({ routes: [{ overview_path, legs }] } + status), para manter o restante do código inalterado
+  async function computeRouteCompat({ origin, destination, travelMode }) {
+    try {
+      const { Route } = await google.maps.importLibrary('routes');
+      const { routes } = await Route.computeRoutes({
+        origin,
+        destination,
+        travelMode,
+        region: 'BR',
+        computeAlternativeRoutes: false,
+        polylineQuality: 'HIGH_QUALITY',
+        fields: ['path', 'distanceMeters']
+      });
+
+      const route = routes && routes[0];
+      if (!route || !route.path || route.path.length === 0) {
+        return { result: null, status: 'ZERO_RESULTS' };
+      }
+
+      return {
+        status: 'OK',
+        result: {
+          routes: [{
+            overview_path: route.path.map(p => new google.maps.LatLng(p.lat, p.lng)),
+            legs: [{ distance: { value: route.distanceMeters || 0 }, steps: [] }]
+          }]
+        }
+      };
+    } catch (err) {
+      console.error('❌ [Routes API] Erro ao calcular rota:', err);
+      const msg = String(err && err.message || err).toUpperCase();
+      let status = 'UNKNOWN_ERROR';
+      if (msg.includes('PERMISSION') || msg.includes('DENIED') || msg.includes('API KEY') || msg.includes('NOT AUTHORIZED')) {
+        status = 'REQUEST_DENIED';
+      } else if (msg.includes('QUOTA') || msg.includes('RESOURCE_EXHAUSTED')) {
+        status = 'OVER_QUERY_LIMIT';
+      } else if (msg.includes('INVALID')) {
+        status = 'INVALID_REQUEST';
+      } else if (msg.includes('NOT_FOUND')) {
+        status = 'NOT_FOUND';
+      }
+      return { result: null, status };
+    }
+  }
+
+  // Função para calcular distância REAL usando Routes API (ruas)
   function calculateRealRouteDistance(originLat, originLng, destLat, destLng) {
     return new Promise((resolve, reject) => {
-      const directionsService = new google.maps.DirectionsService();
-
       // Calcular distância linear aproximada para decidir o modo de transporte
       const linearDistance = calculateGeodesicDistance(originLat, originLng, destLat, destLng);
       
@@ -1894,17 +1938,11 @@
       
       console.log(`🚗 [Frontend] Calculando rota com modo ${travelMode === google.maps.TravelMode.DRIVING ? 'DRIVING' : 'WALKING'} (distância linear: ${linearDistance.toFixed(2)}m)`);
 
-      directionsService.route(
-        {
-          origin: { lat: originLat, lng: originLng },
-          destination: { lat: destLat, lng: destLng },
-          travelMode: travelMode, // Usar DRIVING para longas distâncias, WALKING para curtas
-          unitSystem: google.maps.UnitSystem.METRIC,
-          region: 'BR', // Melhorar resultados para o Brasil
-          provideRouteAlternatives: false, // Não calcular rotas alternativas (otimização)
-          avoidHighways: travelMode === google.maps.TravelMode.WALKING // Evitar rodovias apenas no modo caminhada
-        },
-        (result, status) => {
+      computeRouteCompat({
+        origin: { lat: originLat, lng: originLng },
+        destination: { lat: destLat, lng: destLng },
+        travelMode: travelMode // Usar DRIVING para longas distâncias, WALKING para curtas
+      }).then(({ result, status }) => {
           if (status === 'OK' && result.routes && result.routes.length > 0) {
             const route = result.routes[0];
             let totalDistance = 0;
@@ -5332,11 +5370,10 @@
     }
   }
 
-  // Função para desenhar rota REAL usando Directions API
+  // Função para desenhar rota REAL usando Routes API
   // A rota parte da CTO até o cliente, seguindo exatamente as ruas
   async function drawRealRoute(cto, index) {
     return new Promise((resolve, reject) => {
-      const directionsService = new google.maps.DirectionsService();
       const ctoKey = getCTOKey(cto);
 
       // Parsear coordenadas da CTO com precisão (garantir que são números válidos)
@@ -5365,17 +5402,11 @@
 
       // Calcular rota da CTO até o cliente (partindo da CTO)
       // IMPORTANTE: Usar coordenadas parseadas para garantir que sejam exatamente as mesmas do marcador
-      directionsService.route(
-        {
-          origin: { lat: ctoLat, lng: ctoLng }, // Origem: CTO (coordenadas parseadas)
-          destination: { lat: clientCoords.lat, lng: clientCoords.lng }, // Destino: Cliente
-          travelMode: travelMode, // Usar DRIVING para longas distâncias, WALKING para curtas
-          unitSystem: google.maps.UnitSystem.METRIC,
-          region: 'BR', // Melhorar resultados para o Brasil
-          provideRouteAlternatives: false, // Não calcular rotas alternativas (otimização)
-          avoidHighways: travelMode === google.maps.TravelMode.WALKING // Evitar rodovias apenas no modo caminhada
-        },
-        (result, status) => {
+      computeRouteCompat({
+        origin: { lat: ctoLat, lng: ctoLng }, // Origem: CTO (coordenadas parseadas)
+        destination: { lat: clientCoords.lat, lng: clientCoords.lng }, // Destino: Cliente
+        travelMode: travelMode // Usar DRIVING para longas distâncias, WALKING para curtas
+      }).then(({ result, status }) => {
           if (status === 'OK' && result.routes && result.routes.length > 0) {
             const route = result.routes[0];
             const path = [];
