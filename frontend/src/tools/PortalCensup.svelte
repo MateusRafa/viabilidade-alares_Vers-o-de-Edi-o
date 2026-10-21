@@ -25,7 +25,7 @@
   const VIABILIDADE_ALARES_TOOL_ID = 'viabilidade-alares';
 
   const REFRESH_INTERVAL_MS = 30000;
-  const pageSize = 50;
+  const PAGE_SIZE_OPTIONS = [25, 50, 100];
 
   // Portal = arquivo de chamados finalizados (Salvar Relatório / Gerar PDF)
   let listView = 'resolvidos';
@@ -33,6 +33,8 @@
   let total = 0;
   let totalPages = 1;
   let page = 1;
+  let pageSize = 50;
+  let pageInput = '1';
   let searchQuery = '';
   let searchTimer = null;
   let loadingList = false;
@@ -74,6 +76,7 @@
         if (searchTimer) clearTimeout(searchTimer);
         searchTimer = setTimeout(() => {
           page = 1;
+          pageInput = '1';
           carregarChamados();
         }, 280);
       }
@@ -126,7 +129,14 @@
       });
       chamados = data.chamados || [];
       total = data.total || 0;
-      totalPages = data.totalPages || 1;
+      totalPages = Math.max(1, data.totalPages || 1);
+      if (page > totalPages) {
+        page = totalPages;
+        pageInput = String(page);
+        await carregarChamados({ silent });
+        return;
+      }
+      pageInput = String(page);
 
       if (data.source === 'supabase') {
         persistOk = true;
@@ -220,9 +230,41 @@
   }
 
   function goToPage(nextPage) {
-    if (nextPage < 1 || nextPage > totalPages) return;
-    page = nextPage;
+    const target = Math.max(1, Math.min(totalPages, Math.trunc(Number(nextPage)) || 1));
+    if (target === page) {
+      pageInput = String(page);
+      return;
+    }
+    page = target;
+    pageInput = String(page);
     carregarChamados();
+  }
+
+  function commitPageInput() {
+    goToPage(pageInput);
+  }
+
+  function onPageInputKeydown(event) {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      commitPageInput();
+    } else if (event.key === 'Escape') {
+      pageInput = String(page);
+      event.currentTarget?.blur?.();
+    }
+  }
+
+  function changePageSize(nextSize) {
+    const size = Number(nextSize);
+    if (!PAGE_SIZE_OPTIONS.includes(size) || size === pageSize) return;
+    pageSize = size;
+    page = 1;
+    pageInput = '1';
+    carregarChamados();
+  }
+
+  function formatCount(n) {
+    return Number(n || 0).toLocaleString('pt-BR');
   }
 
   function statusLabel(status) {
@@ -450,20 +492,57 @@
         </table>
       </div>
 
-      <footer class="table-footer">
+      <footer class="table-footer" aria-label="Paginação da lista">
         <div class="pagination">
-          <button type="button" class="btn-page" on:click={() => goToPage(page - 1)} disabled={page <= 1}>
-            Anterior
-          </button>
-          <span class="page-indicator">{page}</span>
           <button
             type="button"
-            class="btn-page"
-            on:click={() => goToPage(page + 1)}
-            disabled={page >= totalPages}
+            class="btn-page btn-page-icon"
+            on:click={() => goToPage(page - 1)}
+            disabled={page <= 1 || loadingList}
+            aria-label="Página anterior"
+            title="Página anterior"
           >
-            Próximo
+            ‹
           </button>
+          <label class="page-jump">
+            <span>Página</span>
+            <input
+              type="number"
+              class="page-input"
+              min="1"
+              max={totalPages}
+              inputmode="numeric"
+              bind:value={pageInput}
+              on:keydown={onPageInputKeydown}
+              on:blur={commitPageInput}
+              disabled={loadingList}
+              aria-label="Ir para página"
+            />
+            <span>de {formatCount(totalPages)}</span>
+          </label>
+          <button
+            type="button"
+            class="btn-page btn-page-icon"
+            on:click={() => goToPage(page + 1)}
+            disabled={page >= totalPages || loadingList}
+            aria-label="Próxima página"
+            title="Próxima página"
+          >
+            ›
+          </button>
+          <label class="page-size">
+            <select
+              value={pageSize}
+              on:change={(e) => changePageSize(e.currentTarget.value)}
+              disabled={loadingList}
+              aria-label="Linhas por página"
+            >
+              {#each PAGE_SIZE_OPTIONS as size}
+                <option value={size}>{size} linhas</option>
+              {/each}
+            </select>
+          </label>
+          <span class="page-total">{formatCount(total)} registros</span>
         </div>
       </footer>
     </div>
@@ -852,7 +931,9 @@
   .pagination {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 0.55rem;
   }
 
   .btn-page {
@@ -860,13 +941,86 @@
     background: white;
     color: #374151;
     border: 1px solid #d1d5db;
+    border-radius: 8px;
+    cursor: pointer;
   }
 
-  .page-indicator {
-    min-width: 2rem;
+  .btn-page:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+
+  .btn-page-icon {
+    width: 34px;
+    height: 34px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.35rem;
+    line-height: 1;
+    font-weight: 600;
+  }
+
+  .page-jump,
+  .page-size {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    color: inherit;
+    white-space: nowrap;
+  }
+
+  .page-input {
+    width: 3.4rem;
+    height: 34px;
+    padding: 0 0.4rem;
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
     text-align: center;
+    font: inherit;
     font-weight: 600;
     color: #7b68ee;
+    background: white;
+    outline: none;
+  }
+
+  .page-input:focus {
+    border-color: #7b68ee;
+    box-shadow: 0 0 0 2px rgba(123, 104, 238, 0.2);
+  }
+
+  .page-input::-webkit-outer-spin-button,
+  .page-input::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+
+  .page-input[type='number'] {
+    -moz-appearance: textfield;
+    appearance: textfield;
+  }
+
+  .page-size select {
+    height: 34px;
+    padding: 0 0.55rem;
+    border: 1px solid #d1d5db;
+    border-radius: 999px;
+    background: white;
+    color: #374151;
+    font: inherit;
+    cursor: pointer;
+    outline: none;
+  }
+
+  .page-size select:focus {
+    border-color: #7b68ee;
+    box-shadow: 0 0 0 2px rgba(123, 104, 238, 0.2);
+  }
+
+  .page-total {
+    font-weight: 600;
+    color: #4b5563;
   }
 
   .detail-layout {
@@ -1404,8 +1558,20 @@
     color: #34d399;
   }
 
-  .theme-dark .page-indicator {
+  .theme-dark .page-input {
+    background: var(--pc-bg-card);
+    border-color: var(--pc-border);
     color: var(--pc-accent);
+  }
+
+  .theme-dark .page-size select {
+    background: var(--pc-bg-card);
+    border-color: var(--pc-border);
+    color: var(--pc-text);
+  }
+
+  .theme-dark .page-total {
+    color: var(--pc-text);
   }
 
   .theme-dark .extension-help code {
