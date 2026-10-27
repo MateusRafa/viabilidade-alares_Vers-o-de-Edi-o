@@ -352,12 +352,6 @@
     persistVisibleColumns();
   }
 
-  function showAllColumns() {
-    visibleColumnIds = [...DEFAULT_VISIBLE_COLUMN_IDS];
-    openColumnMenuId = null;
-    persistVisibleColumns();
-  }
-
   function toggleColumnMenu(id, event) {
     event?.stopPropagation?.();
     if (openColumnMenuId === id) {
@@ -741,27 +735,6 @@
       >
         Ocultar coluna
       </button>
-      {#if hiddenColumns.length > 0}
-        <div class="col-menu-sep"></div>
-        {#each hiddenColumns as hidden (hidden.id)}
-          <button
-            type="button"
-            class="col-menu-item"
-            role="menuitem"
-            on:click={() => showColumn(hidden.id)}
-          >
-            Mostrar {hidden.label}
-          </button>
-        {/each}
-        <button
-          type="button"
-          class="col-menu-item col-menu-item-accent"
-          role="menuitem"
-          on:click={showAllColumns}
-        >
-          Mostrar todas
-        </button>
-      {/if}
     </div>
   {/if}
 </div>
@@ -1175,17 +1148,6 @@
   .col-menu-item:disabled {
     opacity: 0.45;
     cursor: not-allowed;
-  }
-
-  .col-menu-item-accent {
-    color: #5b21b6;
-    font-weight: 600;
-  }
-
-  .col-menu-sep {
-    height: 1px;
-    margin: 0.25rem 0.35rem;
-    background: #e5e7eb;
   }
 
   .chamados-table tbody tr:hover {
@@ -1818,16 +1780,6 @@
   .theme-dark .col-menu-item:hover:not(:disabled),
   .col-menu.theme-dark .col-menu-item:hover:not(:disabled) {
     background: rgba(123, 104, 238, 0.2);
-  }
-
-  .theme-dark .col-menu-item-accent,
-  .col-menu.theme-dark .col-menu-item-accent {
-    color: #c4b5fd;
-  }
-
-  .theme-dark .col-menu-sep,
-  .col-menu.theme-dark .col-menu-sep {
-    background: rgba(123, 104, 238, 0.25);
   }
 
   .theme-dark .chamados-table th,
