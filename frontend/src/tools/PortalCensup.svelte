@@ -35,7 +35,7 @@
     { id: 'pedido', label: 'Pedido' },
     { id: 'dataSituacao', label: 'Data Situação' },
     { id: 'horaAbertura', label: 'Hora da Abertura' },
-    { id: 'horaAnalise', label: 'Hora da Análise' },
+    { id: 'horaAnalise', label: 'Tempo da Análise' },
     { id: 'horaFechamento', label: 'Hora do Fechamento' },
     { id: 'pdv', label: 'PDV' },
     { id: 'motivo', label: 'Motivo' },
