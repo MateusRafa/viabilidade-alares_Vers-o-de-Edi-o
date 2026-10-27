@@ -655,6 +655,31 @@
     }
   }
 
+  /** Pede à extensão o Tempo da Análise (cronômetro do detalhe). */
+  function requestAnaliseDuracaoFromParent(timeoutMs = 900) {
+    const requestId = `ad_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = (payload) => {
+        if (done) return;
+        done = true;
+        window.clearTimeout(timer);
+        window.removeEventListener('message', onMsg);
+        resolve(payload || null);
+      };
+      const onMsg = (event) => {
+        const data = event?.data;
+        if (!data || data.source !== PARENT_SOURCE) return;
+        if (data.type !== 'ANALISE_DURACAO_RESULT') return;
+        if (String(data.requestId || '') !== requestId) return;
+        finish(data);
+      };
+      const timer = window.setTimeout(() => finish(null), timeoutMs);
+      window.addEventListener('message', onMsg);
+      postToParent('REQUEST_ANALISE_DURACAO', { requestId });
+    });
+  }
+
   /**
    * Pede à extensão que prepare pastas SharePoint (mês/dia) e espera a resposta.
    * @returns {Promise<{ ok?: boolean, cancelled?: boolean, skipped?: boolean, error?: string }>}
@@ -1804,6 +1829,20 @@
 
       const targetId = chamadoId || pedidoKey;
 
+      // Tempo da Análise (cronômetro do detalhe na extensão)
+      let analiseDuracaoLabel = null;
+      let analiseDuracaoMs = null;
+      try {
+        const dur = await requestAnaliseDuracaoFromParent();
+        if (dur?.label) {
+          analiseDuracaoLabel = String(dur.label).trim() || null;
+          const ms = Number(dur.ms);
+          analiseDuracaoMs = Number.isFinite(ms) && ms >= 0 ? Math.round(ms) : null;
+        }
+      } catch {
+        /* extensão pode não responder */
+      }
+
       // Prévia na hora (como Gerar PDF) — pastas/Portal continuam em paralelo
       let previewHandle = null;
       if (doSharePointBackup && htmlForSave) {
@@ -1825,7 +1864,10 @@
             persist: true,
             seed: workbenchSeed || undefined,
             ...(htmlForSave ? { pdfHtml: htmlForSave } : {}),
-            ...(geradoEmSave ? { geradoEm: geradoEmSave } : {})
+            ...(geradoEmSave ? { geradoEm: geradoEmSave } : {}),
+            ...(analiseDuracaoLabel
+              ? { analiseDuracaoLabel, analiseDuracaoMs }
+              : {})
           })
         }
       );
