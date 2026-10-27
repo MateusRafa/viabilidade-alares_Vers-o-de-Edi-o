@@ -556,44 +556,6 @@
         <p class="load-error" role="alert">{listError}</p>
       {/if}
 
-      {#if hiddenColumns.length > 0}
-        <div class="columns-toolbar">
-          <div class="col-menu-wrap">
-            <button
-              type="button"
-              class="btn-hidden-columns"
-              on:click={toggleHiddenColumnsMenu}
-              aria-expanded={showHiddenColumnsMenu}
-              aria-haspopup="menu"
-            >
-              Colunas ocultas ({hiddenColumns.length})
-            </button>
-            {#if showHiddenColumnsMenu}
-              <div class="col-menu" role="menu" on:click|stopPropagation>
-                {#each hiddenColumns as col (col.id)}
-                  <button
-                    type="button"
-                    class="col-menu-item"
-                    role="menuitem"
-                    on:click={() => showColumn(col.id)}
-                  >
-                    Mostrar {col.label}
-                  </button>
-                {/each}
-                <button
-                  type="button"
-                  class="col-menu-item col-menu-item-accent"
-                  role="menuitem"
-                  on:click={showAllColumns}
-                >
-                  Mostrar todas
-                </button>
-              </div>
-            {/if}
-          </div>
-        </div>
-      {/if}
-
       <div class="table-wrap">
         <table class="chamados-table">
           <thead>
@@ -701,6 +663,41 @@
 
       <footer class="table-footer" aria-label="Paginação da lista">
         <div class="pagination">
+          {#if hiddenColumns.length > 0}
+            <div class="col-menu-wrap">
+              <button
+                type="button"
+                class="btn-hidden-columns"
+                on:click={toggleHiddenColumnsMenu}
+                aria-expanded={showHiddenColumnsMenu}
+                aria-haspopup="menu"
+              >
+                Colunas ocultas ({hiddenColumns.length})
+              </button>
+              {#if showHiddenColumnsMenu}
+                <div class="col-menu col-menu-up" role="menu" on:click|stopPropagation>
+                  {#each hiddenColumns as col (col.id)}
+                    <button
+                      type="button"
+                      class="col-menu-item"
+                      role="menuitem"
+                      on:click={() => showColumn(col.id)}
+                    >
+                      Mostrar {col.label}
+                    </button>
+                  {/each}
+                  <button
+                    type="button"
+                    class="col-menu-item col-menu-item-accent"
+                    role="menuitem"
+                    on:click={showAllColumns}
+                  >
+                    Mostrar todas
+                  </button>
+                </div>
+              {/if}
+            </div>
+          {/if}
           <button
             type="button"
             class="btn-page btn-page-icon"
@@ -1103,12 +1100,6 @@
     background: rgba(255, 255, 255, 0.18);
   }
 
-  .columns-toolbar {
-    display: flex;
-    justify-content: flex-end;
-    margin-bottom: 0.5rem;
-  }
-
   .btn-hidden-columns {
     display: inline-flex;
     align-items: center;
@@ -1122,6 +1113,7 @@
     font-size: 0.8rem;
     font-weight: 600;
     cursor: pointer;
+    white-space: nowrap;
   }
 
   .btn-hidden-columns:hover {
@@ -1144,6 +1136,11 @@
   .col-menu-th {
     right: 0;
     left: auto;
+  }
+
+  .col-menu-up {
+    top: auto;
+    bottom: calc(100% + 4px);
   }
 
   .col-menu-item {
