@@ -1005,11 +1005,9 @@
   }
 
   .chamados-table {
-    width: max-content;
-    max-width: 100%;
+    width: 100%;
     border-collapse: collapse;
     font-size: 0.88rem;
-    table-layout: auto;
   }
 
   .chamados-table thead {
@@ -1022,16 +1020,15 @@
 
   .chamados-table th,
   .chamados-table td {
-    padding: 0.65rem 0.55rem;
+    padding: 0.75rem 0.85rem;
     text-align: center;
     border-bottom: 1px solid #eef2f7;
     vertical-align: middle;
-    white-space: nowrap;
-    width: 1%;
   }
 
   .chamados-table th {
     font-weight: 600;
+    white-space: nowrap;
   }
 
   .th-inner {
