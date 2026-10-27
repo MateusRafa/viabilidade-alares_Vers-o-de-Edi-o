@@ -81,12 +81,23 @@
 
   let visibleColumnIds = loadVisibleColumnIds();
   let openColumnMenuId = null;
+  let columnMenuStyle = '';
 
   $: showingDetail = !!selectedChamado;
   $: isDark = $theme === 'dark';
   $: visibleColumns = TABLE_COLUMNS.filter((c) => visibleColumnIds.includes(c.id));
   $: hiddenColumns = TABLE_COLUMNS.filter((c) => !visibleColumnIds.includes(c.id));
   $: tableColSpan = visibleColumns.length + 1;
+  $: openMenuColumn = TABLE_COLUMNS.find((c) => c.id === openColumnMenuId) || null;
+
+  function portalToBody(node) {
+    document.body.appendChild(node);
+    return {
+      destroy() {
+        if (node.parentNode) node.parentNode.removeChild(node);
+      }
+    };
+  }
 
   function syncHeaderRefresh() {
     toolShellHeaderAction.set({
@@ -349,11 +360,30 @@
 
   function toggleColumnMenu(id, event) {
     event?.stopPropagation?.();
-    openColumnMenuId = openColumnMenuId === id ? null : id;
+    if (openColumnMenuId === id) {
+      closeColumnMenus();
+      return;
+    }
+    const btn = event?.currentTarget;
+    if (btn && typeof btn.getBoundingClientRect === 'function') {
+      const rect = btn.getBoundingClientRect();
+      const menuWidth = 188;
+      const pad = 8;
+      const spaceRight = window.innerWidth - rect.left;
+      const openToRight = spaceRight >= menuWidth + pad || rect.left < menuWidth;
+      let left = openToRight ? rect.left : rect.right - menuWidth;
+      left = Math.max(pad, Math.min(left, window.innerWidth - menuWidth - pad));
+      const top = Math.min(rect.bottom + 4, window.innerHeight - pad);
+      columnMenuStyle = `top:${Math.round(top)}px;left:${Math.round(left)}px;`;
+    } else {
+      columnMenuStyle = '';
+    }
+    openColumnMenuId = id;
   }
 
   function closeColumnMenus() {
     openColumnMenuId = null;
+    columnMenuStyle = '';
   }
 
   function columnCellValue(item, columnId) {
@@ -418,6 +448,10 @@
     closeColumnMenus();
   }
 
+  function onDocumentScrollOrResize() {
+    if (openColumnMenuId) closeColumnMenus();
+  }
+
   onMount(async () => {
     syncHeaderRefresh();
     syncHeaderSearch({ enabled: true });
@@ -425,6 +459,8 @@
     syncHeaderViewToggle();
     toolShellThemeToggle.set(true);
     document.addEventListener('click', onDocumentClick);
+    document.addEventListener('scroll', onDocumentScrollOrResize, true);
+    window.addEventListener('resize', onDocumentScrollOrResize);
     await carregarChamados();
 
     refreshInterval = setInterval(() => {
@@ -437,6 +473,10 @@
     if (searchTimer) clearTimeout(searchTimer);
     if (typeof document !== 'undefined') {
       document.removeEventListener('click', onDocumentClick);
+      document.removeEventListener('scroll', onDocumentScrollOrResize, true);
+    }
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('resize', onDocumentScrollOrResize);
     }
     clearToolShell();
     if (typeof onBackRequest === 'function') onBackRequest(null);
@@ -569,40 +609,6 @@
                           <circle cx="12" cy="19" r="2" />
                         </svg>
                       </button>
-                      {#if openColumnMenuId === col.id}
-                        <div class="col-menu col-menu-th" role="menu" on:click|stopPropagation>
-                          <button
-                            type="button"
-                            class="col-menu-item"
-                            role="menuitem"
-                            disabled={visibleColumns.length <= 1}
-                            on:click={() => hideColumn(col.id)}
-                          >
-                            Ocultar coluna
-                          </button>
-                          {#if hiddenColumns.length > 0}
-                            <div class="col-menu-sep"></div>
-                            {#each hiddenColumns as hidden (hidden.id)}
-                              <button
-                                type="button"
-                                class="col-menu-item"
-                                role="menuitem"
-                                on:click={() => showColumn(hidden.id)}
-                              >
-                                Mostrar {hidden.label}
-                              </button>
-                            {/each}
-                            <button
-                              type="button"
-                              class="col-menu-item col-menu-item-accent"
-                              role="menuitem"
-                              on:click={showAllColumns}
-                            >
-                              Mostrar todas
-                            </button>
-                          {/if}
-                        </div>
-                      {/if}
                     </div>
                   </div>
                 </th>
@@ -714,6 +720,48 @@
           <span class="page-total">{formatCount(total)} registros</span>
         </div>
       </footer>
+    </div>
+  {/if}
+
+  {#if openMenuColumn}
+    <div
+      class="col-menu col-menu-fixed"
+      class:theme-dark={isDark}
+      role="menu"
+      style={columnMenuStyle}
+      use:portalToBody
+      on:click|stopPropagation
+    >
+      <button
+        type="button"
+        class="col-menu-item"
+        role="menuitem"
+        disabled={visibleColumns.length <= 1}
+        on:click={() => hideColumn(openMenuColumn.id)}
+      >
+        Ocultar coluna
+      </button>
+      {#if hiddenColumns.length > 0}
+        <div class="col-menu-sep"></div>
+        {#each hiddenColumns as hidden (hidden.id)}
+          <button
+            type="button"
+            class="col-menu-item"
+            role="menuitem"
+            on:click={() => showColumn(hidden.id)}
+          >
+            Mostrar {hidden.label}
+          </button>
+        {/each}
+        <button
+          type="button"
+          class="col-menu-item col-menu-item-accent"
+          role="menuitem"
+          on:click={showAllColumns}
+        >
+          Mostrar todas
+        </button>
+      {/if}
     </div>
   {/if}
 </div>
@@ -1098,9 +1146,12 @@
     box-shadow: 0 8px 24px rgba(15, 23, 42, 0.16);
   }
 
-  .col-menu-th {
-    right: 0;
-    left: auto;
+  .col-menu-fixed {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: auto;
+    z-index: 10050;
   }
 
   .col-menu-item {
@@ -1752,25 +1803,30 @@
     background: rgba(123, 104, 238, 0.28);
   }
 
-  .theme-dark .col-menu {
+  .theme-dark .col-menu,
+  .col-menu.theme-dark {
     background: #1a1f2e;
     border-color: rgba(123, 104, 238, 0.35);
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
   }
 
-  .theme-dark .col-menu-item {
+  .theme-dark .col-menu-item,
+  .col-menu.theme-dark .col-menu-item {
     color: #e5e7eb;
   }
 
-  .theme-dark .col-menu-item:hover:not(:disabled) {
+  .theme-dark .col-menu-item:hover:not(:disabled),
+  .col-menu.theme-dark .col-menu-item:hover:not(:disabled) {
     background: rgba(123, 104, 238, 0.2);
   }
 
-  .theme-dark .col-menu-item-accent {
+  .theme-dark .col-menu-item-accent,
+  .col-menu.theme-dark .col-menu-item-accent {
     color: #c4b5fd;
   }
 
-  .theme-dark .col-menu-sep {
+  .theme-dark .col-menu-sep,
+  .col-menu.theme-dark .col-menu-sep {
     background: rgba(123, 104, 238, 0.25);
   }
 
