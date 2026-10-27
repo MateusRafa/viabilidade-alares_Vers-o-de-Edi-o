@@ -26,7 +26,7 @@
 
   const REFRESH_INTERVAL_MS = 30000;
   const PAGE_SIZE_OPTIONS = [25, 50, 100];
-  const COLUMNS_STORAGE_KEY = 'portalCensup.visibleColumns.v1';
+  const COLUMNS_STORAGE_KEY = 'portalCensup.visibleColumns.v2';
 
   const TABLE_COLUMNS = [
     { id: 'uf', label: 'UF' },
@@ -35,6 +35,7 @@
     { id: 'pedido', label: 'Pedido' },
     { id: 'dataSituacao', label: 'Data Situação' },
     { id: 'horaAbertura', label: 'Hora da Abertura' },
+    { id: 'horaAnalise', label: 'Hora da Análise' },
     { id: 'horaFechamento', label: 'Hora do Fechamento' },
     { id: 'pdv', label: 'PDV' },
     { id: 'motivo', label: 'Motivo' },
@@ -394,6 +395,8 @@
         return item.dataSituacaoLabel || item.dataSituacao;
       case 'horaAbertura':
         return item.horaAberturaLabel;
+      case 'horaAnalise':
+        return item.horaAnaliseLabel;
       case 'horaFechamento':
         return item.horaFechamentoLabel;
       case 'pdv':
