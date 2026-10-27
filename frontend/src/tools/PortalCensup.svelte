@@ -81,7 +81,6 @@
 
   let visibleColumnIds = loadVisibleColumnIds();
   let openColumnMenuId = null;
-  let showHiddenColumnsMenu = false;
 
   $: showingDetail = !!selectedChamado;
   $: isDark = $theme === 'dark';
@@ -338,33 +337,23 @@
       (a, b) => order.indexOf(a) - order.indexOf(b)
     );
     visibleColumnIds = next;
-    showHiddenColumnsMenu = false;
     openColumnMenuId = null;
     persistVisibleColumns();
   }
 
   function showAllColumns() {
     visibleColumnIds = [...DEFAULT_VISIBLE_COLUMN_IDS];
-    showHiddenColumnsMenu = false;
     openColumnMenuId = null;
     persistVisibleColumns();
   }
 
   function toggleColumnMenu(id, event) {
     event?.stopPropagation?.();
-    showHiddenColumnsMenu = false;
     openColumnMenuId = openColumnMenuId === id ? null : id;
-  }
-
-  function toggleHiddenColumnsMenu(event) {
-    event?.stopPropagation?.();
-    openColumnMenuId = null;
-    showHiddenColumnsMenu = !showHiddenColumnsMenu;
   }
 
   function closeColumnMenus() {
     openColumnMenuId = null;
-    showHiddenColumnsMenu = false;
   }
 
   function columnCellValue(item, columnId) {
@@ -663,41 +652,17 @@
 
       <footer class="table-footer" aria-label="Paginação da lista">
         <div class="pagination">
-          {#if hiddenColumns.length > 0}
-            <div class="col-menu-wrap">
-              <button
-                type="button"
-                class="btn-hidden-columns"
-                on:click={toggleHiddenColumnsMenu}
-                aria-expanded={showHiddenColumnsMenu}
-                aria-haspopup="menu"
-              >
-                Colunas ocultas ({hiddenColumns.length})
-              </button>
-              {#if showHiddenColumnsMenu}
-                <div class="col-menu col-menu-up" role="menu" on:click|stopPropagation>
-                  {#each hiddenColumns as col (col.id)}
-                    <button
-                      type="button"
-                      class="col-menu-item"
-                      role="menuitem"
-                      on:click={() => showColumn(col.id)}
-                    >
-                      Mostrar {col.label}
-                    </button>
-                  {/each}
-                  <button
-                    type="button"
-                    class="col-menu-item col-menu-item-accent"
-                    role="menuitem"
-                    on:click={showAllColumns}
-                  >
-                    Mostrar todas
-                  </button>
-                </div>
-              {/if}
-            </div>
-          {/if}
+          {#each hiddenColumns as col (col.id)}
+            <button
+              type="button"
+              class="btn-hidden-columns"
+              on:click={() => showColumn(col.id)}
+              title="Mostrar coluna {col.label}"
+              aria-label="Mostrar coluna {col.label}"
+            >
+              {col.label}
+            </button>
+          {/each}
           <button
             type="button"
             class="btn-page btn-page-icon"
@@ -1136,11 +1101,6 @@
   .col-menu-th {
     right: 0;
     left: auto;
-  }
-
-  .col-menu-up {
-    top: auto;
-    bottom: calc(100% + 4px);
   }
 
   .col-menu-item {
