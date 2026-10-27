@@ -26,6 +26,36 @@
 
   const REFRESH_INTERVAL_MS = 30000;
   const PAGE_SIZE_OPTIONS = [25, 50, 100];
+  const COLUMNS_STORAGE_KEY = 'portalCensup.visibleColumns.v1';
+
+  const TABLE_COLUMNS = [
+    { id: 'uf', label: 'UF' },
+    { id: 'cidade', label: 'Cidade' },
+    { id: 'sistema', label: 'Sistema' },
+    { id: 'pedido', label: 'Pedido' },
+    { id: 'dataSituacao', label: 'Data Situação' },
+    { id: 'horaAbertura', label: 'Hora da Abertura' },
+    { id: 'horaFechamento', label: 'Hora do Fechamento' },
+    { id: 'pdv', label: 'PDV' },
+    { id: 'motivo', label: 'Motivo' },
+    { id: 'situacao', label: 'Situação' }
+  ];
+
+  const DEFAULT_VISIBLE_COLUMN_IDS = TABLE_COLUMNS.map((c) => c.id);
+
+  function loadVisibleColumnIds() {
+    try {
+      const raw = localStorage.getItem(COLUMNS_STORAGE_KEY);
+      if (!raw) return [...DEFAULT_VISIBLE_COLUMN_IDS];
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [...DEFAULT_VISIBLE_COLUMN_IDS];
+      const allowed = new Set(DEFAULT_VISIBLE_COLUMN_IDS);
+      const cleaned = parsed.map(String).filter((id) => allowed.has(id));
+      return cleaned.length ? cleaned : [...DEFAULT_VISIBLE_COLUMN_IDS];
+    } catch {
+      return [...DEFAULT_VISIBLE_COLUMN_IDS];
+    }
+  }
 
   // Portal = arquivo de chamados finalizados (Salvar Relatório / Gerar PDF)
   let listView = 'resolvidos';
@@ -49,8 +79,15 @@
   let detailError = '';
   let feedbackMessage = '';
 
+  let visibleColumnIds = loadVisibleColumnIds();
+  let openColumnMenuId = null;
+  let showHiddenColumnsMenu = false;
+
   $: showingDetail = !!selectedChamado;
   $: isDark = $theme === 'dark';
+  $: visibleColumns = TABLE_COLUMNS.filter((c) => visibleColumnIds.includes(c.id));
+  $: hiddenColumns = TABLE_COLUMNS.filter((c) => !visibleColumnIds.includes(c.id));
+  $: tableColSpan = visibleColumns.length + 1;
 
   function syncHeaderRefresh() {
     toolShellHeaderAction.set({
@@ -274,6 +311,89 @@
     return 'Finalizado';
   }
 
+  function persistVisibleColumns() {
+    try {
+      localStorage.setItem(COLUMNS_STORAGE_KEY, JSON.stringify(visibleColumnIds));
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function isColumnVisible(id) {
+    return visibleColumnIds.includes(id);
+  }
+
+  function hideColumn(id) {
+    if (!isColumnVisible(id)) return;
+    if (visibleColumnIds.length <= 1) return;
+    visibleColumnIds = visibleColumnIds.filter((c) => c !== id);
+    openColumnMenuId = null;
+    persistVisibleColumns();
+  }
+
+  function showColumn(id) {
+    if (isColumnVisible(id)) return;
+    const order = DEFAULT_VISIBLE_COLUMN_IDS;
+    const next = [...visibleColumnIds, id].sort(
+      (a, b) => order.indexOf(a) - order.indexOf(b)
+    );
+    visibleColumnIds = next;
+    showHiddenColumnsMenu = false;
+    openColumnMenuId = null;
+    persistVisibleColumns();
+  }
+
+  function showAllColumns() {
+    visibleColumnIds = [...DEFAULT_VISIBLE_COLUMN_IDS];
+    showHiddenColumnsMenu = false;
+    openColumnMenuId = null;
+    persistVisibleColumns();
+  }
+
+  function toggleColumnMenu(id, event) {
+    event?.stopPropagation?.();
+    showHiddenColumnsMenu = false;
+    openColumnMenuId = openColumnMenuId === id ? null : id;
+  }
+
+  function toggleHiddenColumnsMenu(event) {
+    event?.stopPropagation?.();
+    openColumnMenuId = null;
+    showHiddenColumnsMenu = !showHiddenColumnsMenu;
+  }
+
+  function closeColumnMenus() {
+    openColumnMenuId = null;
+    showHiddenColumnsMenu = false;
+  }
+
+  function columnCellValue(item, columnId) {
+    switch (columnId) {
+      case 'uf':
+        return item.uf;
+      case 'cidade':
+        return item.cidade;
+      case 'sistema':
+        return item.sistema;
+      case 'pedido':
+        return item.pedido;
+      case 'dataSituacao':
+        return item.dataSituacaoLabel || item.dataSituacao;
+      case 'horaAbertura':
+        return item.horaAberturaLabel;
+      case 'horaFechamento':
+        return item.horaFechamentoLabel;
+      case 'pdv':
+        return item.pdv;
+      case 'motivo':
+        return item.motivo;
+      case 'situacao':
+        return item.situacaoLabel || item.situacao || 'Finalizado';
+      default:
+        return null;
+    }
+  }
+
   function cellText(value) {
     if (value == null) return '—';
     const s = String(value).trim();
@@ -305,12 +425,17 @@
     }, 400);
   }
 
+  function onDocumentClick() {
+    closeColumnMenus();
+  }
+
   onMount(async () => {
     syncHeaderRefresh();
     syncHeaderSearch({ enabled: true });
     syncHeaderViabilidadeShortcut({ enabled: true });
     syncHeaderViewToggle();
     toolShellThemeToggle.set(true);
+    document.addEventListener('click', onDocumentClick);
     await carregarChamados();
 
     refreshInterval = setInterval(() => {
@@ -321,6 +446,9 @@
   onDestroy(() => {
     if (refreshInterval) clearInterval(refreshInterval);
     if (searchTimer) clearTimeout(searchTimer);
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('click', onDocumentClick);
+    }
     clearToolShell();
     if (typeof onBackRequest === 'function') onBackRequest(null);
   });
@@ -428,47 +556,126 @@
         <p class="load-error" role="alert">{listError}</p>
       {/if}
 
+      {#if hiddenColumns.length > 0}
+        <div class="columns-toolbar">
+          <div class="col-menu-wrap">
+            <button
+              type="button"
+              class="btn-hidden-columns"
+              on:click={toggleHiddenColumnsMenu}
+              aria-expanded={showHiddenColumnsMenu}
+              aria-haspopup="menu"
+            >
+              Colunas ocultas ({hiddenColumns.length})
+            </button>
+            {#if showHiddenColumnsMenu}
+              <div class="col-menu" role="menu" on:click|stopPropagation>
+                {#each hiddenColumns as col (col.id)}
+                  <button
+                    type="button"
+                    class="col-menu-item"
+                    role="menuitem"
+                    on:click={() => showColumn(col.id)}
+                  >
+                    Mostrar {col.label}
+                  </button>
+                {/each}
+                <button
+                  type="button"
+                  class="col-menu-item col-menu-item-accent"
+                  role="menuitem"
+                  on:click={showAllColumns}
+                >
+                  Mostrar todas
+                </button>
+              </div>
+            {/if}
+          </div>
+        </div>
+      {/if}
+
       <div class="table-wrap">
         <table class="chamados-table">
           <thead>
             <tr>
-              <th>UF</th>
-              <th>Cidade</th>
-              <th>Sistema</th>
-              <th>Pedido</th>
-              <th>Data Situação</th>
-              <th>Hora da Abertura</th>
-              <th>Hora do Fechamento</th>
-              <th>PDV</th>
-              <th>Motivo</th>
-              <th>Situação</th>
+              {#each visibleColumns as col (col.id)}
+                <th>
+                  <div class="th-inner">
+                    <span>{col.label}</span>
+                    <div class="col-menu-wrap">
+                      <button
+                        type="button"
+                        class="btn-col-menu"
+                        on:click={(e) => toggleColumnMenu(col.id, e)}
+                        aria-label="Opções da coluna {col.label}"
+                        aria-expanded={openColumnMenuId === col.id}
+                        aria-haspopup="menu"
+                        title="Opções da coluna"
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                          <circle cx="12" cy="5" r="2" />
+                          <circle cx="12" cy="12" r="2" />
+                          <circle cx="12" cy="19" r="2" />
+                        </svg>
+                      </button>
+                      {#if openColumnMenuId === col.id}
+                        <div class="col-menu col-menu-th" role="menu" on:click|stopPropagation>
+                          <button
+                            type="button"
+                            class="col-menu-item"
+                            role="menuitem"
+                            disabled={visibleColumns.length <= 1}
+                            on:click={() => hideColumn(col.id)}
+                          >
+                            Ocultar coluna
+                          </button>
+                          {#if hiddenColumns.length > 0}
+                            <div class="col-menu-sep"></div>
+                            {#each hiddenColumns as hidden (hidden.id)}
+                              <button
+                                type="button"
+                                class="col-menu-item"
+                                role="menuitem"
+                                on:click={() => showColumn(hidden.id)}
+                              >
+                                Mostrar {hidden.label}
+                              </button>
+                            {/each}
+                            <button
+                              type="button"
+                              class="col-menu-item col-menu-item-accent"
+                              role="menuitem"
+                              on:click={showAllColumns}
+                            >
+                              Mostrar todas
+                            </button>
+                          {/if}
+                        </div>
+                      {/if}
+                    </div>
+                  </div>
+                </th>
+              {/each}
               <th class="col-action" aria-label="Ações"></th>
             </tr>
           </thead>
           <tbody>
             {#if loadingList && chamados.length === 0}
               <tr>
-                <td colspan="11" class="empty-cell">Carregando chamados…</td>
+                <td colspan={tableColSpan} class="empty-cell">Carregando chamados…</td>
               </tr>
             {:else if chamados.length === 0}
               <tr>
-                <td colspan="11" class="empty-cell">
+                <td colspan={tableColSpan} class="empty-cell">
                   Nenhum relatório finalizado ainda
                 </td>
               </tr>
             {:else}
               {#each chamados as item (item.id)}
                 <tr>
-                  <td>{cellText(item.uf)}</td>
-                  <td>{cellText(item.cidade)}</td>
-                  <td>{cellText(item.sistema)}</td>
-                  <td>{cellText(item.pedido)}</td>
-                  <td>{cellText(item.dataSituacaoLabel || item.dataSituacao)}</td>
-                  <td>{cellText(item.horaAberturaLabel)}</td>
-                  <td>{cellText(item.horaFechamentoLabel)}</td>
-                  <td>{cellText(item.pdv)}</td>
-                  <td>{cellText(item.motivo)}</td>
-                  <td>{cellText(item.situacaoLabel || item.situacao || 'Finalizado')}</td>
+                  {#each visibleColumns as col (col.id)}
+                    <td>{cellText(columnCellValue(item, col.id))}</td>
+                  {/each}
                   <td class="col-action">
                     <div class="col-action-buttons">
                       <button
@@ -860,6 +1067,117 @@
   .chamados-table th {
     font-weight: 600;
     white-space: nowrap;
+  }
+
+  .th-inner {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.25rem;
+  }
+
+  .col-menu-wrap {
+    position: relative;
+    display: inline-flex;
+  }
+
+  .btn-col-menu {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: rgba(255, 255, 255, 0.85);
+    cursor: pointer;
+    opacity: 0.75;
+    transition: opacity 0.15s ease, background 0.15s ease;
+  }
+
+  .btn-col-menu:hover,
+  .btn-col-menu[aria-expanded='true'] {
+    opacity: 1;
+    background: rgba(255, 255, 255, 0.18);
+  }
+
+  .columns-toolbar {
+    display: flex;
+    justify-content: flex-end;
+    margin-bottom: 0.5rem;
+  }
+
+  .btn-hidden-columns {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.35rem 0.7rem;
+    border: 1px solid #c4b5fd;
+    border-radius: 8px;
+    background: #f5f3ff;
+    color: #5b21b6;
+    font-family: inherit;
+    font-size: 0.8rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .btn-hidden-columns:hover {
+    background: #ede9fe;
+  }
+
+  .col-menu {
+    position: absolute;
+    top: calc(100% + 4px);
+    right: 0;
+    z-index: 20;
+    min-width: 170px;
+    padding: 0.35rem;
+    border-radius: 8px;
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    box-shadow: 0 8px 24px rgba(15, 23, 42, 0.16);
+  }
+
+  .col-menu-th {
+    right: 0;
+    left: auto;
+  }
+
+  .col-menu-item {
+    display: block;
+    width: 100%;
+    padding: 0.45rem 0.65rem;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: #1f2937;
+    font-family: inherit;
+    font-size: 0.82rem;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .col-menu-item:hover:not(:disabled) {
+    background: #f3f4f6;
+  }
+
+  .col-menu-item:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+
+  .col-menu-item-accent {
+    color: #5b21b6;
+    font-weight: 600;
+  }
+
+  .col-menu-sep {
+    height: 1px;
+    margin: 0.25rem 0.35rem;
+    background: #e5e7eb;
   }
 
   .chamados-table tbody tr:hover {
@@ -1465,6 +1783,38 @@
 
   .theme-dark .chamados-table tbody tr:hover {
     background: var(--pc-bg-card);
+  }
+
+  .theme-dark .btn-hidden-columns {
+    border-color: rgba(123, 104, 238, 0.45);
+    background: rgba(123, 104, 238, 0.18);
+    color: #e9e5ff;
+  }
+
+  .theme-dark .btn-hidden-columns:hover {
+    background: rgba(123, 104, 238, 0.28);
+  }
+
+  .theme-dark .col-menu {
+    background: #1a1f2e;
+    border-color: rgba(123, 104, 238, 0.35);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  }
+
+  .theme-dark .col-menu-item {
+    color: #e5e7eb;
+  }
+
+  .theme-dark .col-menu-item:hover:not(:disabled) {
+    background: rgba(123, 104, 238, 0.2);
+  }
+
+  .theme-dark .col-menu-item-accent {
+    color: #c4b5fd;
+  }
+
+  .theme-dark .col-menu-sep {
+    background: rgba(123, 104, 238, 0.25);
   }
 
   .theme-dark .chamados-table th,
