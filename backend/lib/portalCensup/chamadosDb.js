@@ -3,6 +3,14 @@ import crypto from 'crypto';
 
 const TABLE = 'chamados';
 
+/** null = ainda não testado; false = migration SQL não aplicada no Supabase */
+let durationColumnsAvailable = null;
+
+function isMissingDurationColumnError(error) {
+  const msg = `${error?.message || ''} ${error?.details || ''} ${error?.code || ''}`;
+  return /analise_duracao_label|analise_duracao_ms|42703/i.test(msg);
+}
+
 const CORE_KEYS = new Set([
   'id',
   'agendaCode',
@@ -76,7 +84,7 @@ export function stripHeavyPersistFields(chamado) {
   return next;
 }
 
-export function chamadoToRow(chamado) {
+export function chamadoToRow(chamado, { useDurationColumns = durationColumnsAvailable !== false } = {}) {
   const light = stripHeavyPersistFields(chamado);
   const extras = {};
   for (const [key, value] of Object.entries(light || {})) {
@@ -100,6 +108,19 @@ export function chamadoToRow(chamado) {
     extras.dataSituacaoRaw = rawAgenda;
   }
 
+  const duracaoLabel = clean(light.analiseDuracaoLabel);
+  const duracaoMs = (() => {
+    if (light.analiseDuracaoMs == null || light.analiseDuracaoMs === '') return null;
+    const ms = Number(light.analiseDuracaoMs);
+    return Number.isFinite(ms) && ms >= 0 ? Math.round(ms) : null;
+  })();
+
+  // Sem as colunas no Supabase, grava no extras (legado)
+  if (!useDurationColumns) {
+    if (duracaoLabel) extras.analiseDuracaoLabel = duracaoLabel;
+    if (duracaoMs != null) extras.analiseDuracaoMs = duracaoMs;
+  }
+
   return {
     id: light.id,
     agenda_code: clean(light.agendaCode),
@@ -120,12 +141,12 @@ export function chamadoToRow(chamado) {
     tabulacao_status: light.tabulacaoStatus || 'aguardando_analise',
     tabulacao_final: clean(light.tabulacaoFinal),
     pdf_path: light.pdfPath || null,
-    analise_duracao_label: clean(light.analiseDuracaoLabel),
-    analise_duracao_ms: (() => {
-      if (light.analiseDuracaoMs == null || light.analiseDuracaoMs === '') return null;
-      const ms = Number(light.analiseDuracaoMs);
-      return Number.isFinite(ms) && ms >= 0 ? Math.round(ms) : null;
-    })(),
+    ...(useDurationColumns
+      ? {
+          analise_duracao_label: duracaoLabel,
+          analise_duracao_ms: duracaoMs
+        }
+      : {}),
     extras,
     updated_at: new Date().toISOString(),
     created_at: light.createdAt || new Date().toISOString()
@@ -269,6 +290,85 @@ export async function dbListAllChamados() {
   return (data || []).map((row) => stripHeavyChamadoFields(rowToChamado(row)));
 }
 
+function listSelectColumns(includeDurationColumns) {
+  const cols = [
+    'id',
+    'agenda_code',
+    'pedido',
+    'uf',
+    'cidade',
+    'sistema',
+    'pdv',
+    'motivo',
+    'situacao',
+    'data_situacao',
+    'endereco',
+    'mapa_coords',
+    'mapa_referencias',
+    'origem',
+    'agenda_url',
+    'fila_status',
+    'tabulacao_status',
+    'tabulacao_final',
+    'pdf_path',
+    'created_at',
+    'updated_at',
+    'dataSituacaoRaw:extras->>dataSituacaoRaw',
+    'relatorioSalvoAt:extras->>relatorioSalvoAt',
+    'geradoEm:extras->>geradoEm',
+    'analiseIniciadaEm:extras->>analiseIniciadaEm',
+    'analiseDuracaoLabelExtras:extras->>analiseDuracaoLabel',
+    'analiseDuracaoMsExtras:extras->>analiseDuracaoMs',
+    'relatorioSavedAt:extras->relatorio->>savedAt'
+  ];
+  if (includeDurationColumns) {
+    cols.splice(cols.indexOf('created_at'), 0, 'analise_duracao_label', 'analise_duracao_ms');
+  }
+  return cols.join(', ');
+}
+
+function mapListRow(row) {
+  const {
+    dataSituacaoRaw,
+    relatorioSalvoAt,
+    geradoEm,
+    analiseIniciadaEm,
+    analiseDuracaoLabelExtras,
+    analiseDuracaoMsExtras,
+    relatorioSavedAt,
+    ...coreRow
+  } = row || {};
+  const item = stripHeavyChamadoFields(rowToChamado({ ...coreRow, extras: {} }));
+
+  if (dataSituacaoRaw) item.dataSituacaoRaw = dataSituacaoRaw;
+  if (!item.dataSituacao && dataSituacaoRaw) {
+    item.dataSituacao = parseDataSituacao(dataSituacaoRaw) || dataSituacaoRaw;
+  }
+  if (relatorioSalvoAt) item.relatorioSalvoAt = relatorioSalvoAt;
+  if (geradoEm) item.geradoEm = geradoEm;
+  if (analiseIniciadaEm) item.analiseIniciadaEm = analiseIniciadaEm;
+  if (!item.analiseDuracaoLabel && analiseDuracaoLabelExtras) {
+    item.analiseDuracaoLabel = analiseDuracaoLabelExtras;
+  }
+  if (
+    (item.analiseDuracaoMs == null || item.analiseDuracaoMs === '') &&
+    analiseDuracaoMsExtras != null &&
+    analiseDuracaoMsExtras !== ''
+  ) {
+    const ms = Number(analiseDuracaoMsExtras);
+    if (Number.isFinite(ms)) item.analiseDuracaoMs = ms;
+  }
+  if (relatorioSavedAt) {
+    item.relatorio = { ...(item.relatorio || {}), savedAt: relatorioSavedAt };
+  }
+
+  // Lista de finalizados = relatório salvo (extras pesados não vêm neste select)
+  if (item.filaStatus === 'finalizada') {
+    item.relatorioSalvo = true;
+  }
+  return item;
+}
+
 export async function dbListChamadosNaFila({ q = '', page = 1, limit = 10, filaStatus = 'na_fila' } = {}) {
   if (!isPortalCensupSupabaseAvailable()) return null;
 
@@ -279,113 +379,52 @@ export async function dbListChamadosNaFila({ q = '', page = 1, limit = 10, filaS
   const query = (q || '').trim();
   const status = filaStatus === 'finalizada' ? 'finalizada' : 'na_fila';
 
-  // Sem extras completos: pdfHtml em JSONB derruba a API.
-  // Puxa só chaves leves para Data Situação (Agenda) e SALVO EM.
-  let builder = client()
-    .from(TABLE)
-    .select(
-      [
-        'id',
-        'agenda_code',
-        'pedido',
-        'uf',
-        'cidade',
-        'sistema',
-        'pdv',
-        'motivo',
-        'situacao',
-        'data_situacao',
-        'endereco',
-        'mapa_coords',
-        'mapa_referencias',
-        'origem',
-        'agenda_url',
-        'fila_status',
-        'tabulacao_status',
-        'tabulacao_final',
-        'pdf_path',
-        'analise_duracao_label',
-        'analise_duracao_ms',
-        'created_at',
-        'updated_at',
-        'dataSituacaoRaw:extras->>dataSituacaoRaw',
-        'relatorioSalvoAt:extras->>relatorioSalvoAt',
-        'geradoEm:extras->>geradoEm',
-        'analiseIniciadaEm:extras->>analiseIniciadaEm',
-        // Fallback legado (antes da coluna dedicada)
-        'analiseDuracaoLabelExtras:extras->>analiseDuracaoLabel',
-        'analiseDuracaoMsExtras:extras->>analiseDuracaoMs',
-        'relatorioSavedAt:extras->relatorio->>savedAt'
-      ].join(', '),
-      { count: 'exact' }
-    )
-    .eq('fila_status', status)
-    .order('created_at', { ascending: false })
-    .range(from, to);
+  const runList = async (includeDurationColumns) => {
+    let builder = client()
+      .from(TABLE)
+      .select(listSelectColumns(includeDurationColumns), { count: 'exact' })
+      .eq('fila_status', status)
+      .order('created_at', { ascending: false })
+      .range(from, to);
 
-  if (query) {
-    const like = `%${query}%`;
-    builder = builder.or(
-      [
-        `pedido.ilike.${like}`,
-        `cidade.ilike.${like}`,
-        `uf.ilike.${like}`,
-        `sistema.ilike.${like}`,
-        `pdv.ilike.${like}`,
-        `motivo.ilike.${like}`,
-        `situacao.ilike.${like}`,
-        `tabulacao_final.ilike.${like}`
-      ].join(',')
+    if (query) {
+      const like = `%${query}%`;
+      builder = builder.or(
+        [
+          `pedido.ilike.${like}`,
+          `cidade.ilike.${like}`,
+          `uf.ilike.${like}`,
+          `sistema.ilike.${like}`,
+          `pdv.ilike.${like}`,
+          `motivo.ilike.${like}`,
+          `situacao.ilike.${like}`,
+          `tabulacao_final.ilike.${like}`
+        ].join(',')
+      );
+    }
+
+    return builder;
+  };
+
+  // Sem extras completos: pdfHtml em JSONB derruba a API.
+  // Tenta colunas dedicadas; se a migration ainda não rodou, cai no extras.
+  const preferColumns = durationColumnsAvailable !== false;
+  let { data, error, count } = await runList(preferColumns);
+
+  if (error && preferColumns && isMissingDurationColumnError(error)) {
+    durationColumnsAvailable = false;
+    console.warn(
+      '⚠️ [PortalCENSUP] Colunas analise_duracao_* ausentes — rode o SQL 2026-10-27_portal_censup_tempo_analise.sql. Usando extras por enquanto.'
     );
+    ({ data, error, count } = await runList(false));
+  } else if (!error && preferColumns) {
+    durationColumnsAvailable = true;
   }
 
-  const { data, error, count } = await builder;
   throwIfError(error, 'listar fila');
 
-  const chamados = (data || []).map((row) => {
-    const {
-      dataSituacaoRaw,
-      relatorioSalvoAt,
-      geradoEm,
-      analiseIniciadaEm,
-      analiseDuracaoLabelExtras,
-      analiseDuracaoMsExtras,
-      relatorioSavedAt,
-      ...coreRow
-    } = row || {};
-    const item = stripHeavyChamadoFields(rowToChamado({ ...coreRow, extras: {} }));
-
-    if (dataSituacaoRaw) item.dataSituacaoRaw = dataSituacaoRaw;
-    if (!item.dataSituacao && dataSituacaoRaw) {
-      item.dataSituacao = parseDataSituacao(dataSituacaoRaw) || dataSituacaoRaw;
-    }
-    if (relatorioSalvoAt) item.relatorioSalvoAt = relatorioSalvoAt;
-    if (geradoEm) item.geradoEm = geradoEm;
-    if (analiseIniciadaEm) item.analiseIniciadaEm = analiseIniciadaEm;
-    if (!item.analiseDuracaoLabel && analiseDuracaoLabelExtras) {
-      item.analiseDuracaoLabel = analiseDuracaoLabelExtras;
-    }
-    if (
-      (item.analiseDuracaoMs == null || item.analiseDuracaoMs === '') &&
-      analiseDuracaoMsExtras != null &&
-      analiseDuracaoMsExtras !== ''
-    ) {
-      const ms = Number(analiseDuracaoMsExtras);
-      if (Number.isFinite(ms)) item.analiseDuracaoMs = ms;
-    }
-    if (relatorioSavedAt) {
-      item.relatorio = { ...(item.relatorio || {}), savedAt: relatorioSavedAt };
-    }
-
-    // Lista de finalizados = relatório salvo (extras pesados não vêm neste select)
-    if (item.filaStatus === 'finalizada') {
-      item.relatorioSalvo = true;
-    }
-    return item;
-  });
-
   return {
-    chamados,
+    chamados: (data || []).map(mapListRow),
     total: count || 0,
     page: safePage,
     limit: safeLimit
@@ -523,55 +562,85 @@ export async function dbUpsertChamado(chamado) {
   });
 
   const id = existing?.id || (isUuid(chamado.id) ? chamado.id : crypto.randomUUID());
-  const row = chamadoToRow({
-    ...chamado,
-    id,
-    createdAt: existing?.createdAt || chamado.createdAt
-  });
-  if (!row.created_at) row.created_at = new Date().toISOString();
 
-  // Não apagar chaves de extras que o payload não trouxe (ex.: Tempo da Análise)
-  if (existing) {
-    const prevExtras = {};
-    for (const [key, value] of Object.entries(existing)) {
-      if (!CORE_KEYS.has(key) && value !== undefined) prevExtras[key] = value;
-    }
-    row.extras = { ...prevExtras, ...(row.extras || {}) };
-
-    // Patches parciais não podem zerar Motivo/UF/etc. já gravados
-    const keepText = (incoming, prev) => {
-      const a = incoming != null ? String(incoming).trim() : '';
-      if (a && !/^null$/i.test(a) && !/^undefined$/i.test(a)) return incoming;
-      return prev ?? incoming;
-    };
-    row.motivo = keepText(row.motivo, existing.motivo);
-    row.uf = keepText(row.uf, existing.uf);
-    row.cidade = keepText(row.cidade, existing.cidade);
-    row.sistema = keepText(row.sistema, existing.sistema);
-    row.pdv = keepText(row.pdv, existing.pdv);
-    row.situacao = keepText(row.situacao, existing.situacao);
-    row.analise_duracao_label = keepText(
-      row.analise_duracao_label,
-      existing.analiseDuracaoLabel
+  const buildRow = (useDurationColumns) => {
+    const row = chamadoToRow(
+      {
+        ...chamado,
+        id,
+        createdAt: existing?.createdAt || chamado.createdAt
+      },
+      { useDurationColumns }
     );
-    if (row.analise_duracao_ms == null && existing.analiseDuracaoMs != null) {
-      row.analise_duracao_ms = existing.analiseDuracaoMs;
+    if (!row.created_at) row.created_at = new Date().toISOString();
+
+    // Não apagar chaves de extras que o payload não trouxe (ex.: Tempo da Análise)
+    if (existing) {
+      const prevExtras = {};
+      for (const [key, value] of Object.entries(existing)) {
+        if (!CORE_KEYS.has(key) && value !== undefined) prevExtras[key] = value;
+      }
+      row.extras = { ...prevExtras, ...(row.extras || {}) };
+
+      // Patches parciais não podem zerar Motivo/UF/etc. já gravados
+      const keepText = (incoming, prev) => {
+        const a = incoming != null ? String(incoming).trim() : '';
+        if (a && !/^null$/i.test(a) && !/^undefined$/i.test(a)) return incoming;
+        return prev ?? incoming;
+      };
+      row.motivo = keepText(row.motivo, existing.motivo);
+      row.uf = keepText(row.uf, existing.uf);
+      row.cidade = keepText(row.cidade, existing.cidade);
+      row.sistema = keepText(row.sistema, existing.sistema);
+      row.pdv = keepText(row.pdv, existing.pdv);
+      row.situacao = keepText(row.situacao, existing.situacao);
+
+      if (useDurationColumns) {
+        row.analise_duracao_label = keepText(
+          row.analise_duracao_label,
+          existing.analiseDuracaoLabel
+        );
+        if (row.analise_duracao_ms == null && existing.analiseDuracaoMs != null) {
+          row.analise_duracao_ms = existing.analiseDuracaoMs;
+        }
+      } else {
+        const label = keepText(null, existing.analiseDuracaoLabel) || row.extras?.analiseDuracaoLabel;
+        const ms =
+          existing.analiseDuracaoMs ??
+          row.extras?.analiseDuracaoMs ??
+          null;
+        if (label) row.extras.analiseDuracaoLabel = label;
+        if (ms != null) row.extras.analiseDuracaoMs = ms;
+        delete row.analise_duracao_label;
+        delete row.analise_duracao_ms;
+      }
     }
+
+    return row;
+  };
+
+  const persist = async (useDurationColumns) => {
+    const row = buildRow(useDurationColumns);
+    if (existing) {
+      const { id: _ignoreId, created_at: _ignoreCreated, ...patch } = row;
+      return client().from(TABLE).update(patch).eq('id', existing.id).select('*').single();
+    }
+    return client().from(TABLE).insert(row).select('*').single();
+  };
+
+  const preferColumns = durationColumnsAvailable !== false;
+  let { data, error } = await persist(preferColumns);
+
+  if (error && preferColumns && isMissingDurationColumnError(error)) {
+    durationColumnsAvailable = false;
+    console.warn(
+      '⚠️ [PortalCENSUP] Colunas analise_duracao_* ausentes no upsert — usando extras. Rode o SQL da migration.'
+    );
+    ({ data, error } = await persist(false));
+  } else if (!error && preferColumns) {
+    durationColumnsAvailable = true;
   }
 
-  if (existing) {
-    const { id: _ignoreId, created_at: _ignoreCreated, ...patch } = row;
-    const { data, error } = await client()
-      .from(TABLE)
-      .update(patch)
-      .eq('id', existing.id)
-      .select('*')
-      .single();
-    throwIfError(error, 'atualizar chamado');
-    return rowToChamado(data);
-  }
-
-  const { data, error } = await client().from(TABLE).insert(row).select('*').single();
-  throwIfError(error, 'inserir chamado');
+  throwIfError(error, existing ? 'atualizar chamado' : 'inserir chamado');
   return rowToChamado(data);
 }
