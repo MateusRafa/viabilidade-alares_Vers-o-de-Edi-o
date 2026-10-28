@@ -676,7 +676,10 @@
       };
       const timer = window.setTimeout(() => finish(null), timeoutMs);
       window.addEventListener('message', onMsg);
-      postToParent('REQUEST_ANALISE_DURACAO', { requestId });
+      const pedidoHint = String(form?.numeroALA || workbenchSeed?.pedido || chamadoId || '')
+        .replace(/\D/g, '')
+        .trim();
+      postToParent('REQUEST_ANALISE_DURACAO', { requestId, pedido: pedidoHint });
     });
   }
 
