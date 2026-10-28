@@ -158,6 +158,72 @@ function resolveDataSituacaoSource(item) {
   return item?.dataSituacaoRaw || item?.dataSituacao || null;
 }
 
+/** Partes de hora em America/Sao_Paulo. */
+function getBrHourMinute(date) {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: TZ_BR,
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23'
+  }).formatToParts(date);
+  const hour = Number(parts.find((p) => p.type === 'hour')?.value);
+  const minute = Number(parts.find((p) => p.type === 'minute')?.value);
+  if (!Number.isFinite(hour) || !Number.isFinite(minute)) return null;
+  return { hour, minute };
+}
+
+/**
+ * Janela sem equipe online: 20:20 → 08:00 (horário de Brasília).
+ * Nesses casos a Hora da Abertura vem da Data Situação (só o horário).
+ */
+function isJanelaSemEquipe(date) {
+  if (!date || Number.isNaN(date.getTime())) return false;
+  const hm = getBrHourMinute(date);
+  if (!hm) return false;
+  const mins = hm.hour * 60 + hm.minute;
+  return mins >= 20 * 60 + 20 || mins < 8 * 60;
+}
+
+/**
+ * Hora da Abertura:
+ * - Padrão: momento em que o chamado chegou para o time (createdAt na esteira).
+ * - Exceção 20:20–08h: usa Data Situação da Agenda (somente a hora).
+ */
+function resolveHoraAberturaSource(item) {
+  const dataSit = resolveDataSituacaoSource(item);
+  const dataSitDate = parseSituacaoDate(dataSit);
+  if (dataSitDate && isJanelaSemEquipe(dataSitDate)) {
+    return dataSit;
+  }
+  return item?.createdAt || item?.filaAtribuidaEm || dataSit || null;
+}
+
+/** Formato do Tempo da Análise: 0s…59s, depois 1:00m, 1:01m… */
+function formatAnaliseDuracaoMs(ms) {
+  if (!Number.isFinite(ms) || ms < 0) return null;
+  const totalSec = Math.floor(ms / 1000);
+  if (totalSec < 60) return `${totalSec}s`;
+  const min = Math.floor(totalSec / 60);
+  const sec = totalSec % 60;
+  return `${min}:${String(sec).padStart(2, '0')}m`;
+}
+
+/**
+ * Tempo da Análise = só o valor gravado pela extensão no Supabase
+ * (analiseDuracaoLabel / analiseDuracaoMs). Sem estimar por abertura/fechamento.
+ */
+function resolveHoraAnaliseLabel(item) {
+  const label = String(item?.analiseDuracaoLabel || '').trim();
+  if (label && label !== '—') return label;
+
+  if (item?.analiseDuracaoMs != null && item?.analiseDuracaoMs !== '') {
+    const fromMs = formatAnaliseDuracaoMs(Number(item.analiseDuracaoMs));
+    if (fromMs) return fromMs;
+  }
+
+  return '—';
+}
+
 function resolveHoraFechamentoIso(item) {
   return (
     item?.relatorioSalvoAt ||
@@ -170,12 +236,20 @@ function resolveHoraFechamentoIso(item) {
   );
 }
 
+function isEmAnaliseChamado(item) {
+  if (!item) return false;
+  if (extractAnalistaFromSituacao(item.situacao)) return true;
+  if (String(item.usuarioAnalise || '').trim()) return true;
+  return /em\s+an[aá]lise/i.test(String(item.situacao || ''));
+}
+
 function withPortalListLabels(item) {
-  const chegada = resolveDataSituacaoSource(item);
+  const dataSit = resolveDataSituacaoSource(item);
   return {
     ...item,
-    dataSituacaoLabel: formatDataSituacao(chegada),
-    horaAberturaLabel: formatHoraCompleta(chegada),
+    dataSituacaoLabel: formatDataSituacao(dataSit),
+    horaAberturaLabel: formatHoraCompleta(resolveHoraAberturaSource(item)),
+    horaAnaliseLabel: resolveHoraAnaliseLabel(item),
     horaFechamentoLabel: formatHoraCompleta(resolveHoraFechamentoIso(item)),
     situacaoLabel: formatSituacaoLabel(item)
   };
@@ -245,6 +319,13 @@ export async function claimChamadoForAnalise(id, usuario) {
   if (!chamado || !nome) return chamado;
 
   if (extractAnalistaFromSituacao(chamado.situacao) || chamado.usuarioAnalise) {
+    // Já em análise: garante o carimbo da Hora da Análise se ainda faltar
+    if (!chamado.analiseIniciadaEm) {
+      return upsertChamado({
+        ...chamado,
+        analiseIniciadaEm: new Date().toISOString()
+      });
+    }
     return chamado;
   }
 
@@ -254,8 +335,46 @@ export async function claimChamadoForAnalise(id, usuario) {
 
   return upsertChamado({
     ...chamado,
-    usuarioAnalise: nome
+    usuarioAnalise: nome,
+    analiseIniciadaEm: chamado.analiseIniciadaEm || new Date().toISOString()
   });
+}
+
+/** Grava a duração do cronômetro interno (Tempo da Análise) ao fechar o chamado. */
+export async function saveAnaliseDuracao({
+  id = null,
+  pedido = null,
+  analiseDuracaoLabel = null,
+  analiseDuracaoMs = null
+} = {}) {
+  const label = String(analiseDuracaoLabel || '').trim();
+  if (!label) {
+    const err = new Error('analiseDuracaoLabel é obrigatório');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const pedidoKey = String(pedido || id || '').trim();
+  const chamado = await findChamadoByPedidoOrCode({
+    id: id && isUuid(id) ? id : null,
+    pedido: pedidoKey || null
+  });
+  if (!chamado) {
+    const err = new Error(`Chamado não encontrado${pedidoKey ? ` (pedido ${pedidoKey})` : ''}`);
+    err.statusCode = 404;
+    throw err;
+  }
+
+  const ms = Number(analiseDuracaoMs);
+  const saved = await upsertChamado({
+    ...chamado,
+    analiseDuracaoLabel: label,
+    analiseDuracaoMs: Number.isFinite(ms) && ms >= 0 ? Math.round(ms) : chamado.analiseDuracaoMs || null
+  });
+  console.log(
+    `✅ [PortalCENSUP] Tempo da Análise salvo — pedido ${saved?.pedido || pedidoKey}: ${label}`
+  );
+  return saved;
 }
 
 function escapeHtml(value) {
@@ -860,7 +979,7 @@ export async function getChamadoById(id, { usuario } = {}) {
     }
   }
 
-  // Relatório finalizado: prévia montada sob demanda (não depende de pdfHtml no banco)
+  // Relatório finalizado: preservar o HTML/print salvo (não regenerar e perder o print do Workbench)
   const savedPdfHtml =
     chamado.relatorioSalvo && typeof chamado.pdfHtml === 'string' && chamado.pdfHtml.trim()
       ? chamado.pdfHtml
@@ -868,7 +987,6 @@ export async function getChamadoById(id, { usuario } = {}) {
 
   return {
     ...withPortalListLabels(chamado),
-    // Preferir HTML salvo legado se ainda existir; senão remontar (mapa estático leve)
     pdfHtml: savedPdfHtml || buildChamadoPdfHtml(chamado)
   };
 }
@@ -975,7 +1093,11 @@ export async function reconcileChamadosComAgenda(activePedidos = [], situacoes =
     if (!isSalvo && pedido && situacaoMap.has(pedido)) {
       const novaSituacao = situacaoMap.get(pedido);
       if (novaSituacao && novaSituacao !== item.situacao) {
+        const wasAnalise = isEmAnaliseChamado(item);
         item.situacao = novaSituacao;
+        if (!item.analiseIniciadaEm && isEmAnaliseChamado(item) && !wasAnalise) {
+          item.analiseIniciadaEm = new Date().toISOString();
+        }
         situacoesAtualizadas += 1;
       }
     }
@@ -1036,13 +1158,56 @@ export async function upsertChamado(payload) {
     }
   }
 
+  let analiseIniciadaEm =
+    previous.analiseIniciadaEm || payload.analiseIniciadaEm || null;
+  const wasAnalise = isEmAnaliseChamado(previous);
+  const draftForAnalise = {
+    situacao: payload.situacao ?? previous.situacao,
+    usuarioAnalise: payload.usuarioAnalise || previous.usuarioAnalise || null
+  };
+  if (!analiseIniciadaEm && isEmAnaliseChamado(draftForAnalise) && !wasAnalise) {
+    analiseIniciadaEm = now;
+  }
+
+  const analiseDuracaoLabel =
+    cleanText(payload.analiseDuracaoLabel) || previous.analiseDuracaoLabel || null;
+  const analiseDuracaoMs = (() => {
+    if (payload.analiseDuracaoMs != null && Number.isFinite(Number(payload.analiseDuracaoMs))) {
+      return Math.max(0, Math.round(Number(payload.analiseDuracaoMs)));
+    }
+    return previous.analiseDuracaoMs ?? null;
+  })();
+
+  // Não apagar campos de identidade com undefined/null vindos de patches parciais
+  const pickText = (...vals) => {
+    for (const v of vals) {
+      const c = cleanText(v);
+      if (c) return c;
+    }
+    return null;
+  };
+
   const next = {
     ...previous,
     ...payload,
     id,
+    pedido: payload.pedido != null && String(payload.pedido).trim() !== ''
+      ? String(payload.pedido).trim()
+      : previous.pedido != null
+        ? String(previous.pedido)
+        : null,
+    uf: pickText(payload.uf, previous.uf),
+    cidade: pickText(payload.cidade, previous.cidade),
+    sistema: pickText(payload.sistema, previous.sistema),
+    pdv: pickText(payload.pdv, previous.pdv),
+    motivo: pickText(payload.motivo, previous.motivo),
+    situacao: pickText(payload.situacao, previous.situacao),
     filaStatus: payload.filaStatus || previous.filaStatus || 'na_fila',
     usuarioFila: esteiraUsuario || previous.usuarioFila || null,
     filaAtribuidaEm: esteiraEm || previous.filaAtribuidaEm || null,
+    analiseIniciadaEm,
+    analiseDuracaoLabel,
+    analiseDuracaoMs,
     endereco: {
       ...(previous.endereco || {}),
       ...(payload.endereco || {})
@@ -1464,19 +1629,44 @@ export async function salvarRelatorioWorkbench(id, { usuario, report = {}, persi
   const clientPdfHtml = String(report.pdfHtml || '').trim();
   const resultadoFinal =
     resolveResultadoFinal({ tabulacaoFinal }) || 'reprovado';
-  const fechamentoIso = (() => {
-    const geradoEmDate = parseSituacaoDate(report.geradoEm || report.geradoEmAt || null);
-    return geradoEmDate ? geradoEmDate.toISOString() : new Date().toISOString();
-  })();
+
+  // Hora do Fechamento = momento exato em que a ordem é fechada (gerar/salvar PDF).
+  const fechamentoIso = new Date().toISOString();
+
+  // Relê o chamado para não perder Tempo da Análise / motivo gravados pela extensão
+  const fresh = (await findChamadoByPedidoOrCode({
+    id: chamado.id,
+    pedido: chamado.pedido
+  })) || chamado;
+
+  // Só persiste Tempo da Análise se a extensão / Workbench enviou o cronômetro
+  const analiseDuracaoLabel =
+    cleanText(report.analiseDuracaoLabel) ||
+    cleanText(chamado.analiseDuracaoLabel) ||
+    cleanText(fresh.analiseDuracaoLabel) ||
+    null;
+  const analiseDuracaoMs =
+    report.analiseDuracaoMs ??
+    chamado.analiseDuracaoMs ??
+    fresh.analiseDuracaoMs ??
+    null;
 
   const next = {
+    ...fresh,
     ...chamado,
     pedido: numeroALA || chamado.pedido,
-    uf: cleanText(chamado.uf) || null,
-    sistema: cleanText(chamado.sistema) || null,
-    pdv: cleanText(chamado.pdv) || null,
-    motivo: cleanText(chamado.motivo) || null,
-    cidade: cidade || cleanText(chamado.cidade) || null,
+    uf: cleanText(chamado.uf) || cleanText(fresh.uf) || null,
+    cidade: cidade || cleanText(chamado.cidade) || cleanText(fresh.cidade) || null,
+    sistema: cleanText(chamado.sistema) || cleanText(fresh.sistema) || null,
+    pdv: cleanText(chamado.pdv) || cleanText(fresh.pdv) || null,
+    motivo:
+      cleanText(report.motivo) ||
+      cleanText(chamado.motivo) ||
+      cleanText(fresh.motivo) ||
+      cleanText(seed?.motivo) ||
+      null,
+    analiseDuracaoLabel,
+    analiseDuracaoMs,
     endereco: {
       ...(chamado.endereco || {}),
       completo: enderecoCompleto || chamado.endereco?.completo || null,
@@ -1490,7 +1680,6 @@ export async function salvarRelatorioWorkbench(id, { usuario, report = {}, persi
       ...(chamado.viabilidadeResumo || {}),
       projetista: projetista || chamado.viabilidadeResumo?.projetista || null
     },
-    // Mapa base64 só em memória para montar a resposta — NÃO vai para o banco
     ...(mapPreviewImage ? { mapPreviewImage } : {}),
     geradoEm: fechamentoIso,
     relatorioSalvoAt: fechamentoIso,
@@ -1504,13 +1693,13 @@ export async function salvarRelatorioWorkbench(id, { usuario, report = {}, persi
       projetista,
       resultadoFinal,
       savedAt: fechamentoIso,
-      savedBy: usuario || null
-      // sem mapPreviewImage — economiza dezenas/centenas de MB no JSONB
+      savedBy: usuario || null,
+      ...(mapPreviewImage ? { mapPreviewImage } : {})
     },
     updatedAt: fechamentoIso
   };
 
-  // HTML completo só para a resposta (SharePoint/Workbench); persistência é leve
+  // Preferir HTML do print do Workbench; senão montar template com a prévia do mapa
   const pdfHtml = clientPdfHtml || buildChamadoPdfHtml(next);
   next.pdfHtml = pdfHtml;
 
@@ -1526,7 +1715,7 @@ export async function salvarRelatorioWorkbench(id, { usuario, report = {}, persi
     next.relatorioSalvo = true;
     next.relatorioSalvoAt = fechamentoIso;
 
-    // Grava metadados + CTOs/resumo; remove pdfHtml e mapa base64
+    // Grava metadados; remove pdfHtml e mapa base64 do JSONB
     await upsertChamado(stripHeavyPersistFields(next));
 
     if (corrected) {
@@ -1552,9 +1741,7 @@ export async function salvarRelatorioWorkbench(id, { usuario, report = {}, persi
   }
 
   return {
-    chamado: persist
-      ? await getChamadoById(id)
-      : { ...stripHeavyPersistFields(next), pdfHtml },
+    chamado: persist ? await getChamadoById(id) : { ...next, pdfHtml },
     pdfHtml,
     corrected,
     persisted: persist === true
