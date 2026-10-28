@@ -656,7 +656,7 @@
   }
 
   /** Pede à extensão o Tempo da Análise (cronômetro do detalhe). */
-  function requestAnaliseDuracaoFromParent(timeoutMs = 900) {
+  function requestAnaliseDuracaoFromParent(timeoutMs = 5000) {
     const requestId = `ad_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     return new Promise((resolve) => {
       let done = false;
@@ -1866,6 +1866,7 @@
             ...buildReportPayload(),
             persist: true,
             seed: workbenchSeed || undefined,
+            motivo: motivoAtual() || workbenchSeed?.motivo || undefined,
             ...(htmlForSave ? { pdfHtml: htmlForSave } : {}),
             ...(geradoEmSave ? { geradoEm: geradoEmSave } : {}),
             ...(analiseDuracaoLabel
