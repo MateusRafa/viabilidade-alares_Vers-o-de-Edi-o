@@ -396,7 +396,8 @@
       case 'horaAbertura':
         return item.horaAberturaLabel;
       case 'horaAnalise':
-        return item.horaAnaliseLabel;
+        // Só o valor persistido pela extensão (Supabase) — sem estimar por horários
+        return item.horaAnaliseLabel || item.analiseDuracaoLabel;
       case 'horaFechamento':
         return item.horaFechamentoLabel;
       case 'pdv':
