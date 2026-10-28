@@ -23,6 +23,8 @@ const CORE_KEYS = new Set([
   'tabulacaoStatus',
   'tabulacaoFinal',
   'pdfPath',
+  'analiseDuracaoLabel',
+  'analiseDuracaoMs',
   'createdAt',
   'updatedAt',
   'dataSituacaoLabel',
@@ -51,33 +53,9 @@ function parseDataSituacao(value) {
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
-/** Campos que incham o JSONB (HTML/print e mapa base64) — não persistir. */
-const HEAVY_EXTRAS_KEYS = ['pdfHtml', 'mapPreviewImage', 'previewImage'];
-
-/**
- * Remove HTML/print e imagens base64 antes de gravar no Supabase/JSON.
- * Mantém metadados do relatório (tabulação, endereço, CTOs, etc.).
- */
-export function stripHeavyPersistFields(chamado) {
-  if (!chamado || typeof chamado !== 'object') return chamado;
-  const next = { ...chamado };
-  for (const key of HEAVY_EXTRAS_KEYS) {
-    delete next[key];
-  }
-  if (next.relatorio && typeof next.relatorio === 'object') {
-    const rel = { ...next.relatorio };
-    for (const key of HEAVY_EXTRAS_KEYS) {
-      delete rel[key];
-    }
-    next.relatorio = rel;
-  }
-  return next;
-}
-
 export function chamadoToRow(chamado) {
-  const light = stripHeavyPersistFields(chamado);
   const extras = {};
-  for (const [key, value] of Object.entries(light || {})) {
+  for (const [key, value] of Object.entries(chamado || {})) {
     if (!CORE_KEYS.has(key) && value !== undefined) extras[key] = value;
   }
 
@@ -90,37 +68,43 @@ export function chamadoToRow(chamado) {
 
   // Preserva texto BR da Agenda mesmo se data_situacao for gravado em ISO
   const rawAgenda =
-    clean(light.dataSituacaoRaw) ||
-    (typeof light.dataSituacao === 'string' && /\d{2}\/\d{2}\/\d{4}/.test(light.dataSituacao)
-      ? clean(light.dataSituacao)
+    clean(chamado.dataSituacaoRaw) ||
+    (typeof chamado.dataSituacao === 'string' && /\d{2}\/\d{2}\/\d{4}/.test(chamado.dataSituacao)
+      ? clean(chamado.dataSituacao)
       : null);
   if (rawAgenda && !extras.dataSituacaoRaw) {
     extras.dataSituacaoRaw = rawAgenda;
   }
 
   return {
-    id: light.id,
-    agenda_code: clean(light.agendaCode),
-    pedido: light.pedido != null ? String(light.pedido) : null,
-    uf: clean(light.uf),
-    cidade: clean(light.cidade),
-    sistema: clean(light.sistema),
-    pdv: clean(light.pdv),
-    motivo: clean(light.motivo),
-    situacao: clean(light.situacao),
-    data_situacao: parseDataSituacao(light.dataSituacao || rawAgenda),
-    endereco: light.endereco && typeof light.endereco === 'object' ? light.endereco : {},
-    mapa_coords: light.mapaCoords || null,
-    mapa_referencias: Array.isArray(light.mapaReferencias) ? light.mapaReferencias : [],
-    origem: light.origem || 'extensao',
-    agenda_url: light.agendaUrl || null,
-    fila_status: light.filaStatus || 'na_fila',
-    tabulacao_status: light.tabulacaoStatus || 'aguardando_analise',
-    tabulacao_final: clean(light.tabulacaoFinal),
-    pdf_path: light.pdfPath || null,
+    id: chamado.id,
+    agenda_code: clean(chamado.agendaCode),
+    pedido: chamado.pedido != null ? String(chamado.pedido) : null,
+    uf: clean(chamado.uf),
+    cidade: clean(chamado.cidade),
+    sistema: clean(chamado.sistema),
+    pdv: clean(chamado.pdv),
+    motivo: clean(chamado.motivo),
+    situacao: clean(chamado.situacao),
+    data_situacao: parseDataSituacao(chamado.dataSituacao || rawAgenda),
+    endereco: chamado.endereco && typeof chamado.endereco === 'object' ? chamado.endereco : {},
+    mapa_coords: chamado.mapaCoords || null,
+    mapa_referencias: Array.isArray(chamado.mapaReferencias) ? chamado.mapaReferencias : [],
+    origem: chamado.origem || 'extensao',
+    agenda_url: chamado.agendaUrl || null,
+    fila_status: chamado.filaStatus || 'na_fila',
+    tabulacao_status: chamado.tabulacaoStatus || 'aguardando_analise',
+    tabulacao_final: clean(chamado.tabulacaoFinal),
+    pdf_path: chamado.pdfPath || null,
+    analise_duracao_label: clean(chamado.analiseDuracaoLabel),
+    analise_duracao_ms: (() => {
+      if (chamado.analiseDuracaoMs == null || chamado.analiseDuracaoMs === '') return null;
+      const ms = Number(chamado.analiseDuracaoMs);
+      return Number.isFinite(ms) && ms >= 0 ? Math.round(ms) : null;
+    })(),
     extras,
     updated_at: new Date().toISOString(),
-    created_at: light.createdAt || new Date().toISOString()
+    created_at: chamado.createdAt || new Date().toISOString()
   };
 }
 
@@ -148,6 +132,19 @@ export function rowToChamado(row) {
     tabulacaoStatus: row.tabulacao_status,
     tabulacaoFinal: row.tabulacao_final,
     pdfPath: row.pdf_path,
+    analiseDuracaoLabel:
+      row.analise_duracao_label ||
+      extras.analiseDuracaoLabel ||
+      null,
+    analiseDuracaoMs: (() => {
+      const raw =
+        row.analise_duracao_ms != null && row.analise_duracao_ms !== ''
+          ? row.analise_duracao_ms
+          : extras.analiseDuracaoMs;
+      if (raw == null || raw === '') return null;
+      const ms = Number(raw);
+      return Number.isFinite(ms) ? ms : null;
+    })(),
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };
@@ -283,11 +280,17 @@ export async function dbListChamadosNaFila({ q = '', page = 1, limit = 10, filaS
         'tabulacao_status',
         'tabulacao_final',
         'pdf_path',
+        'analise_duracao_label',
+        'analise_duracao_ms',
         'created_at',
         'updated_at',
         'dataSituacaoRaw:extras->>dataSituacaoRaw',
         'relatorioSalvoAt:extras->>relatorioSalvoAt',
         'geradoEm:extras->>geradoEm',
+        'analiseIniciadaEm:extras->>analiseIniciadaEm',
+        // Fallback legado (antes da coluna dedicada)
+        'analiseDuracaoLabelExtras:extras->>analiseDuracaoLabel',
+        'analiseDuracaoMsExtras:extras->>analiseDuracaoMs',
         'relatorioSavedAt:extras->relatorio->>savedAt'
       ].join(', '),
       { count: 'exact' }
@@ -320,6 +323,9 @@ export async function dbListChamadosNaFila({ q = '', page = 1, limit = 10, filaS
       dataSituacaoRaw,
       relatorioSalvoAt,
       geradoEm,
+      analiseIniciadaEm,
+      analiseDuracaoLabelExtras,
+      analiseDuracaoMsExtras,
       relatorioSavedAt,
       ...coreRow
     } = row || {};
@@ -331,6 +337,18 @@ export async function dbListChamadosNaFila({ q = '', page = 1, limit = 10, filaS
     }
     if (relatorioSalvoAt) item.relatorioSalvoAt = relatorioSalvoAt;
     if (geradoEm) item.geradoEm = geradoEm;
+    if (analiseIniciadaEm) item.analiseIniciadaEm = analiseIniciadaEm;
+    if (!item.analiseDuracaoLabel && analiseDuracaoLabelExtras) {
+      item.analiseDuracaoLabel = analiseDuracaoLabelExtras;
+    }
+    if (
+      (item.analiseDuracaoMs == null || item.analiseDuracaoMs === '') &&
+      analiseDuracaoMsExtras != null &&
+      analiseDuracaoMsExtras !== ''
+    ) {
+      const ms = Number(analiseDuracaoMsExtras);
+      if (Number.isFinite(ms)) item.analiseDuracaoMs = ms;
+    }
     if (relatorioSavedAt) {
       item.relatorio = { ...(item.relatorio || {}), savedAt: relatorioSavedAt };
     }
@@ -368,7 +386,7 @@ export async function dbReconcileChamadosComAgenda(activePedidos = new Set(), si
 
   const { data, error } = await client()
     .from(TABLE)
-    .select('id, pedido, fila_status, situacao')
+    .select('id, pedido, fila_status, situacao, extras')
     .eq('fila_status', 'na_fila');
   throwIfError(error, 'listar chamados para reconciliação com Agenda');
 
@@ -402,9 +420,17 @@ export async function dbReconcileChamadosComAgenda(activePedidos = new Set(), si
       const novaSituacao = situacaoMap.get(pedido);
       if (!novaSituacao || novaSituacao === (row.situacao || '')) continue;
 
+      const wasAnalise = /em\s+an[aá]lise/i.test(String(row.situacao || ''));
+      const isAnalise = /em\s+an[aá]lise/i.test(String(novaSituacao || ''));
+      const extras =
+        row.extras && typeof row.extras === 'object' ? { ...row.extras } : {};
+      if (isAnalise && !wasAnalise && !extras.analiseIniciadaEm) {
+        extras.analiseIniciadaEm = now;
+      }
+
       const { error: upErr } = await client()
         .from(TABLE)
-        .update({ situacao: novaSituacao, updated_at: now })
+        .update({ situacao: novaSituacao, updated_at: now, extras })
         .eq('id', row.id);
       if (upErr) {
         console.warn(`⚠️ [PortalCENSUP][Supabase] Falha ao atualizar situação do pedido ${pedido}:`, upErr.message);
@@ -479,6 +505,35 @@ export async function dbUpsertChamado(chamado) {
     createdAt: existing?.createdAt || chamado.createdAt
   });
   if (!row.created_at) row.created_at = new Date().toISOString();
+
+  // Não apagar chaves de extras que o payload não trouxe (ex.: Tempo da Análise)
+  if (existing) {
+    const prevExtras = {};
+    for (const [key, value] of Object.entries(existing)) {
+      if (!CORE_KEYS.has(key) && value !== undefined) prevExtras[key] = value;
+    }
+    row.extras = { ...prevExtras, ...(row.extras || {}) };
+
+    // Patches parciais não podem zerar Motivo/UF/etc. já gravados
+    const keepText = (incoming, prev) => {
+      const a = incoming != null ? String(incoming).trim() : '';
+      if (a && !/^null$/i.test(a) && !/^undefined$/i.test(a)) return incoming;
+      return prev ?? incoming;
+    };
+    row.motivo = keepText(row.motivo, existing.motivo);
+    row.uf = keepText(row.uf, existing.uf);
+    row.cidade = keepText(row.cidade, existing.cidade);
+    row.sistema = keepText(row.sistema, existing.sistema);
+    row.pdv = keepText(row.pdv, existing.pdv);
+    row.situacao = keepText(row.situacao, existing.situacao);
+    row.analise_duracao_label = keepText(
+      row.analise_duracao_label,
+      existing.analiseDuracaoLabel
+    );
+    if (row.analise_duracao_ms == null && existing.analiseDuracaoMs != null) {
+      row.analise_duracao_ms = existing.analiseDuracaoMs;
+    }
+  }
 
   if (existing) {
     const { id: _ignoreId, created_at: _ignoreCreated, ...patch } = row;
