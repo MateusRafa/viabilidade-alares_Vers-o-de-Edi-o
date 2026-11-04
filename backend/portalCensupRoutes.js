@@ -39,6 +39,10 @@ import {
 } from './lib/portalCensup/filaEsteira.js';
 import { getFilaEspelho, setFilaEspelho } from './lib/portalCensup/filaEspelho.js';
 import { getMotivosConfigUsuario, setMotivoUsuario } from './lib/portalCensup/motivosUsuario.js';
+import {
+  getSharePointLinks,
+  publishSharePointLinks
+} from './lib/portalCensup/sharePointLinksStore.js';
 import { getRemoteRelayStatus } from './lib/portalCensup/remoteRelay.js';
 
 function getUsuarioFromRequest(req) {
@@ -233,6 +237,36 @@ export function registerPortalCensupRoutes(app) {
       });
     } catch (err) {
       console.error('❌ [PortalCENSUP] GET presence:', err);
+      sendError(res, err);
+    }
+  });
+
+  /**
+   * Links de SharePoint da equipe. A extensão só usa estes quando a caixa local está vazia.
+   */
+  app.get('/api/portal-censup/sharepoint-links', (req, res) => {
+    try {
+      const usuario = getUsuarioFromRequest(req);
+      if (!usuario) {
+        return res.status(401).json({ success: false, error: 'Usuário não autenticado' });
+      }
+      res.json({ success: true, links: getSharePointLinks() });
+    } catch (err) {
+      console.error('❌ [PortalCENSUP] GET sharepoint-links:', err);
+      sendError(res, err);
+    }
+  });
+
+  app.post('/api/portal-censup/sharepoint-links', (req, res) => {
+    try {
+      const usuario = getUsuarioFromRequest(req);
+      if (!usuario) {
+        return res.status(401).json({ success: false, error: 'Usuário não autenticado' });
+      }
+      const links = publishSharePointLinks(req.body || {}, usuario);
+      res.json({ success: true, links });
+    } catch (err) {
+      console.error('❌ [PortalCENSUP] POST sharepoint-links:', err);
       sendError(res, err);
     }
   });
