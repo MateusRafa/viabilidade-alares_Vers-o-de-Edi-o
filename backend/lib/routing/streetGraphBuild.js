@@ -16,10 +16,10 @@ const require = createRequire(import.meta.url);
 const createOsmParser = require('osm-pbf-parser');
 
 const HIGHWAY =
-  /^(footway|path|pedestrian|steps|residential|living_street|service|unclassified|tertiary|tertiary_link|secondary|secondary_link|primary|primary_link|trunk|trunk_link|cycleway|road)$/;
+  /^(footway|path|pedestrian|steps|track|residential|living_street|service|unclassified|tertiary|tertiary_link|secondary|secondary_link|primary|primary_link|trunk|trunk_link|cycleway|road)$/;
 
 const DEFAULT_PBF_URL =
-  'https://download.geofabrik.de/south-america/brazil/nordeste-latest.osm.pbf';
+  'https://download.geofabrik.de/south-america/brazil-latest.osm.pbf';
 
 let dataDir = '';
 let prepared = null;
@@ -56,6 +56,10 @@ export function streetGraphPrepared() {
   return prepared;
 }
 
+export function streetGraphCoversCurrentMap() {
+  return Boolean(prepared?.edges?.length) && (prepared?.source?.url || '') === pbfUrl();
+}
+
 export function initStreetGraph(dir) {
   dataDir = dir || dataDir;
   try {
@@ -69,6 +73,9 @@ export function initStreetGraph(dir) {
     console.log(
       `🛣️ [Ruas] Arquivo no ar: ${prepared.coords.length} pontos, ${prepared.edges.length} trechos, raio ${RADIUS_METERS} m.`
     );
+    if ((raw.source?.url || '') !== pbfUrl()) {
+      console.log('🛣️ [Ruas] Esse arquivo não cobre o mapa do Brasil. A montagem nova começa em seguida.');
+    }
   } catch (err) {
     prepared = null;
     console.warn('⚠️ [Ruas] Não foi possível ler o arquivo:', err.message);
@@ -219,6 +226,7 @@ async function remoteStamp(url) {
 
 function sameStamp(a, b) {
   if (!a || !b) return false;
+  if ((a.url || '') !== (b.url || '')) return false;
   if (a.etag && b.etag) return a.etag === b.etag;
   return Boolean(a.lastModified) && a.lastModified === b.lastModified && a.bytes > 0 && a.bytes === b.bytes;
 }
@@ -388,18 +396,21 @@ async function refreshStreetGraph(reason) {
 
   const previous = prepared?.ctos || [];
   const uncovered = hasCtoOutside(ctos, previous);
+  const url = pbfUrl();
   let stamp = null;
   try {
-    stamp = await remoteStamp(pbfUrl());
+    stamp = { ...(await remoteStamp(url)), url };
   } catch (err) {
     console.warn(`⚠️ [Ruas] Não deu para consultar a data do mapa: ${err.message}`);
   }
   const localReady = fs.existsSync(pbfFile());
-  const mapSame = localReady && sameStamp(prepared?.source, stamp);
+  const urlSame = (prepared?.source?.url || '') === url;
+  const mapSame = localReady && urlSame && sameStamp(prepared?.source, stamp);
   const canSkip =
     !uncovered &&
     prepared?.edges?.length &&
-    (mapSame || (!stamp && prepared?.source && localReady));
+    urlSame &&
+    (mapSame || (!stamp && localReady));
 
   if (canSkip) {
     console.log('🛣️ [Ruas] Mapa da região sem mudança e sem CTO fora da área. Arquivo mantido.');
@@ -424,7 +435,7 @@ async function refreshStreetGraph(reason) {
     version: 1,
     radiusMeters: RADIUS_METERS,
     builtAt: new Date().toISOString(),
-    source: stamp,
+    source: stamp || { url: pbfUrl() },
     ctos: ctos.map((c) => ({ lat: Number(c.lat.toFixed(5)), lng: Number(c.lng.toFixed(5)) })),
     nodes: built.nodes,
     edges: built.edges
