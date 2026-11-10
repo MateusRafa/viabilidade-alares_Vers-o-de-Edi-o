@@ -46,3 +46,9 @@ desktop.ini
 # Bot da Agenda (sessão Playwright — não versionar)
 backend/data/agenda-bot-session.json
 backend/data/agenda-bot-state.json
+
+# Grafo de ruas do motor próprio (OSRM) — grande, gerado na máquina
+backend/osrm-data/
+
+# Arquivo de ruas gerado no backend (OpenStreetMap, raio de 1 km)
+backend/data/ruas/
