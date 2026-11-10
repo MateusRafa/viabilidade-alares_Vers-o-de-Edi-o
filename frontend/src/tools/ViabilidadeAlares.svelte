@@ -1878,9 +1878,126 @@
     return filteredPath;
   }
 
-  // Calcula rota pela Routes API (Route.computeRoutes) e devolve no formato legado do DirectionsService
-  // ({ routes: [{ overview_path, legs }] } + status), para manter o restante do código inalterado
-  async function computeRouteCompat({ origin, destination, travelMode }) {
+  // Cache do traçado: a distância e o desenho pedem a mesma CTO→cliente.
+  const routeResultCache = new Map();
+  const routeInflight = new Map();
+  let ownRouterMode = 'unknown';
+  let ownRouterCheck = null;
+  let ownRouterOffUntil = 0;
+
+  function routeRequestKey(origin, destination, travelMode) {
+    const nums = [origin?.lat, origin?.lng, destination?.lat, destination?.lng].map(Number);
+    if (!nums.every(Number.isFinite)) return '';
+    const mode = String(travelMode || '').toUpperCase().includes('DRIV') ? 'driving' : 'walking';
+    const r = (n) => n.toFixed(5);
+    return `${mode}|${r(nums[0])},${r(nums[1])}|${r(nums[2])},${r(nums[3])}`;
+  }
+
+  function rememberRouteResult(key, value) {
+    if (!key || value?.status !== 'OK') return;
+    routeResultCache.set(key, value);
+    if (routeResultCache.size > 200) {
+      routeResultCache.delete(routeResultCache.keys().next().value);
+    }
+  }
+
+  /** Uma sondagem por minuto. Com o motor desligado, a busca não espera rota a rota. */
+  function ensureOwnRouterMode() {
+    if (ownRouterMode === 'on') return Promise.resolve(true);
+    if (ownRouterMode === 'off' && Date.now() < ownRouterOffUntil) return Promise.resolve(false);
+    if (ownRouterCheck) return ownRouterCheck;
+    ownRouterCheck = probeOwnRouter().finally(() => {
+      ownRouterCheck = null;
+    });
+    return ownRouterCheck;
+  }
+
+  async function probeOwnRouter() {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 1500);
+    try {
+      const res = await fetch(getApiUrl('/api/routes/status'), {
+        headers: apiFetchHeaders(),
+        signal: ctrl.signal
+      });
+      const data = await res.json().catch(() => null);
+      const available = res.ok && data?.available === true;
+      ownRouterMode = available ? 'on' : 'off';
+      ownRouterOffUntil = available ? 0 : Date.now() + 60000;
+      if (available) {
+        console.log('🛣️ [Rotas] Motor próprio ativo.');
+      } else {
+        console.warn('⚠️ [Rotas] Motor próprio indisponível. Rotas seguem no Google.');
+      }
+      return available;
+    } catch {
+      ownRouterMode = 'off';
+      ownRouterOffUntil = Date.now() + 60000;
+      console.warn('⚠️ [Rotas] Motor próprio indisponível. Rotas seguem no Google.');
+      return false;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  function pauseOwnRouter() {
+    ownRouterMode = 'off';
+    ownRouterOffUntil = Date.now() + 60000;
+    console.warn('⚠️ [Rotas] Motor próprio falhou. As próximas consultas usam o Google Routes por 60s.');
+  }
+
+  function toRouteCompat(path, distanceMeters) {
+    return {
+      status: 'OK',
+      result: {
+        routes: [{
+          overview_path: path.map((p) => new google.maps.LatLng(p.lat, p.lng)),
+          legs: [{ distance: { value: Number(distanceMeters) || 0 }, steps: [] }]
+        }]
+      }
+    };
+  }
+
+  async function computeOwnRoute({ origin, destination, travelMode }) {
+    const available = await ensureOwnRouterMode();
+    if (!available) return null;
+
+    const mode = String(travelMode || '').toUpperCase().includes('DRIV') ? 'driving' : 'walking';
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 4000);
+    try {
+      const res = await fetch(getApiUrl('/api/routes/path'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...apiFetchHeaders() },
+        body: JSON.stringify({
+          origin: { lat: Number(origin.lat), lng: Number(origin.lng) },
+          destination: { lat: Number(destination.lat), lng: Number(destination.lng) },
+          mode
+        }),
+        signal: ctrl.signal
+      });
+      const data = await res.json().catch(() => null);
+      if (data?.code === 'ROUTE_LONG' || data?.code === 'ZERO_RESULTS') {
+        return null;
+      }
+      if (data?.code === 'ROUTER_UNAVAILABLE' || res.status >= 500) {
+        pauseOwnRouter();
+        return null;
+      }
+      if (!res.ok || !data?.success || !Array.isArray(data.path) || data.path.length < 2) {
+        console.warn('⚠️ [Rotas] Motor próprio sem traçado nesta consulta. Usando Google Routes.');
+        return null;
+      }
+      return toRouteCompat(data.path, data.distanceMeters);
+    } catch {
+      pauseOwnRouter();
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async function computeGoogleRouteCompat({ origin, destination, travelMode }) {
     try {
       const { Route } = await google.maps.importLibrary('routes');
       const { routes } = await Route.computeRoutes({
@@ -1902,7 +2019,7 @@
         status: 'OK',
         result: {
           routes: [{
-            overview_path: route.path.map(p => new google.maps.LatLng(p.lat, p.lng)),
+            overview_path: route.path.map((p) => new google.maps.LatLng(p.lat, p.lng)),
             legs: [{ distance: { value: route.distanceMeters || 0 }, steps: [] }]
           }]
         }
@@ -1921,6 +2038,41 @@
         status = 'NOT_FOUND';
       }
       return { result: null, status };
+    }
+  }
+
+  // Traçado no formato que o desenho já usa. Motor próprio primeiro; Google só se ele falhar.
+  async function computeRouteCompat({ origin, destination, travelMode }) {
+    const key = routeRequestKey(origin, destination, travelMode);
+    if (key) {
+      const cached = routeResultCache.get(key);
+      if (cached) return cached;
+      const pending = routeInflight.get(key);
+      if (pending) return pending;
+    }
+
+    const run = (async () => {
+      const linear = calculateGeodesicDistance(
+        Number(origin.lat),
+        Number(origin.lng),
+        Number(destination.lat),
+        Number(destination.lng)
+      );
+      // Até 1 km a rota sai do arquivo local. Acima disso, Google.
+      const own = linear <= 1000
+        ? await computeOwnRoute({ origin, destination, travelMode })
+        : null;
+      const value = own || (await computeGoogleRouteCompat({ origin, destination, travelMode }));
+      rememberRouteResult(key, value);
+      return value;
+    })();
+
+    if (!key) return run;
+    routeInflight.set(key, run);
+    try {
+      return await run;
+    } finally {
+      routeInflight.delete(key);
     }
   }
 
@@ -3403,6 +3555,7 @@
   // Inicializar ferramenta quando o componente é montado
   onMount(async () => {
     try {
+      void ensureOwnRouterMode();
       // Workbench (extensão): só mapa + tabela — sem painel de busca
       if (workbenchMode) {
         isSearchPanelMinimized = true;
