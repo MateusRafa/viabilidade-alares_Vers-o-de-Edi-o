@@ -22,6 +22,7 @@
     "express": "^4.18.2",
     "martinez-polygon-clipping": "0.7.1",
     "multer": "^2.0.0",
+    "osm-pbf-parser": "^2.3.0",
     "pdfjs-dist": "^4.10.38",
     "pg": "^8.13.1",
     "pg-copy-streams": "^7.0.0",
