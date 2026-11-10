@@ -19,6 +19,8 @@ import {
 } from './lib/viAlaDualDb.js';
 import { registerRelatoriosB2bRoutes } from './relatoriosB2bRoutes.js';
 import { registerPortalCensupRoutes } from './portalCensupRoutes.js';
+import { registerRoutingRoutes } from './routingRoutes.js';
+import { scheduleStreetGraphRefresh } from './lib/routing/streetGraphBuild.js';
 import { attachRemoteRelay } from './lib/portalCensup/remoteRelay.js';
 import { bootstrapAgendaBotIfEnabled } from './lib/portalCensup/agendaBot/index.js';
 import { replaceMduBaseFromExcel } from './lib/condominiosMdu/uploadAndGeocode.js';
@@ -1613,6 +1615,7 @@ async function startTilesCoverageForUpload(res, { coverageDatasetId, shouldSwapA
       console.log(
         `✅ [API] Mancha em blocos publicada: #${result.polygonId} v${result.version}, ${result.totalCtos} CTOs, ${result.tiles} blocos, ${(result.elapsedMs / 1000).toFixed(1)}s`
       );
+      scheduleStreetGraphRefresh('base-e-mancha');
     } catch (err) {
       console.error('❌ [API] Erro na mancha em blocos:', err?.message || err);
       const detail = shortCoverageError(err);
@@ -2466,6 +2469,7 @@ app.post('/api/coverage/calculate', async (req, res) => {
         uploadProgress.inProgress = false;
         uploadInProgress = false;
         markBaseReadyPublished();
+        scheduleStreetGraphRefresh('base-e-mancha');
         if (!shouldSwapAfterCoverage) {
           uploadProgress.message = uploadProgress.coverageAutoStarted
             ? 'Base e mancha de cobertura atualizadas com sucesso!'
@@ -10557,6 +10561,13 @@ try {
   console.log('✅ [PortalCENSUP] Rotas registradas (/api/portal-censup/*)');
 } catch (err) {
   console.error('❌ [PortalCENSUP] Não foi possível registrar rotas:', err.message);
+}
+
+try {
+  registerRoutingRoutes(app, { dataDir: DATA_DIR });
+  console.log('✅ [Rotas] Rotas registradas (/api/routes/*)');
+} catch (err) {
+  console.error('❌ [Rotas] Não foi possível registrar rotas:', err.message);
 }
 
 try {
