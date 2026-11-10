@@ -1,0 +1,36 @@
+# Motor de rotas local. O fundo do mapa continua no Google.
+# Na pasta backend:
+#   1. Salve o .osm.pbf em osrm-data/map.osm.pbf
+#   2. docker compose -f docker-compose.osrm.yml --profile prepare run --rm osrm-prepare
+#   3. docker compose -f docker-compose.osrm.yml up -d
+#   4. No .env do backend:
+#        OSRM_BASE_URL=http://127.0.0.1:5000
+#        OSRM_CAR_BASE_URL=http://127.0.0.1:5001
+# O prepare pede alguns GB de RAM (o recorte do Nordeste cabe numa máquina de 8 GB).
+
+services:
+  osrm-prepare:
+    profiles: ["prepare"]
+    image: ghcr.io/project-osrm/osrm-backend:v5.27.1
+    volumes:
+      - ./osrm-data:/data
+      - ./scripts/prepare-osrm.sh:/prepare-osrm.sh:ro
+    entrypoint: ["bash", "/prepare-osrm.sh"]
+
+  osrm-foot:
+    image: ghcr.io/project-osrm/osrm-backend:v5.27.1
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./osrm-data:/data
+    command: osrm-routed --algorithm mld /data/foot.osrm
+
+  osrm-car:
+    image: ghcr.io/project-osrm/osrm-backend:v5.27.1
+    restart: unless-stopped
+    ports:
+      - "5001:5000"
+    volumes:
+      - ./osrm-data:/data
+    command: osrm-routed --algorithm mld /data/car.osrm
