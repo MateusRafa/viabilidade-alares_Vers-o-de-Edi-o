@@ -136,7 +136,8 @@ export function prepareGraph(data) {
     cell,
     radiusMeters: data?.radiusMeters || RADIUS_METERS,
     builtAt: data?.builtAt || null,
-    ctos: data?.ctos || []
+    ctos: data?.ctos || [],
+    source: data?.source || null
   };
 }
 
@@ -283,7 +284,7 @@ export function routeOnGraph(prep, origin, destination) {
 }
 
 /**
- * Constrói nodes/edges a partir de ways do Overpass com geometry.
+ * Constrói nodes/edges a partir de trechos de rua com geometry.
  * @param {{geometry:{lat:number,lon:number}[]}[]} ways
  */
 export function graphFromWays(ways) {
