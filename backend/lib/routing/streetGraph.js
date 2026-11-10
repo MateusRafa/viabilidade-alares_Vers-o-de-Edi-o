@@ -4,7 +4,8 @@
  */
 
 export const RADIUS_METERS = 1000;
-const SNAP_METERS = 80;
+const SNAP_METERS = 160;
+const STITCH_METERS = 30;
 const MAX_ROUTE_METERS = 4000;
 const MAX_EXPANSIONS = 30000;
 
@@ -114,19 +115,22 @@ export function prepareGraph(data) {
     adj[b].push([a, d]);
     edges.push([a, b]);
   }
+  const stitched = stitchGaps(coords, adj, edges);
+  if (stitched) {
+    console.log(`🛣️ [Ruas] ${stitched} emendas entre trechos que estavam separados.`);
+  }
   const cell = 0.0015;
   const grid = new Map();
   for (let i = 0; i < edges.length; i++) {
     const [a, b] = edges[i];
-    const midLat = (coords[a][0] + coords[b][0]) / 2;
-    const midLng = (coords[a][1] + coords[b][1]) / 2;
-    const key = `${Math.floor(midLat / cell)}:${Math.floor(midLng / cell)}`;
-    let bucket = grid.get(key);
-    if (!bucket) {
-      bucket = [];
-      grid.set(key, bucket);
+    for (const key of cellsAlong(coords[a], coords[b], cell)) {
+      let bucket = grid.get(key);
+      if (!bucket) {
+        bucket = [];
+        grid.set(key, bucket);
+      }
+      bucket.push(i);
     }
-    bucket.push(i);
   }
   return {
     coords,
@@ -141,13 +145,68 @@ export function prepareGraph(data) {
   };
 }
 
+function cellsAlong(a, b, cell) {
+  const keys = [];
+  const seen = new Set();
+  const steps = Math.max(1, Math.ceil(haversineMeters(a[0], a[1], b[0], b[1]) / 120));
+  for (let s = 0; s <= steps; s++) {
+    const t = s / steps;
+    const lat = a[0] + (b[0] - a[0]) * t;
+    const lng = a[1] + (b[1] - a[1]) * t;
+    const key = `${Math.floor(lat / cell)}:${Math.floor(lng / cell)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    keys.push(key);
+  }
+  return keys;
+}
+
+function stitchGaps(coords, adj, edges) {
+  const cell = STITCH_METERS / 111320;
+  const grid = new Map();
+  for (let i = 0; i < coords.length; i++) {
+    const key = `${Math.floor(coords[i][0] / cell)}:${Math.floor(coords[i][1] / cell)}`;
+    let bucket = grid.get(key);
+    if (!bucket) {
+      bucket = [];
+      grid.set(key, bucket);
+    }
+    bucket.push(i);
+  }
+  let added = 0;
+  for (let i = 0; i < coords.length; i++) {
+    const [lat, lng] = coords[i];
+    const ci = Math.floor(lat / cell);
+    const cj = Math.floor(lng / cell);
+    const linked = new Set(adj[i].map(([node]) => node));
+    for (let di = -1; di <= 1; di++) {
+      for (let dj = -1; dj <= 1; dj++) {
+        const bucket = grid.get(`${ci + di}:${cj + dj}`);
+        if (!bucket) continue;
+        for (const j of bucket) {
+          if (j <= i || linked.has(j)) continue;
+          const d = haversineMeters(lat, lng, coords[j][0], coords[j][1]);
+          if (d < 0.5 || d > STITCH_METERS) continue;
+          const meters = Math.round(d * 10) / 10;
+          adj[i].push([j, meters]);
+          adj[j].push([i, meters]);
+          edges.push([i, j]);
+          linked.add(j);
+          added += 1;
+        }
+      }
+    }
+  }
+  return added;
+}
+
 function snap(prep, lat, lng) {
   const { cell, grid, edges, coords } = prep;
   const i = Math.floor(lat / cell);
   const j = Math.floor(lng / cell);
   let best = null;
-  for (let di = -1; di <= 1; di++) {
-    for (let dj = -1; dj <= 1; dj++) {
+  for (let di = -2; di <= 2; di++) {
+    for (let dj = -2; dj <= 2; dj++) {
       const list = grid.get(`${i + di}:${j + dj}`);
       if (!list) continue;
       for (const ei of list) {
