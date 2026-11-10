@@ -7,6 +7,7 @@ import { routeOnGraph, StreetRouteError } from './lib/routing/streetGraph.js';
 import {
   initStreetGraph,
   scheduleStreetGraphRefresh,
+  streetGraphCoversCurrentMap,
   streetGraphPrepared,
   streetGraphStatus
 } from './lib/routing/streetGraphBuild.js';
@@ -35,8 +36,8 @@ function sendRoutingError(res, err) {
 export function registerRoutingRoutes(app, { dataDir } = {}) {
   initStreetGraph(dataDir);
   const status = streetGraphStatus();
-  if (!status.available) {
-    scheduleStreetGraphRefresh('arquivo-ausente');
+  if (!status.available || !streetGraphCoversCurrentMap()) {
+    scheduleStreetGraphRefresh(status.available ? 'mapa-do-brasil' : 'arquivo-ausente');
   }
 
   app.get('/api/routes/status', (_req, res) => {
