@@ -24,8 +24,22 @@ function ruasFile() {
   return path.join(ruasDir(), 'ruas.json');
 }
 
-function overpassUrl() {
-  return (process.env.OVERPASS_URL || 'https://overpass-api.de/api/interpreter').trim();
+function overpassMirrors() {
+  const list = [
+    process.env.OVERPASS_URL,
+    'https://overpass.kumi.systems/api/interpreter',
+    'https://overpass-api.de/api/interpreter'
+  ];
+  const out = [];
+  for (const item of list) {
+    const url = String(item || '').trim();
+    if (url && !out.includes(url)) out.push(url);
+  }
+  return out;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export function streetGraphStatus() {
@@ -203,11 +217,11 @@ async function fetchCtos() {
   return points;
 }
 
-async function overpass(query) {
+async function overpassOnce(url, query) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 180000);
   try {
-    const res = await fetch(overpassUrl(), {
+    const res = await fetch(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
@@ -217,16 +231,48 @@ async function overpass(query) {
       body: `data=${encodeURIComponent(query)}`,
       signal: ctrl.signal
     });
-    if (res.status === 429 || res.status === 504) {
-      throw new Error(`Overpass ocupado (${res.status})`);
-    }
     if (!res.ok) {
       throw new Error(`Overpass respondeu ${res.status}`);
     }
     return await res.json();
+  } catch (err) {
+    if (err?.name === 'AbortError') throw new Error('Overpass demorou demais');
+    throw err;
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function overpass(query) {
+  const mirrors = overpassMirrors();
+  let lastErr = null;
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const url = mirrors[attempt % mirrors.length];
+    try {
+      return await overpassOnce(url, query);
+    } catch (err) {
+      lastErr = err;
+      const wait = [8000, 15000, 30000, 45000, 60000, 60000][attempt];
+      console.warn(`⚠️ [Ruas] ${err.message}. Nova tentativa em ${wait / 1000}s (${attempt + 1}/6).`);
+      await sleep(wait);
+    }
+  }
+  throw lastErr || new Error('Overpass indisponível');
+}
+
+function packBoxes(boxes, size = 12) {
+  const packs = [];
+  for (let i = 0; i < boxes.length; i += size) packs.push(boxes.slice(i, i + size));
+  return packs;
+}
+
+function waysQuery(boxes, newerIso) {
+  const parts = boxes.map((box) => {
+    const newer = newerIso ? `(newer:"${newerIso}")` : '';
+    return `way["highway"~"${HIGHWAY}"](${bboxClause(box)})${newer};`;
+  });
+  const out = newerIso ? 'out ids qt;' : 'out geom qt;';
+  return `[out:json][timeout:120];(${parts.join('')});${out}`;
 }
 
 function bboxClause(box) {
@@ -234,32 +280,43 @@ function bboxClause(box) {
 }
 
 async function streetsChanged(boxes, sinceIso) {
-  for (const box of boxes) {
-    const q =
-      `[out:json][timeout:25];` +
-      `way["highway"~"${HIGHWAY}"](${bboxClause(box)})(newer:"${sinceIso}");` +
-      `out ids qt;`;
-    const payload = await overpass(q);
+  const packs = packBoxes(boxes, 20);
+  for (const pack of packs) {
+    const payload = await overpass(waysQuery(pack, sinceIso));
     if (Array.isArray(payload?.elements) && payload.elements.length > 0) return true;
-    await new Promise((r) => setTimeout(r, 1200));
+    await sleep(2500);
   }
   return false;
 }
 
-async function downloadWays(boxes) {
-  const ways = [];
-  for (let i = 0; i < boxes.length; i++) {
-    const box = boxes[i];
-    console.log(`🛣️ [Ruas] Baixando ruas ${i + 1}/${boxes.length}`);
-    const q =
-      `[out:json][timeout:120];` +
-      `way["highway"~"${HIGHWAY}"](${bboxClause(box)});` +
-      `out geom qt;`;
-    const payload = await overpass(q);
+async function downloadPack(boxes) {
+  if (!boxes.length) return [];
+  try {
+    const payload = await overpass(waysQuery(boxes));
+    const ways = [];
     for (const el of payload?.elements || []) {
       if (el.type === 'way' && Array.isArray(el.geometry)) ways.push(el);
     }
-    if (i < boxes.length - 1) await new Promise((r) => setTimeout(r, 1500));
+    return ways;
+  } catch (err) {
+    if (boxes.length === 1) throw err;
+    const mid = Math.ceil(boxes.length / 2);
+    console.warn(`⚠️ [Ruas] Lote de ${boxes.length} áreas falhou. Dividindo em duas.`);
+    const left = await downloadPack(boxes.slice(0, mid));
+    await sleep(2500);
+    const right = await downloadPack(boxes.slice(mid));
+    return left.concat(right);
+  }
+}
+
+async function downloadWays(boxes) {
+  const packs = packBoxes(boxes, 12);
+  const ways = [];
+  for (let i = 0; i < packs.length; i++) {
+    console.log(`🛣️ [Ruas] Baixando ruas ${i + 1}/${packs.length} (${packs[i].length} áreas)`);
+    const batch = await downloadPack(packs[i]);
+    ways.push(...batch);
+    if (i < packs.length - 1) await sleep(3000);
   }
   return ways;
 }
