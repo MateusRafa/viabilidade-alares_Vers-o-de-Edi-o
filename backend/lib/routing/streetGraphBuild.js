@@ -320,22 +320,43 @@ async function streetsChanged(boxes, sinceIso) {
   return false;
 }
 
-async function downloadWays(boxes) {
-  const areas = splitLargeBoxes(boxes);
+function waysFromPayload(payload) {
   const ways = [];
-  console.log(`🛣️ [Ruas] ${areas.length} áreas, uma por pedido.`);
-  for (let i = 0; i < areas.length; i++) {
-    console.log(`🛣️ [Ruas] Baixando ruas ${i + 1}/${areas.length}`);
-    const payload = await overpass(waysQuery([areas[i]]));
-    let added = 0;
-    for (const el of payload?.elements || []) {
-      if (el.type === 'way' && Array.isArray(el.geometry)) {
-        ways.push(el);
-        added += 1;
-      }
+  for (const el of payload?.elements || []) {
+    if (el.type === 'way' && Array.isArray(el.geometry)) ways.push(el);
+  }
+  return ways;
+}
+
+async function downloadOne(box) {
+  try {
+    const payload = await overpass(waysQuery([box]));
+    return waysFromPayload(payload);
+  } catch (err) {
+    const latSpan = box.north - box.south;
+    const lngSpan = box.east - box.west;
+    if (latSpan < 0.05 && lngSpan < 0.05) throw err;
+    const parts = splitLargeBoxes([box]);
+    if (parts.length <= 1) throw err;
+    console.warn(`⚠️ [Ruas] Área grande falhou. Dividindo em ${parts.length}.`);
+    const ways = [];
+    for (const part of parts) {
+      ways.push(...(await downloadOne(part)));
+      await sleep(1500);
     }
-    console.log(`🛣️ [Ruas] Área ${i + 1}/${areas.length} pronta, ${added} ruas (total ${ways.length}).`);
-    if (i < areas.length - 1) await sleep(2000);
+    return ways;
+  }
+}
+
+async function downloadWays(boxes) {
+  const ways = [];
+  console.log(`🛣️ [Ruas] ${boxes.length} áreas, um pedido por área.`);
+  for (let i = 0; i < boxes.length; i++) {
+    console.log(`🛣️ [Ruas] Baixando ruas ${i + 1}/${boxes.length}`);
+    const batch = await downloadOne(boxes[i]);
+    ways.push(...batch);
+    console.log(`🛣️ [Ruas] Área ${i + 1}/${boxes.length} pronta, ${batch.length} ruas (total ${ways.length}).`);
+    if (i < boxes.length - 1) await sleep(1500);
   }
   return ways;
 }
