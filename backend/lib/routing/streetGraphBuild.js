@@ -219,7 +219,7 @@ async function fetchCtos() {
 
 async function overpassOnce(url, query) {
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 180000);
+  const timer = setTimeout(() => ctrl.abort(), 40000);
   try {
     const res = await fetch(url, {
       method: 'POST',
@@ -246,14 +246,16 @@ async function overpassOnce(url, query) {
 async function overpass(query) {
   const mirrors = overpassMirrors();
   let lastErr = null;
-  for (let attempt = 0; attempt < 6; attempt++) {
+  for (let attempt = 0; attempt < 4; attempt++) {
     const url = mirrors[attempt % mirrors.length];
+    const host = url.replace(/^https?:\/\//, '').split('/')[0];
     try {
+      console.log(`🛣️ [Ruas] Pedido ao ${host} (tentativa ${attempt + 1}/4)`);
       return await overpassOnce(url, query);
     } catch (err) {
       lastErr = err;
-      const wait = [8000, 15000, 30000, 45000, 60000, 60000][attempt];
-      console.warn(`⚠️ [Ruas] ${err.message}. Nova tentativa em ${wait / 1000}s (${attempt + 1}/6).`);
+      const wait = [4000, 8000, 12000, 15000][attempt];
+      console.warn(`⚠️ [Ruas] ${err.message}. Nova tentativa em ${wait / 1000}s.`);
       await sleep(wait);
     }
   }
@@ -272,7 +274,36 @@ function waysQuery(boxes, newerIso) {
     return `way["highway"~"${HIGHWAY}"](${bboxClause(box)})${newer};`;
   });
   const out = newerIso ? 'out ids qt;' : 'out geom qt;';
-  return `[out:json][timeout:120];(${parts.join('')});${out}`;
+  return `[out:json][timeout:35];(${parts.join('')});${out}`;
+}
+
+/** Recorta área grande demais para um único pedido. */
+function splitLargeBoxes(boxes) {
+  const maxSpan = 0.06;
+  const out = [];
+  for (const box of boxes) {
+    const latSpan = box.north - box.south;
+    const lngSpan = box.east - box.west;
+    if (latSpan <= maxSpan && lngSpan <= maxSpan) {
+      out.push(box);
+      continue;
+    }
+    const latSteps = Math.ceil(latSpan / maxSpan);
+    const lngSteps = Math.ceil(lngSpan / maxSpan);
+    const dLat = latSpan / latSteps;
+    const dLng = lngSpan / lngSteps;
+    for (let i = 0; i < latSteps; i++) {
+      for (let j = 0; j < lngSteps; j++) {
+        out.push({
+          south: box.south + i * dLat,
+          north: box.south + (i + 1) * dLat,
+          west: box.west + j * dLng,
+          east: box.west + (j + 1) * dLng
+        });
+      }
+    }
+  }
+  return out;
 }
 
 function bboxClause(box) {
@@ -289,34 +320,22 @@ async function streetsChanged(boxes, sinceIso) {
   return false;
 }
 
-async function downloadPack(boxes) {
-  if (!boxes.length) return [];
-  try {
-    const payload = await overpass(waysQuery(boxes));
-    const ways = [];
-    for (const el of payload?.elements || []) {
-      if (el.type === 'way' && Array.isArray(el.geometry)) ways.push(el);
-    }
-    return ways;
-  } catch (err) {
-    if (boxes.length === 1) throw err;
-    const mid = Math.ceil(boxes.length / 2);
-    console.warn(`⚠️ [Ruas] Lote de ${boxes.length} áreas falhou. Dividindo em duas.`);
-    const left = await downloadPack(boxes.slice(0, mid));
-    await sleep(2500);
-    const right = await downloadPack(boxes.slice(mid));
-    return left.concat(right);
-  }
-}
-
 async function downloadWays(boxes) {
-  const packs = packBoxes(boxes, 12);
+  const areas = splitLargeBoxes(boxes);
   const ways = [];
-  for (let i = 0; i < packs.length; i++) {
-    console.log(`🛣️ [Ruas] Baixando ruas ${i + 1}/${packs.length} (${packs[i].length} áreas)`);
-    const batch = await downloadPack(packs[i]);
-    ways.push(...batch);
-    if (i < packs.length - 1) await sleep(3000);
+  console.log(`🛣️ [Ruas] ${areas.length} áreas, uma por pedido.`);
+  for (let i = 0; i < areas.length; i++) {
+    console.log(`🛣️ [Ruas] Baixando ruas ${i + 1}/${areas.length}`);
+    const payload = await overpass(waysQuery([areas[i]]));
+    let added = 0;
+    for (const el of payload?.elements || []) {
+      if (el.type === 'way' && Array.isArray(el.geometry)) {
+        ways.push(el);
+        added += 1;
+      }
+    }
+    console.log(`🛣️ [Ruas] Área ${i + 1}/${areas.length} pronta, ${added} ruas (total ${ways.length}).`);
+    if (i < areas.length - 1) await sleep(2000);
   }
   return ways;
 }
