@@ -6,7 +6,6 @@
 import { routeOnGraph, StreetRouteError } from './lib/routing/streetGraph.js';
 import {
   initStreetGraph,
-  scheduleStreetGraphRefresh,
   streetGraphCoversCurrentMap,
   streetGraphPrepared,
   streetGraphStatus
@@ -36,8 +35,10 @@ function sendRoutingError(res, err) {
 export function registerRoutingRoutes(app, { dataDir } = {}) {
   initStreetGraph(dataDir);
   const status = streetGraphStatus();
-  if (!status.available || !streetGraphCoversCurrentMap()) {
-    scheduleStreetGraphRefresh(status.available ? 'mapa-do-brasil' : 'arquivo-ausente');
+  if (!status.available) {
+    console.log('🛣️ [Ruas] Sem cópia compacta neste backend. Nenhuma montagem do mapa começa sozinha.');
+  } else if (!streetGraphCoversCurrentMap()) {
+    console.log('🛣️ [Ruas] Cópia compacta no ar. A montagem nova só começa quando a base de CTOs for publicada.');
   }
 
   app.get('/api/routes/status', (_req, res) => {
