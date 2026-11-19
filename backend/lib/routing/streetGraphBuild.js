@@ -17,7 +17,7 @@ import { Transform } from 'stream';
 dns.setDefaultResultOrder('ipv4first');
 import supabase, { isSupabaseAvailable } from '../../supabase.js';
 import { getActiveDatasetId } from '../ctoCoverageDatasets.js';
-import { RADIUS_METERS, graphFromWays, haversineMeters, prepareGraph } from './streetGraph.js';
+import { RADIUS_METERS, graphFromWays, haversineMeters, readPackedGraphFile } from './streetGraph.js';
 
 const require = createRequire(import.meta.url);
 const createOsmParser = require('osm-pbf-parser');
@@ -67,6 +67,10 @@ function ruasFile() {
   return path.join(ruasDir(), 'ruas.json');
 }
 
+function packFile() {
+  return path.join(ruasDir(), 'ruas.pack');
+}
+
 function pbfFile() {
   return path.join(ruasDir(), 'mapa-regiao.osm.pbf');
 }
@@ -113,10 +117,6 @@ export function streetGraphCoversCurrentMap() {
   return Boolean(prepared?.edges?.length) && (prepared?.source?.url || '') === pbfUrl();
 }
 
-export function initStreetGraph(dir) {
-  dataDir = dir || dataDir;
-  try {
-    const file = ruasFile();
 function packScript() {
   return path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'scripts', 'pack-ruas-compact.js');
 }
@@ -172,6 +172,10 @@ export function initStreetGraph(dir) {
   } catch (err) {
     prepared = null;
     console.warn('⚠️ [Ruas] Não foi possível abrir a cópia compacta:', err.message);
+  }
+}
+
+function gridOf(points) {
   const size = 0.01;
   const map = new Map();
   for (const p of points) {
@@ -624,12 +628,12 @@ async function refreshStreetGraph(reason) {
     edges: built.edges
   };
   await writeGraph(payload);
-  prepared = prepareGraph(payload);
+  buildPackChild();
+  prepared = readPackedGraphFile(packFile());
   networkTries = 0;
   console.log(
     `🛣️ [Ruas] Arquivo novo no ar. Anterior apagado. ${prepared.coords.length} pontos, ${prepared.edges.length} trechos.`
-  buildPackChild();
-  prepared = readPackedGraphFile(packFile());
+  );
 }
 
 /** Dispara a checagem sem prender a publicação da base. */
